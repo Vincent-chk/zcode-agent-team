@@ -5,15 +5,15 @@
       "name": "agent-team",
       "source": ".",
       "version": "0.1.0",
-      "description": "智能体团队：teammate 子会话、回合边界消息投递、共享任务板。",
+      "description": "智能体团队：在会话中创建并协调多个 teammate 子会话、共享任务板与成员消息。",
       "displayName": "智能体团队",
       "displayName_i18n": {
         "zh-CN": "智能体团队",
-        "en": "Agent Team"
+        "en": "Agent Teams"
       },
       "description_i18n": {
-        "zh-CN": "智能体团队：teammate 子会话、回合边界消息投递、共享任务板。",
-        "en": "Agent Teams: teammate sessions, turn-boundary message delivery, shared task board."
+        "zh-CN": "智能体团队：在会话中创建并协调多个 teammate 子会话、共享任务板与成员消息。",
+        "en": "Agent Teams: spawn and coordinate teammate sessions with a shared task board and member messaging."
       },
       "category": "developer-tools"
     }

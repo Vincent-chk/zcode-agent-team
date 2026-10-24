@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "ZCode 复刻 DSH Agent Teams 插件",
+  "description": "智能体团队：在会话中创建并协调多个 teammate 子会话、共享任务板与成员消息。",
   "engines": {
     "node": ">=22"
   },
