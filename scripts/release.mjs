@@ -27,7 +27,7 @@ const REGISTRY = "https://registry.npmmirror.com";
 const ZCODE_CLI_DEFAULT = "/Applications/ZCode.app/Contents/Resources/glm/zcode.cjs";
 const PACKAGE_NAME = "agent-team";
 
-// 包内白名单（T7.1 + R7.4）。src/test/scripts/poc/coverage/node_modules/docs 等一律不进入。
+// 包内白名单（T7.1 + R7.4 + stage-7 T7.2 用户手册）。src/test/scripts/poc/coverage/node_modules 等一律不进入。
 const PACKAGE_ENTRIES = [
   ".zcode-plugin/plugin.json",
   "dist",
@@ -39,7 +39,12 @@ const PACKAGE_ENTRIES = [
   "README.md",
   "THIRD-PARTY-NOTICES.md",
   "CHANGELOG.md",
+  "docs/使用手册.md",
+  "docs/assets/manual",
 ];
+
+// 允许出现在包内的 docs/ 子树（手册与其截图）；其余 docs 内容仍是工程文档，不随包分发。
+const PACKAGE_DOC_PREFIXES = ["docs/使用手册.md", "docs/assets/manual/"];
 
 const REQUIRED_FILES = [
   ".zcode-plugin/plugin.json",
@@ -54,6 +59,7 @@ const REQUIRED_FILES = [
   "LICENSE",
   "README.md",
   "THIRD-PARTY-NOTICES.md",
+  "docs/使用手册.md",
 ];
 
 const EXCLUDED_SEGMENTS = new Set([
@@ -289,7 +295,11 @@ async function verifyPackageLayout(dir, plugin, files) {
 
   const forbidden = files.filter((rel) => {
     const top = rel.split("/")[0];
-    return ["src", "test", "scripts", "poc", "coverage", "node_modules", "docs"].includes(top);
+    if (["src", "test", "scripts", "poc", "coverage", "node_modules"].includes(top)) return true;
+    if (top === "docs") {
+      return !PACKAGE_DOC_PREFIXES.some((p) => rel === p || rel.startsWith(p));
+    }
+    return false;
   });
   if (forbidden.length) fail(`package contains engineering residue: ${forbidden.slice(0, 10).join(", ")}`);
 
