@@ -27,6 +27,8 @@
   --at-business: var(--color-text-info, var(--primary, #3e7bfa));
   /* \u9519\u8BEF\u6587\u672C\uFF08dsw state-error-primary\uFF09 */
   --at-error-text: var(--color-text-danger, var(--red, var(--destructive, #d93036)));
+  /* advisory \u8B66\u544A\u6587\u672C\u8272\uFF08\u6DF1\u7425\u73C0\u4FDD\u8BC1 11px \u5C0F\u5B57\u5BF9\u6BD4\u5EA6\uFF09 */
+  --at-warning-text: var(--color-text-warning, var(--yellow, #b45309));
   /* \u9634\u5F71\u4E24\u6863\uFF08dsw elevation-prominent / elevation-panel\uFF09 */
   --at-shadow-prominent: var(--shadow-lg, 0 8px 28px rgba(16, 24, 40, 0.16));
   --at-shadow-panel: var(--shadow-md, 0 4px 16px rgba(16, 24, 40, 0.12));
@@ -54,6 +56,8 @@
   --at-state-done: var(--color-text-info, var(--blue, #6c9cff));
   --at-business: var(--color-text-info, var(--primary, #6c9cff));
   --at-error-text: var(--color-text-danger, var(--red, var(--destructive, #ff8a8d)));
+  /* advisory \u8B66\u544A\u6587\u672C\u8272 */
+  --at-warning-text: var(--color-text-warning, var(--yellow, #ffb454));
   --at-shadow-prominent: var(--shadow-lg, 0 8px 28px rgba(0, 0, 0, 0.5));
   --at-shadow-panel: var(--shadow-md, 0 4px 16px rgba(0, 0, 0, 0.4));
 }
@@ -271,10 +275,10 @@ article.task {
 .expand-toggle svg { transition: transform 0.12s; }
 .expand-toggle.open svg { transform: rotate(180deg); }
 .expand-toggle[hidden] { display: none; }
-/* meta \u884C\uFF1A11px/20px\uFF1B\u5B50\u9879\u95F4\u8DDD 10px\uFF1Bwarning \u9519\u8BEF\u8272 */
+/* meta \u884C\uFF1A11px/20px\uFF1B\u5B50\u9879\u95F4\u8DDD 10px\uFF1Bwarning \u63D0\u9192\u8272\uFF08advisory \u975E\u9519\u8BEF\uFF09 */
 .task .meta { font-size: 11px; line-height: 20px; color: var(--at-label-tertiary); }
 .task .meta > span { margin-right: 10px; }
-.task .meta .warning { color: var(--at-error-text); }
+.task .meta .warning { color: var(--at-warning-text); }
 /* T5.7 \u6210\u5458\u4F1A\u8BDD\u67E5\u770B\u89C6\u56FE\uFF08V16\uFF1A\u65E0 DSH \u53C2\u7167\uFF0C\u5BBF\u4E3B\u98CE\u683C\uFF1B\u5224\u636E=\u4E0D\u7834\u7248+\u51E0\u4F55\u4E00\u81F4\uFF09 */
 .detail-view { display: flex; flex-direction: column; min-height: 0; flex: auto; }
 .detail-head {

@@ -122,6 +122,31 @@ describe("task-view · writeScopeWarnings（F26）", () => {
     expect(writeScopeWarnings(state, t1).some((w) => w.includes("task-1"))).toBe(false);
   });
 
+  it("主体非 in_progress（completed/pending）→ 不告警（即使与他任务写域重叠）", () => {
+    // 0.1.3 UX 修订：警告仅挂双方 in_progress 的任务对
+    for (const status of ["completed", "pending"] as const) {
+      let state = emptyTeamState(TEAM_ID);
+      state = applyCurrentTeamEvent(
+        state,
+        taskEvent({ id: "task-1", revision: 1, status, writeScopes: ["src"] }),
+      );
+      state = applyCurrentTeamEvent(
+        state,
+        taskEvent({ id: "task-2", revision: 1, status: "in_progress", writeScopes: ["src"] }),
+      );
+      const t1 = state.tasks.find((t) => t.id === "task-1")!;
+      expect(writeScopeWarnings(state, t1)).toEqual([]);
+    }
+  });
+
+  it("双方均 in_progress 且重叠 → 两张视图对称互相告警", () => {
+    const state = inProgressState({ "task-1": ["src"], "task-2": ["src/lib"] });
+    const t1 = state.tasks.find((t) => t.id === "task-1")!;
+    const t2 = state.tasks.find((t) => t.id === "task-2")!;
+    expect(projectTaskView(state, t1).writeScopeWarnings).toEqual(["write scopes overlap with task-2"]);
+    expect(projectTaskView(state, t2).writeScopeWarnings).toEqual(["write scopes overlap with task-1"]);
+  });
+
   it("多 scope 对同一任务重叠只告警一次（Set 去重）；警告不阻断 projectTaskView", () => {
     // F26
     const state = inProgressState({

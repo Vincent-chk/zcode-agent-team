@@ -219,10 +219,10 @@ article.task {
 .expand-toggle svg { transition: transform 0.12s; }
 .expand-toggle.open svg { transform: rotate(180deg); }
 .expand-toggle[hidden] { display: none; }
-/* meta 行：11px/20px；子项间距 10px；warning 错误色 */
+/* meta 行：11px/20px；子项间距 10px；warning 提醒色（advisory 非错误） */
 .task .meta { font-size: 11px; line-height: 20px; color: var(--at-label-tertiary); }
 .task .meta > span { margin-right: 10px; }
-.task .meta .warning { color: var(--at-error-text); }
+.task .meta .warning { color: var(--at-warning-text); }
 /* T5.7 成员会话查看视图（V16：无 DSH 参照，宿主风格；判据=不破版+几何一致） */
 .detail-view { display: flex; flex-direction: column; min-height: 0; flex: auto; }
 .detail-head {

@@ -36,6 +36,8 @@ export const TOKEN_CSS = `
   --at-business: var(--color-text-info, var(--primary, #3e7bfa));
   /* 错误文本（dsw state-error-primary） */
   --at-error-text: var(--color-text-danger, var(--red, var(--destructive, #d93036)));
+  /* advisory 警告文本色（深琥珀保证 11px 小字对比度） */
+  --at-warning-text: var(--color-text-warning, var(--yellow, #b45309));
   /* 阴影两档（dsw elevation-prominent / elevation-panel） */
   --at-shadow-prominent: var(--shadow-lg, 0 8px 28px rgba(16, 24, 40, 0.16));
   --at-shadow-panel: var(--shadow-md, 0 4px 16px rgba(16, 24, 40, 0.12));
@@ -63,6 +65,8 @@ export const TOKEN_CSS = `
   --at-state-done: var(--color-text-info, var(--blue, #6c9cff));
   --at-business: var(--color-text-info, var(--primary, #6c9cff));
   --at-error-text: var(--color-text-danger, var(--red, var(--destructive, #ff8a8d)));
+  /* advisory 警告文本色 */
+  --at-warning-text: var(--color-text-warning, var(--yellow, #ffb454));
   --at-shadow-prominent: var(--shadow-lg, 0 8px 28px rgba(0, 0, 0, 0.5));
   --at-shadow-panel: var(--shadow-md, 0 4px 16px rgba(0, 0, 0, 0.4));
 }

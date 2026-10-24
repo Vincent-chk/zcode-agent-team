@@ -54,11 +54,13 @@ export function projectTaskView(state: TeamState, task: TeamTaskSnapshot): TeamT
 }
 
 /**
- * 写域警告（02 §7.5）：对每个**其他** in_progress 任务，双方 writeScopes 任一对前缀重叠
- * （left===right || left.startsWith(right+"/") || right.startsWith(left+"/")）
- * → 一条 `write scopes overlap with <otherId>`（Set 去重）。警告永不阻断操作。
+ * 写域警告（02 §7.5）：仅当主体任务自身 in_progress 时生成——对每个**其他** in_progress 任务，
+ * 双方 writeScopes 任一对前缀重叠（left===right || left.startsWith(right+"/") ||
+ * right.startsWith(left+"/")）→ 一条 `write scopes overlap with <otherId>`（Set 去重）。
+ * 双方均为 in_progress 故告警天然对称成对；警告永不阻断操作。
  */
 export function writeScopeWarnings(state: TeamState, task: TeamTaskSnapshot): string[] {
+  if (task.status !== "in_progress") return [];
   const warnings = new Set<string>();
   for (const other of state.tasks) {
     if (other.id === task.id || other.status !== "in_progress") continue;

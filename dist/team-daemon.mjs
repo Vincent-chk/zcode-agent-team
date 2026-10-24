@@ -19340,6 +19340,7 @@ function projectTaskView(state, task) {
   return view2;
 }
 function writeScopeWarnings(state, task) {
+  if (task.status !== "in_progress") return [];
   const warnings = /* @__PURE__ */ new Set();
   for (const other of state.tasks) {
     if (other.id === task.id || other.status !== "in_progress") continue;

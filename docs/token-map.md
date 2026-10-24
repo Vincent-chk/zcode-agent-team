@@ -30,7 +30,8 @@
 | `--dsw-alias-border-l1` | `--at-border-l1` | `--color-border-primary` | `--border` | rgba(16,24,40,.08) | rgba(255,255,255,.08) | 面板描边（stroke 等价） |
 | `--dsw-alias-border-l2` | `--at-border-l2` | `--color-border-tertiary` | `--border` | #e3e6eb | #333842 | 成员卡描边（elevation-stroke）、任务卡 border 0.5px |
 | `--dsw-alias-border-l3` | `--at-border-l3` | `--color-border-secondary` | `--border` | #c9cfd8 | #434a56 | 成员卡 hover/focus 描边加深 |
-| `--dsw-alias-state-error-primary` | `--at-error-text` | `--color-text-danger` | `--red` → `--destructive` | #d93036 | #ff8a8d | 导航错误条、failure 条、diagnostic 行、writeScopeWarning |
+| `--dsw-alias-state-error-primary` | `--at-error-text` | `--color-text-danger` | `--red` → `--destructive` | #d93036 | #ff8a8d | 导航错误条、failure 条、diagnostic 行 |
+| —（advisory 自绘；上游 warning 复用 error-primary） | `--at-warning-text` | `--color-text-warning` | `--yellow` | #b45309 | #ffb454 | writeScopeWarning advisory 提醒（非错误） |
 | `--dsw-alias-state-business-primary` | `--at-business` | `--color-text-info` | `--primary` | #3e7bfa | #6c9cff | 当前会话高亮（40% 混色描边 + inset 1px 内环）、current Tag |
 | 状态点 ongoing | `--at-state-ongoing` | `--color-text-success` | `--green` | #12a675 | #2fbf8f | running/provisioning、in_progress |
 | 状态点 error | `--at-state-error` | `--color-text-danger` | `--red` | #e5484d | #ff6b6e | failed |
