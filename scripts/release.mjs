@@ -474,7 +474,7 @@ async function materializeMarket(marketDir, extractDir, entry, plugin) {
   await fsp.rm(pluginDir, { recursive: true, force: true });
   await fsp.cp(extractDir, pluginDir, { recursive: true });
 
-  const pruned = await pruneJunk(pluginDir);
+  const prunedPlugin = await pruneJunk(pluginDir);
   const catalogPath = path.join(marketDir, "marketplace.json");
   let catalog = { name: "agent-team-release", plugins: [] };
   if (fs.existsSync(catalogPath)) {
@@ -499,6 +499,11 @@ async function materializeMarket(marketDir, extractDir, entry, plugin) {
   if (idx >= 0) catalog.plugins[idx] = nextEntry;
   else catalog.plugins.push(nextEntry);
   await fsp.writeFile(catalogPath, `${JSON.stringify(catalog, null, 2)}\n`, "utf8");
+
+  // exFAT 在复制/写入后会为目录与文件生成 AppleDouble；市场根目录也要清，
+  // 否则 `._agent-team`/`._marketplace.json` 会留在发布目录里。
+  const prunedRoot = await pruneJunk(marketDir);
+  const pruned = [...new Set([...prunedPlugin, ...prunedRoot])].sort();
 
   const catalogSha = sha256(await fsp.readFile(catalogPath));
   return { dir: marketDir, pluginDir, catalogPath, catalogSha, prunedJunk: pruned };
