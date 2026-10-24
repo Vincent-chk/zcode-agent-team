@@ -1,0 +1,13 @@
+node_modules/
+dist/ui/panel.js
+*.log
+.DS_Store
+._*
+test/visual/.work/
+test/visual/last-report.json
+coverage/
+.mimosa/
+.v2c/
+.video_agent/
+release/
+/-/

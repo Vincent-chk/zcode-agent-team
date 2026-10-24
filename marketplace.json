@@ -1,0 +1,21 @@
+{
+  "name": "agent-team-dev",
+  "plugins": [
+    {
+      "name": "agent-team",
+      "source": ".",
+      "version": "0.1.0",
+      "description": "智能体团队：teammate 子会话、回合边界消息投递、共享任务板。",
+      "displayName": "智能体团队",
+      "displayName_i18n": {
+        "zh-CN": "智能体团队",
+        "en": "Agent Team"
+      },
+      "description_i18n": {
+        "zh-CN": "智能体团队：teammate 子会话、回合边界消息投递、共享任务板。",
+        "en": "Agent Teams: teammate sessions, turn-boundary message delivery, shared task board."
+      },
+      "category": "developer-tools"
+    }
+  ]
+}

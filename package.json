@@ -1,0 +1,32 @@
+{
+  "name": "agent-team",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "ZCode 复刻 DSH Agent Teams 插件",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:cov": "vitest run --coverage",
+    "bench:f32": "vitest run test/coord/integration/f32.test.ts",
+    "check": "npm run typecheck && node /Applications/ZCode.app/Contents/Resources/glm/zcode.cjs plugins validate \"$(pwd)\" && node scripts/smoke-daemon.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/ext-apps": "^1.0.0",
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@vitest/coverage-v8": "^4.1.11",
+    "esbuild": "^0.24.0",
+    "playwright-core": "^1.58.0",
+    "typescript": "^5.7.0",
+    "vitest": "^4.1.11"
+  }
+}
