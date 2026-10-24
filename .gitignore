@@ -11,3 +11,7 @@ coverage/
 .video_agent/
 release/
 /-/
+
+# 环境变量与本地凭证
+.env
+.env.*
