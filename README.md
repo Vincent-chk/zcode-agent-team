@@ -32,19 +32,62 @@ zcode plugins enable agent-team@agent-team-release
 - 插件声明的 SessionStart / Stop / UserPromptSubmit hooks **随启用直接生效**，不需要信任授予或 hooks 开关（已在干净环境实测）。
 - 桌面默认权限模式下，agent-team 的 MCP 工具首次调用会弹「需要权限」确认；选择「允许（仅本次）」或「始终允许本项目」即可。这是宿主的工具权限，与 hook 无关。
 
-## 快速上手
+## 在会话中使用（怎么调用）
 
-新建一个任务（**必须是新任务**；旧任务不会刷新插件能力），发送：
+装好、启用后**不需要任何专门命令**：团队协作策略已由 SessionStart hook 自动注入会话上下文（D10），在新任务里直接对话即可。共有三个调用面，按需取用：
+
+| 调用面 | 怎么触发 | 干什么 |
+|---|---|---|
+| 自然语言对话（主通道） | 直接说目标 / 下指令 | 创建队友、分派任务、收发消息等全部操作；策略已自动注入，模型自己知道该用哪些团队工具 |
+| `/team` | 会话里输入 `/team` | 输出团队状态文本摘要 + 面板/命令入口（**只读**，不创建/修改任何数据） |
+| `/team-coordination` | 输入 `/team-coordination`（全名 `agent-team:team-coordination`） | 手动（重新）加载团队协作策略 skill；长会话策略丢失后恢复用 |
+
+### 1. 直接说目标（默认 orchestrator 模式）
+
+新建一个任务（**必须是新任务**——旧任务不会刷新插件能力），直接描述目标即可。默认 `leadMode: orchestrator` 下 Lead 会自主拆活、组队、分派并独立验收，不需要逐条指挥：
+
+```text
+帮我并行推进两件事：一边给 src/utils 补单元测试，一边审查 README 与 CHANGELOG 的措辞，完成后汇总。
+```
+
+Lead 的动作链：创建队友 → 在共享任务板建任务并指定 owner → 等待各成员完成 → 独立复核（读 diff、跑测试）→ 验收通过后汇总给你（D26/D27）。
+
+### 2. 点名指挥（collaborator 模式 / 想精确控制时）
+
+把 `leadMode` 配置为 `collaborator` 后 Lead 等你指示再建队；任何时候想精确控制，也直接下指令：
 
 ```text
 创建一个叫 reviewer 的队友，让它检查 README 前三段的错别字，然后汇总它的结论。
 ```
 
-一次成功的样子：
+```text
+给 reviewer 发个消息：重点看中英文标点混用。
+```
 
-1. 会话里出现「智能体团队」面板，成员区显示 `lead`（当前会话）与 `reviewer`；
-2. `reviewer` 创建并开始工作，面板/任务板出现任务与状态；
-3. `reviewer` 完成后向 Lead 汇报，Lead 汇总给你；
+```text
+列一下现在的成员和任务状态。
+```
+
+模型会把这些话术映射到对应工具（`spawn_teammate` / `send_message` / `list_agents` / `team_task_list` …），你不需要记工具名。
+
+### 3. `/team` 看状态
+
+会话里随时输入 `/team`：首行输出「成员 N · 共享任务 T」，随后逐行列出成员与任务（与面板词典同源同文案），并按运行环境附上面板/命令入口。刷新语义：桌面 MCP Apps 面板自动实时（订阅推送，无需手动刷新）；CLI 每次重跑 `/team` 即最新。
+
+### 4. `/team-coordination` 重载策略
+
+策略的主通道是 hook 自动注入，通常无需手动加载。两种情况会用到这个 skill：
+
+- 超长会话中注入的策略可能被上下文压缩掉（D24）：输入 `/team-coordination`（或让模型「重新加载团队策略 skill」）即可恢复；
+- 想确认当前会话按团队纪律工作时，也可以点名加载。
+
+### 一次成功的样子
+
+以「创建 reviewer 检查 README 错别字」为例：
+
+1. 会话里出现「智能体团队」面板（`spawn_teammate` 的结果携带面板打开提示，桌面上会定向打开），成员区显示 `lead`（当前会话）与 `reviewer`；
+2. `reviewer` 创建并开始工作，面板/任务板出现任务与状态变化；
+3. `reviewer` 完成后向 Lead 汇报，Lead（orchestrator 下先独立复核）汇总给你；
 4. `reviewer` 的会话是隐藏子会话，不会和 Lead 平级出现在左侧任务栏。
 
 ## 工具速查（模型可见 9 个；`interrupt:false` 时 8 个）
