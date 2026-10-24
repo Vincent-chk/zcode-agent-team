@@ -8,6 +8,8 @@
 // 文案：§10.7 词典逐字（zh/en 随宿主 locale）；几何/颜色：§10.3–§10.6（ui-core 同源层）。
 // T5.7：成员行点击 → 面板内二级视图（detail 契约分页/三态/复制会话 id；H15b 未证实 →
 // 不呈现「在桌面打开」引导）。
+// stage-8 D：成员卡齿轮 → 模型设置弹窗（模型目录 + 当前来源 + 受控变更 + 高级模式引导；
+// 弹窗 DOM 挂在 .team-panel 下、list/detail 之外——列表每帧重渲染不摧毁弹窗）。
 import { App } from "@modelcontextprotocol/ext-apps";
 import {
   EmptyResultSchema,
@@ -20,7 +22,18 @@ import {
   renderDetailView as renderDetailViewHtml,
   type DetailViewState,
 } from "../ui-core/detail-render.js";
+import {
+  draftFromCurrent,
+  draftSelection,
+  renderMemberSettingsModal,
+  selectLevel,
+  selectModel,
+  selectProvider,
+  type MemberModelCurrent,
+  type MemberSettingsState,
+} from "../ui-core/member-settings.js";
 import type { ViewFrame } from "../ui-core/view.js";
+import type { ModelCatalog } from "../provider/model-catalog.js";
 import type { DetailResult } from "../panel/detail.js";
 import { attachExpandBehavior, memoryExpandStore, type ExpandStore } from "../ui-core/expand.js";
 import { RequestSequencer } from "../ui-core/request-sequencer.js";
@@ -38,6 +51,8 @@ let lang: Lang = "zh";
 let navError: string | undefined;
 type DetailState = DetailViewState;
 let detailState: DetailState = { kind: "closed" };
+/** stage-8 D：成员模型设置弹窗状态（closed 时 DOM 空且 hidden）。 */
+let settingsState: MemberSettingsState = { kind: "closed" };
 let expandStore: ExpandStore = memoryExpandStore();
 let detachExpand: (() => void) | null = null;
 let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
@@ -46,6 +61,8 @@ let heartbeatInFlight = false;
 const viewSequencer = new RequestSequencer();
 /** 详情请求序号：快速切成员/关闭视图时作废在途响应。 */
 const detailSequencer = new RequestSequencer();
+/** 设置弹窗请求序号：快速开关/连点刷新时只落地最后一次。 */
+const settingsSequencer = new RequestSequencer();
 
 // ---------------------------------------------------------------- DOM 骨架
 
@@ -59,12 +76,14 @@ root.innerHTML =
   `<div class="team-panel" role="dialog" tabindex="-1" data-team-panel>` +
   `<div class="panel-body" data-list-view></div>` +
   `<div class="detail-view" data-detail-view tabindex="-1" hidden></div>` +
+  `<div data-settings-layer hidden></div>` +
   `</div>`;
 document.body.appendChild(root);
 
 const panelEl = root.querySelector<HTMLElement>(".team-panel")!;
 const listView = root.querySelector<HTMLElement>("[data-list-view]")!;
 const detailView = root.querySelector<HTMLElement>("[data-detail-view]")!;
+const settingsLayer = root.querySelector<HTMLElement>("[data-settings-layer]")!;
 
 // ---------------------------------------------------------------- 主题/语言/宿主上下文
 
@@ -282,6 +301,172 @@ function injectWake(name: string): void {
     );
 }
 
+// ---------------------------------------------------------------- 成员设置弹窗（stage-8 D）
+
+/** team_panel_call 统一应答解析（ok:false → 可读错误；错误态由调用方呈现）。 */
+async function callPanelBody(
+  args: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  const res = await app.callServerTool({ name: "team_panel_call", arguments: args });
+  const body = JSON.parse(parseToolText(res)) as {
+    ok?: boolean;
+    error?: { message?: string };
+  } & Record<string, unknown>;
+  if (body.ok === false || body.error !== undefined) {
+    throw new Error(body.error?.message ?? "panel call failed");
+  }
+  return body;
+}
+
+function memberNameOf(memberId: string): string {
+  return frame?.members.find((m) => m.id === memberId)?.target ?? memberId;
+}
+
+/** 打开/刷新弹窗：拉目录 + 当前生效值（memberId 缺省时只拿目录）。 */
+async function openSettings(memberId: string): Promise<void> {
+  const seq = settingsSequencer.begin();
+  const name = memberNameOf(memberId);
+  settingsState = { kind: "loading", memberId, name };
+  renderSettings();
+  try {
+    const body = await callPanelBody({ action: "modelOptions", memberId });
+    if (!settingsSequencer.isCurrent(seq)) return;
+    const catalog = body.catalog as ModelCatalog;
+    const current = body.current as MemberModelCurrent | undefined;
+    settingsState = {
+      kind: "ready",
+      memberId,
+      name: typeof body.memberName === "string" ? body.memberName : name,
+      catalog,
+      ...(current !== undefined ? { current } : {}),
+      draft: draftFromCurrent(catalog, current),
+    };
+  } catch (err) {
+    if (!settingsSequencer.isCurrent(seq)) return;
+    settingsState = {
+      kind: "error",
+      memberId,
+      name,
+      message: err instanceof Error ? err.message : String(err),
+    };
+  }
+  renderSettings();
+}
+
+function closeSettings(): void {
+  settingsSequencer.invalidate(); // 关闭后到达的响应不得重开弹窗
+  settingsState = { kind: "closed" };
+  renderSettings();
+}
+
+/** 应用草稿：setMemberModel → 重新拉目录/当前值（applied=next-turn 时提示下一轮生效）。 */
+async function applySettings(): Promise<void> {
+  if (settingsState.kind !== "ready") return;
+  const selection = draftSelection(settingsState.draft);
+  if (selection === undefined) return;
+  const { memberId, name, catalog, current, draft } = settingsState;
+  const seq = settingsSequencer.begin();
+  settingsState = {
+    kind: "saving",
+    memberId,
+    name,
+    catalog,
+    ...(current !== undefined ? { current } : {}),
+    draft,
+  };
+  renderSettings();
+  let applied: "now" | "next-turn" = "now";
+  try {
+    const body = await callPanelBody({
+      action: "setMemberModel",
+      memberId,
+      model: selection.model,
+      ...(selection.thoughtLevel !== undefined ? { thoughtLevel: selection.thoughtLevel } : {}),
+    });
+    if (!settingsSequencer.isCurrent(seq)) return;
+    applied = body.applied === "next-turn" ? "next-turn" : "now";
+    const refreshed = await callPanelBody({ action: "modelOptions", memberId });
+    if (!settingsSequencer.isCurrent(seq)) return;
+    const nextCatalog = refreshed.catalog as ModelCatalog;
+    const nextCurrent = refreshed.current as MemberModelCurrent | undefined;
+    settingsState = {
+      kind: "ready",
+      memberId,
+      name: typeof refreshed.memberName === "string" ? refreshed.memberName : name,
+      catalog: nextCatalog,
+      ...(nextCurrent !== undefined ? { current: nextCurrent } : {}),
+      draft: draftFromCurrent(nextCatalog, nextCurrent),
+      notice: applied === "next-turn" ? "next-turn" : "now",
+    };
+  } catch (err) {
+    if (!settingsSequencer.isCurrent(seq)) return;
+    settingsState = {
+      kind: "error",
+      memberId,
+      name,
+      message: err instanceof Error ? err.message : String(err),
+    };
+  }
+  renderSettings();
+}
+
+/** 弹窗渲染（独立于列表帧：frame 重渲染不触碰本层）。 */
+function renderSettings(): void {
+  settingsLayer.hidden = settingsState.kind === "closed";
+  if (settingsState.kind === "closed") {
+    settingsLayer.innerHTML = "";
+    return;
+  }
+  settingsLayer.innerHTML = renderMemberSettingsModal(settingsState, lang);
+  bindSettings();
+}
+
+function bindSettings(): void {
+  const overlay = settingsLayer.querySelector<HTMLElement>("[data-settings-overlay]");
+  // 遮罩点击（仅点在遮罩本身；点弹窗内部不关闭）
+  overlay?.addEventListener("click", (ev) => {
+    if (ev.target === overlay) closeSettings();
+  });
+  settingsLayer.querySelector("[data-settings-close]")?.addEventListener("click", closeSettings);
+  settingsLayer.querySelector("[data-settings-cancel]")?.addEventListener("click", closeSettings);
+  settingsLayer.querySelector("[data-settings-refresh]")?.addEventListener("click", () => {
+    if (settingsState.kind !== "closed") void openSettings(settingsState.memberId);
+  });
+  settingsLayer.querySelector("[data-settings-apply]")?.addEventListener("click", () => {
+    void applySettings();
+  });
+  const bound = settingsState;
+  if (bound.kind !== "ready") return; // loading/error/saving：仅关闭/刷新可用
+  const catalog = bound.catalog;
+  const draft = bound.draft;
+  const providerSelect = settingsLayer.querySelector<HTMLSelectElement>("[data-settings-provider]");
+  providerSelect?.addEventListener("change", () => {
+    if (settingsState.kind !== "ready") return;
+    settingsState = { ...settingsState, draft: selectProvider(catalog, draft, providerSelect.value) };
+    renderSettings();
+  });
+  const modelSelect = settingsLayer.querySelector<HTMLSelectElement>("[data-settings-model]");
+  modelSelect?.addEventListener("change", () => {
+    if (settingsState.kind !== "ready") return;
+    settingsState = { ...settingsState, draft: selectModel(catalog, draft, modelSelect.value) };
+    renderSettings();
+  });
+  const levelSelect = settingsLayer.querySelector<HTMLSelectElement>("[data-settings-level]");
+  levelSelect?.addEventListener("change", () => {
+    if (settingsState.kind !== "ready") return;
+    settingsState = { ...settingsState, draft: selectLevel(draft, levelSelect.value) };
+    renderSettings();
+  });
+}
+
+// ESC 关闭弹窗（面板内唯一模态层；detail 返回仍走按钮/键盘焦点路径）
+document.addEventListener("keydown", (ev) => {
+  if (ev.key === "Escape" && settingsState.kind !== "closed") {
+    ev.preventDefault();
+    closeSettings();
+  }
+});
+
 // ---------------------------------------------------------------- 渲染
 
 function render(): void {
@@ -308,10 +493,16 @@ function render(): void {
     );
     return;
   }
-  listView.innerHTML = renderPanelBody(frame, lang, {
-    ...(navError !== undefined ? { navError } : {}),
-    loading: false,
-  });
+  listView.innerHTML = renderPanelBody(
+    frame,
+    lang,
+    {
+      ...(navError !== undefined ? { navError } : {}),
+      loading: false,
+    },
+    // stage-8 D：齿轮仅在 MCP Apps 面板路径开启（伴生页/静态卡片默认关）
+    { memberSettings: true },
+  );
   detachExpand = attachExpandBehavior(listView, expandStore, {
     expand: DICT[lang]["task.expand"],
     collapse: DICT[lang]["task.collapse"],
@@ -324,6 +515,14 @@ listView.addEventListener("click", (ev) => {
   const target = ev.target as HTMLElement | null;
   if (target?.closest("[data-task-toggle]") !== null && target !== undefined) {
     persistWidgetState();
+    return;
+  }
+  // stage-8 D：齿轮判定必须先于成员行（齿轮在 .member-card 容器内、成员按钮之外）
+  const gear = target?.closest<HTMLElement>("[data-member-gear]");
+  if (gear !== null && gear !== undefined) {
+    ev.stopPropagation();
+    const gearId = gear.dataset.memberGear;
+    if (gearId !== undefined) void openSettings(gearId);
     return;
   }
   const member = target?.closest<HTMLButtonElement>("button.member");
@@ -392,6 +591,7 @@ function fallbackCopy(text: string): void {
 app.onhostcontextchanged = () => {
   applyHostContext();
   render();
+  if (settingsState.kind !== "closed") renderSettings(); // 语言/主题变化 → 弹窗文案同步
 };
 
 void (async () => {

@@ -150,8 +150,70 @@ export const FIXTURES: Record<string, ViewFrame> = {
   narrow: FIXTURE_NARROW,
 };
 
-// ---------------------------------------------------------------- T5.7 detail 夹具（+1 组成员转录快照）
+// ---------------------------------------------------------------- stage-8 D 成员设置弹窗夹具
 
+/** 弹窗夹具：目录（含禁用 provider / 无 reasoning 模型）+ 当前生效值（继承自 Lead）。 */
+export const FIXTURE_SETTINGS = {
+  memberId: "m_alice",
+  name: "alice",
+  catalog: {
+    providers: [
+      {
+        providerId: "prov-bigmodel",
+        name: "BigModel - Coding Plan",
+        kind: "anthropic",
+        enabled: true,
+        models: [
+          { id: "GLM-5.3", reasoning: { variants: ["low", "high", "max"], defaultVariant: "max" } },
+          { id: "GLM-5.3-Flash", reasoning: { variants: ["low", "high", "max"], defaultVariant: "max" } },
+        ],
+      },
+      {
+        providerId: "prov-deepseek",
+        name: "DeepSeek",
+        kind: "openai",
+        enabled: true,
+        models: [{ id: "deepseek-flash" }],
+      },
+      {
+        providerId: "prov-off",
+        name: "Z.ai - Coding Plan",
+        kind: "anthropic",
+        enabled: false,
+        disabledReason: "oauth_provider_inactive",
+        models: [{ id: "GLM-5.3" }],
+      },
+    ],
+  },
+  current: {
+    model: "GLM-5.3",
+    providerId: "prov-bigmodel",
+    reasoningLevel: "high",
+    source: "inherited" as const,
+  },
+  draft: { providerId: "prov-bigmodel", modelId: "GLM-5.3", reasoningLevel: "high" },
+};
+
+/** 弹窗背景帧（成员行含 alice，齿轮上下文可见）。 */
+export const FIXTURE_SETTINGS_FRAME: ViewFrame = frame({
+  members: [
+    member("lead", "running", { model: "claude-sonnet-4-5" }),
+    member("alice", "running", { model: "GLM-5.3" }),
+    member("bob", "inactive"),
+  ],
+  tasks: [
+    task("task-1", "面板模型设置", "齿轮打开成员模型弹窗。", { ownerName: "alice" }),
+    task("task-2", "模型目录脱敏", "apiKey/baseURL 不出 daemon。", { status: "completed", ownerName: "bob" }),
+    task("task-3", "对话通道", "member_set_model 与 team://models。", {
+      status: "in_progress",
+      ownerName: "alice",
+      writeScopes: ["src/mcp"],
+    }),
+    task("task-4", "验收回写", "规格 §10 修订留 Round E。", { ready: false, blockedBy: ["task-3"] }),
+  ],
+});
+
+// ---------------------------------------------------------------- T5.7 detail 夹具（+1 组成员转录快照）
 /** detail 结果夹具（成员转录：framed 徽标 + 工具折叠 + 长文本/中英混排 + 分页）。 */
 export const FIXTURE_DETAIL = {
   sessionId: "sess_alice_child",

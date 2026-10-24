@@ -254,6 +254,8 @@ describe("transcript 负路径", () => {
     expect(reader.findSessionByFirstPrompt({ cwd: dir, firstPrompt: "none", sinceMs: 0 })).toBeUndefined();
     expect(reader.exportTurns("s-empty")).toEqual([]);
     expect(reader.latestModel("s-empty")).toBeUndefined();
+    expect(reader.latestModelSelection("s-empty")).toBeUndefined();
+    expect(reader.latestModelUsage("s-empty")).toBeUndefined();
     expect(reader.session("s-empty")).toMatchObject({ id: "s-empty" });
     reader.close();
   });

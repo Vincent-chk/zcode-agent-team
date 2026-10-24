@@ -27,7 +27,12 @@ export interface Kit {
   warnings: string[];
 }
 
-export function buildKit(opts: { limits?: Partial<TeamLimits>; teamId?: string; newId?: () => string } = {}): Kit {
+export function buildKit(opts: {
+  limits?: Partial<TeamLimits>;
+  teamId?: string;
+  newId?: () => string;
+  leadModel?: string;
+} = {}): Kit {
   const teamId = opts.teamId ?? TEAM;
   const limits = validateTeamLimits({ ...DEFAULT_LIMITS, ...opts.limits });
   const store = new TestableMemoryStore(teamId);
@@ -41,6 +46,7 @@ export function buildKit(opts: { limits?: Partial<TeamLimits>; teamId?: string; 
     presentation: provider,
     warn: (m) => warnings.push(m),
     ...(opts.newId ? { newId: opts.newId } : {}),
+    ...(opts.leadModel !== undefined ? { leadModel: opts.leadModel } : {}),
   });
   return { runtime, lifecycle: runtime.lifecycle, activity: runtime.activity, provider, store, limits, warnings };
 }

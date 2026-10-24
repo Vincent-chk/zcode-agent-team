@@ -39,6 +39,9 @@ import { renderFramedBatch } from "./framing.js";
 import { buildForkFirstPrompt } from "./fork-context.js";
 import { resolveZcodeBin, type ZcodeBin } from "./zcode-bin.js";
 import { AppServerSessionBreeder, isolationModeFromEnv, type IsolationMode } from "./session-breeder.js";
+import type { MemberModelSelection } from "./model-selection.js";
+import { parseModelSelection } from "./model-selection.js";
+import { applyReasoningDefault, readModelCatalog, type ModelCatalog } from "./model-catalog.js";
 import { spawnDetached, pidAlive, killProcessGroup } from "./procgroup.js";
 import { readSessionRegistry, upsertSessionEntry } from "../mcp/identity.js";
 
@@ -76,6 +79,8 @@ export interface ResumeProviderOptions {
   sessionIsolation?: IsolationMode;
   /** 培育器注入（测试用；缺省按 cwd/dbPath 构造）。 */
   breeder?: SessionBreederLike;
+  /** 模型目录（档位缺省链用；缺省 readModelCatalog，测试可注入固定目录）。 */
+  modelCatalog?: () => ModelCatalog;
   /** 空闲 Lead 唤醒的最小空闲窗口（缺省 TEAM_WAKE_LEAD_MIN_IDLE_MS ?? 30s）。 */
   leadWakeMinIdleMs?: number;
   now?: () => number;
@@ -85,12 +90,28 @@ export interface ResumeProviderOptions {
 
 /** 培育器最小接口（依赖倒置，便于测试注入）。 */
 export interface SessionBreederLike {
-  createChild(input: { teamId: string; workspacePath: string; timeoutMs?: number }): Promise<{
+  createChild(input: {
+    teamId: string;
+    workspacePath: string;
+    modelSelection?: MemberModelSelection;
+    /** 主选失败后的唯一兜底（继承链第二档）；仅 primary 存在且失败才尝试。 */
+    modelFallback?: MemberModelSelection;
+    timeoutMs?: number;
+  }): Promise<{
     anchorSessionId: string;
     childSessionId: string;
     elapsedMs: number;
     workspacePath: string;
+    /** 实际生效的模型选择（primary/fallback；都失败则缺省）。 */
+    appliedModel?: MemberModelSelection;
   }>;
+  /** mid-life 应用（可选：测试桩可省略 → 立即应用按失败处理，落 pending）。 */
+  applyModelSelection?(input: {
+    sessionId: string;
+    workspacePath: string;
+    selection: MemberModelSelection;
+    timeoutMs?: number;
+  }): Promise<{ applied: boolean; reason?: string }>;
 }
 
 export interface PendingLookup {
@@ -118,6 +139,7 @@ export class ResumePerTurnProvider implements TeammateProvider {
   private readonly sessionIsolation: IsolationMode;
   private readonly leadWakeMinIdleMs: number;
   private readonly breeder: SessionBreederLike;
+  private readonly modelCatalog: () => ModelCatalog;
   private readonly now: () => number;
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly log: (record: Record<string, unknown>) => void;
@@ -154,6 +176,7 @@ export class ResumePerTurnProvider implements TeammateProvider {
         now: opts.now ?? Date.now,
       });
     this.now = opts.now ?? Date.now;
+    this.modelCatalog = opts.modelCatalog ?? (() => readModelCatalog());
     this.sleep = opts.sleep ?? ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));
     this.log =
       opts.log ??
@@ -330,6 +353,10 @@ export class ResumePerTurnProvider implements TeammateProvider {
     firstPrompt: string;
     context: "fresh" | "fork";
     model?: string;
+    /** 结构化模型选择（显式指定优先；缺省时 child 隔离模式继承 Lead）。 */
+    modelSelection?: MemberModelSelection;
+    /** 思考强度覆盖（合并进最终选择：显式/继承的 reasoningLevel 被它替换）。 */
+    thoughtLevel?: string;
     signal?: AbortSignal;
   }): Promise<{ memberId: string; accepted: boolean }> {
     if (args.teamId !== this.opts.teamId) {
@@ -341,6 +368,30 @@ export class ResumePerTurnProvider implements TeammateProvider {
         ? buildForkFirstPrompt(this.reader, this.opts.teamId, args.firstPrompt).prompt
         : args.firstPrompt; // D2：fresh 首轮 = 任务原文逐字（无身份前缀块）
 
+    // 模型选择（Round B/E-1）：显式 > 继承链 [session_entry 条目, model_usage 兜底]；仅 child 隔离
+    // 模式可应用（legacy 顶层会话没有培育器 setModel 的作用点：不应用也不记录，避免 origin 谎报）。
+    // 显式指定不设兜底——用户意图优先，失败仅容忍（落 CLI 缺省）。
+    const explicitSelection = args.modelSelection;
+    const inheritedSelections =
+      this.sessionIsolation === "child" && explicitSelection === undefined
+        ? this.lookupLeadModelSelections()
+        : [];
+    const primarySelection =
+      this.sessionIsolation !== "child"
+        ? undefined
+        : (explicitSelection ?? inheritedSelections[0]);
+    // thoughtLevel 是强度覆盖：只覆盖主选（兜底沿用其自身记录的档位，不臆造该模型不支持的强度）。
+    const finalSelection =
+      primarySelection !== undefined && args.thoughtLevel !== undefined
+        ? { ...primarySelection, reasoningLevel: args.thoughtLevel }
+        : primarySelection;
+    const fallbackSelection = explicitSelection !== undefined ? undefined : inheritedSelections[1];
+    // 档位缺省链（E-1b，统一落点 = provider 层）：应用前若 selection 无 reasoningLevel →
+    // 目录 defaultVariant（有则用）→ "max"；后端只保留「variants 已知才校验」。
+    const appliedSelection = finalSelection !== undefined ? this.withReasoningDefault(finalSelection) : undefined;
+    const appliedFallback =
+      fallbackSelection !== undefined ? this.withReasoningDefault(fallbackSelection) : undefined;
+
     // 会话隔离（stage-6）：先在宿主侧培育一个原生隐藏子会话，再以 `--resume <child>` 驱动首轮。
     // 失败 = 抛出（上游落 failed 成员）——不静默回退成会在任务栏可见的顶层会话（DSH 口径）。
     let bred: {
@@ -348,9 +399,15 @@ export class ResumePerTurnProvider implements TeammateProvider {
       childSessionId: string;
       elapsedMs: number;
       workspacePath: string;
+      appliedModel?: MemberModelSelection;
     } | null = null;
     if (this.sessionIsolation === "child") {
-      bred = await this.breeder.createChild({ teamId: this.opts.teamId, workspacePath: this.cwd });
+      bred = await this.breeder.createChild({
+        teamId: this.opts.teamId,
+        workspacePath: this.cwd,
+        ...(appliedSelection !== undefined ? { modelSelection: appliedSelection } : {}),
+        ...(appliedFallback !== undefined ? { modelFallback: appliedFallback } : {}),
+      });
     }
     // 培育器可能从会话库解析出 Lead 的真实目录；轮次/探针必须使用同一目录。
     const spawnCwd = bred?.workspacePath ?? this.cwd;
@@ -369,6 +426,14 @@ export class ResumePerTurnProvider implements TeammateProvider {
       sessionId: bred?.childSessionId ?? null,
       initialUserMessageAccepted: false,
       ...(args.model !== undefined ? { model: args.model } : {}),
+      // 只记**实际生效**者（BreedResult.appliedModel）：继承条目失败→usage 兜底成功时记 usage；
+      // 两者都没生效则不记（origin 不谎报），modelSource 规则不变。
+      ...(bred?.appliedModel !== undefined
+        ? {
+            modelSelection: bred.appliedModel,
+            modelSource: explicitSelection !== undefined ? ("explicit" as const) : ("inherited" as const),
+          }
+        : {}),
       sessionIsolation: bred !== null ? "child" : "legacy",
       ...(bred !== null
         ? {
@@ -440,7 +505,12 @@ export class ResumePerTurnProvider implements TeammateProvider {
       if (sessionId !== null) {
         const landed = this.reader.hasUserText(sessionId, origin.firstPromptText);
         if (landed) {
-          const nextOrigin: OriginRecord = { ...origin, sessionId, initialUserMessageAccepted: true };
+          // 再读一次 origin：并发 setMemberModel/pending 应用可能已写入 modelSelection（不覆盖）。
+          const nextOrigin: OriginRecord = {
+            ...(readOrigin(paths) ?? origin),
+            sessionId,
+            initialUserMessageAccepted: true,
+          };
           writeOrigin(paths, nextOrigin);
           const current = readTurn(paths.runDir, turn.turnId) ?? turn;
           writeTurn(paths.runDir, { ...current, sessionId, landed: true });
@@ -725,8 +795,72 @@ export class ResumePerTurnProvider implements TeammateProvider {
 
   modelOf(memberId: string): string | undefined {
     const origin = readOrigin(memberPaths(this.teamDir, memberId));
-    if (origin?.sessionId == null) return undefined;
-    return this.reader.latestModel(origin.sessionId);
+    if (origin === undefined) return undefined;
+    // 实查优先（消息里的 modelSelection）→ origin 配置值（显式/继承记录）→ 旧 model 字符串。
+    const observed = origin.sessionId !== null ? this.reader.latestModel(origin.sessionId) : undefined;
+    return observed ?? origin.modelSelection?.modelId ?? origin.model;
+  }
+
+  /** Lead 行模型（roster Lead 伪行）：Lead 会话最近消息实查 → model_usage 兜底。 */
+  leadModelOf(): string | undefined {
+    return this.reader.latestModel(this.opts.teamId) ?? this.reader.latestModelUsage(this.opts.teamId)?.modelId;
+  }
+
+  /** Lead 当前结构化选择（backend 裸 modelId 消歧用：先 Lead 当前 provider）。 */
+  leadModelSelectionOf(): MemberModelSelection | undefined {
+    return this.lookupLeadModelSelection();
+  }
+
+  /**
+   * stage-8 Round C · mid-life 改模型：空闲 → 立即应用（成功改 origin）；运行中或即时失败 →
+   * 落 pending（下一轮 launchTurn 前兜底应用）。目标会话未落定 → 抛错。
+   */
+  async setMemberModel(args: {
+    memberId: string;
+    modelSelection?: MemberModelSelection;
+    thoughtLevel?: string;
+  }): Promise<{ applied: "now" | "next-turn" }> {
+    const paths = memberPaths(this.teamDir, args.memberId);
+    const origin = readOrigin(paths);
+    if (origin === undefined || origin.sessionId === null) {
+      throw new Error(`member session not settled: ${args.memberId}`);
+    }
+    const base = args.modelSelection ?? this.currentModelSelection(origin);
+    if (base === undefined) {
+      throw new Error(
+        `member model is unknown: specify a model (providerId$modelId or a catalog model id) for ${args.memberId}`,
+      );
+    }
+    const merged: MemberModelSelection =
+      args.thoughtLevel !== undefined ? { ...base, reasoningLevel: args.thoughtLevel } : base;
+    // 档位缺省链（E-1b）：只给 model 时也补出档位（deepseek-flash 等模型必带 reasoningLevel）。
+    const selection = this.withReasoningDefault(merged);
+
+    if (this.currentRunningTurn(paths) !== null) {
+      this.writeModelPending(paths, selection);
+      this.log({
+        ts: iso(this.now()),
+        kind: "model-set-pending",
+        teamId: this.opts.teamId,
+        memberId: args.memberId,
+        reason: "turn-running",
+      });
+      return { applied: "next-turn" };
+    }
+    const result = await this.applySelectionNow(origin.sessionId, origin.cwd, selection, args.memberId);
+    if (result.applied) {
+      this.recordModelSelection(paths, origin, selection);
+      return { applied: "now" };
+    }
+    this.writeModelPending(paths, selection);
+    this.log({
+      ts: iso(this.now()),
+      kind: "model-set-pending",
+      teamId: this.opts.teamId,
+      memberId: args.memberId,
+      reason: result.reason ?? "apply-failed",
+    });
+    return { applied: "next-turn" };
   }
 
   // ---------------------------------------------------------------- hook 回执（Lead 投递 landed 依据）
@@ -791,6 +925,8 @@ export class ResumePerTurnProvider implements TeammateProvider {
     const turnId = nextTurnId(args.paths.runDir);
     const stdoutFile = path.join(args.paths.runDir, `${turnId}.out`);
     const turnCwd = args.cwd ?? this.cwd;
+    // mid-life 模型修改兜底：写 turn 记录之前应用 pending（避免 watcher 对 pid-null 轮次误终结）。
+    await this.applyPendingModelSelection(args.paths, args.sessionId, turnCwd, args.memberId);
     const scriptArgs = [
       ...this.zcode.argvPrefix,
       "-p",
@@ -910,6 +1046,122 @@ export class ResumePerTurnProvider implements TeammateProvider {
     );
   }
 
+  /** Lead 当前模型选择：setModel 权威条目 → 最近一次 model_usage（都无 = undefined，不调 setModel）。 */
+  private lookupLeadModelSelection(): MemberModelSelection | undefined {
+    return this.lookupLeadModelSelections()[0];
+  }
+
+  /** 档位缺省（已有则不覆盖）：目录 defaultVariant → "max"（E-1b 统一落点，backend 不重复补）。 */
+  private withReasoningDefault(selection: MemberModelSelection): MemberModelSelection {
+    return applyReasoningDefault(this.modelCatalog(), selection);
+  }
+
+  /**
+   * Lead 继承链（至多两档，按序）：`session_entry` 权威条目 → `model_usage` 最近调用。
+   * 去重：两档三元组完全相同则只留一个（避免对同一目标重试一次必败的 setModel）。
+   */
+  private lookupLeadModelSelections(): MemberModelSelection[] {
+    const candidates = [
+      this.reader.latestModelSelection(this.opts.teamId),
+      this.reader.latestModelUsage(this.opts.teamId),
+    ];
+    const out: MemberModelSelection[] = [];
+    for (const selection of candidates) {
+      if (selection === undefined) continue;
+      if (out.some((existing) => sameModelSelection(existing, selection))) continue;
+      out.push(selection);
+    }
+    return out;
+  }
+
+  /** 成员当前选择（thoughtLevel-only 修改的基底）：origin 记录 → transcript 条目 → 最近调用。 */
+  private currentModelSelection(origin: OriginRecord): MemberModelSelection | undefined {
+    if (origin.modelSelection !== undefined) return origin.modelSelection;
+    if (origin.sessionId === null) return undefined;
+    return (
+      this.reader.latestModelSelection(origin.sessionId) ?? this.reader.latestModelUsage(origin.sessionId)
+    );
+  }
+
+  /** 立即应用（无培育器能力/失败 → applied:false，由调用方落 pending）。 */
+  private async applySelectionNow(
+    sessionId: string,
+    workspacePath: string,
+    selection: MemberModelSelection,
+    memberId: string,
+  ): Promise<{ applied: boolean; reason?: string }> {
+    if (this.breeder.applyModelSelection === undefined) {
+      this.log({ ts: iso(this.now()), kind: "model-apply-unsupported", memberId });
+      return { applied: false, reason: "breeder does not support model application" };
+    }
+    try {
+      const result = await this.breeder.applyModelSelection({ sessionId, workspacePath, selection });
+      if (!result.applied) {
+        this.log({
+          ts: iso(this.now()),
+          kind: "model-apply-failed",
+          teamId: this.opts.teamId,
+          memberId,
+          reason: result.reason ?? "unknown",
+        });
+      }
+      return result;
+    } catch (err) {
+      const reason = errText(err);
+      this.log({ ts: iso(this.now()), kind: "model-apply-failed", teamId: this.opts.teamId, memberId, reason });
+      return { applied: false, reason };
+    }
+  }
+
+  /** pending 标记落盘（幂等覆盖：最后一次请求胜出）。 */
+  private writeModelPending(paths: MemberPaths, selection: MemberModelSelection): void {
+    writeJsonAtomic(paths.modelPendingFile, { modelSelection: selection, requestedAt: iso(this.now()) });
+  }
+
+  /** origin 回写（展示/审计；再读一次避免覆盖并发更新）。 */
+  private recordModelSelection(
+    paths: MemberPaths,
+    origin: OriginRecord,
+    selection: MemberModelSelection,
+  ): void {
+    writeOrigin(paths, { ...(readOrigin(paths) ?? origin), modelSelection: selection, modelSource: "explicit" });
+  }
+
+  /** 下一轮拉起前应用 pending（成功删标记并同步 origin；失败保留标记，不阻塞轮次）。 */
+  private async applyPendingModelSelection(
+    paths: MemberPaths,
+    sessionId: string | null,
+    workspacePath: string,
+    memberId: string,
+  ): Promise<void> {
+    if (sessionId === null) return;
+    const pending = readJson<{ modelSelection?: unknown }>(paths.modelPendingFile);
+    if (pending === undefined) return;
+    const selection = parseModelSelection(pending.modelSelection);
+    if (selection === undefined) {
+      this.log({ ts: iso(this.now()), kind: "model-pending-invalid", teamId: this.opts.teamId, memberId });
+      return;
+    }
+    // 旧 pending 文件可能没有 reasoningLevel（E-1b 之前写入）→ 应用前补同一缺省链。
+    const applied = this.withReasoningDefault(selection);
+    const result = await this.applySelectionNow(sessionId, workspacePath, applied, memberId);
+    if (!result.applied) return; // 保留标记：下一轮再试
+    try {
+      fs.unlinkSync(paths.modelPendingFile);
+    } catch {
+      /* best-effort：标记残留只会导致下一轮重复应用同一选择 */
+    }
+    const origin = readOrigin(paths);
+    if (origin !== undefined) this.recordModelSelection(paths, origin, applied);
+    this.log({
+      ts: iso(this.now()),
+      kind: "model-pending-applied",
+      teamId: this.opts.teamId,
+      memberId,
+      modelId: applied.modelId,
+    });
+  }
+
   /** daemon 侧补写 teammate 映射（hook 未及写时的兜底；不覆盖已有 teammate 映射）。 */
   private writeTeammateMapping(sessionId: string, origin: OriginRecord): void {
     const registry = readSessionRegistry(this.opts.dataRoot);
@@ -972,6 +1224,15 @@ function iso(ms: number): string {
 
 function errText(err: unknown): string {
   return err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+}
+
+/** 三元组等价（继承链去重；reasoningLevel 缺省与显式空串视为同档）。 */
+function sameModelSelection(a: MemberModelSelection, b: MemberModelSelection): boolean {
+  return (
+    a.providerId === b.providerId &&
+    a.modelId === b.modelId &&
+    (a.reasoningLevel ?? "") === (b.reasoningLevel ?? "")
+  );
 }
 
 function drainPolicyFromEnv(): "keep" | "kill" {

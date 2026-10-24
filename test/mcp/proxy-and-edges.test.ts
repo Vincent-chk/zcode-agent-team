@@ -257,7 +257,7 @@ describe("边角路径", () => {
     await backend.close();
   });
 
-  it("〔对齐轮 D3〕interrupt=false：interrupt_agent 调用按未注册拒绝；其余 8 工具正常", async () => {
+  it("〔对齐轮 D3〕interrupt=false：interrupt_agent 调用按未注册拒绝；其余 9 工具正常", async () => {
     const dataRoot = fs.mkdtempSync(path.join(root, "noint-"));
     const team = "sess_noint_lead";
     upsertSessionEntry(dataRoot, team, { firstSeen: new Date().toISOString(), hookRegistered: true });

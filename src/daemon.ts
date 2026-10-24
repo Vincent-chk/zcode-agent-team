@@ -1,10 +1,12 @@
 // agent-team Team Daemon
-// 职责：① MCP 工具面（9 个团队工具 + 诊断 team_ping + 面板回环 team_panel_call）
+// 职责：① MCP 工具面（10 个团队工具 + 诊断 team_ping + 面板回环 team_panel_call）
 //      ② ui:// 资源 + resources/subscribe 推帧（MCP Apps 面板数据源；single-flight + 会话代际）
+//         + team://models 模型目录资源（stage-8 Round C；只读 config.json 白名单投影）
 //      ③ 冷启动自检（node 版本/配置校验/持久状态恢复）+ 信号日志
 //      ④ 可选伴生面板（127.0.0.1 + token；SSE 推帧）
 // 纪律：stdout 只走 MCP 协议，日志一律 stderr / 文件。
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -47,10 +49,12 @@ import { PanelViewService } from "./panel/view-service.js";
 import { handlePanelCall } from "./panel/panel-call.js";
 import { startCompanionServer, type CompanionServer } from "./panel/companion-server.js";
 import { TranscriptReader } from "./provider/transcript.js";
+import { createModelCatalogReader } from "./provider/model-catalog.js";
 import { emptyViewFrame, type ViewFrame } from "./ui-core/view.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const VIEW_URI = "team://view";
+const MODELS_URI = "team://models";
 const PANEL_URI = "ui://agent-team/team-panel.html";
 const NODE_MIN = 22;
 /** 进程启动时刻（身份解析 hook 映射兜底的时间窗锚点；T3.1）。 */
@@ -282,6 +286,10 @@ const panelCallDeps = {
   bootTimeMs: BOOT_TIME_MS,
   reader: new TranscriptReader(),
   bumpCounter: () => (view.counter += 1),
+  // stage-8 D：成员模型受控变更复用 Round C backend 通路；目录共用 mtime 缓存读器
+  // （懒引用：读器常量定义在本行之后，避免模块初始化期 TDZ）。
+  backend,
+  catalog: () => readModelsResource(),
   now: ts,
   warn: (m: string) => logErr("panel-call", m),
 };
@@ -340,7 +348,7 @@ const TOOLS = [
   {
     name: "team_panel_call",
     description:
-      "面板回环工具（app 专用）：面板经 callServerTool 调用。label-only = 心跳/计数（H12 保活载体）；action=refresh = 全量视图帧；action=detail + target = 成员会话查看视图（T5.7，cursor/limit 分页）。",
+      "面板回环工具（app 专用）：面板经 callServerTool 调用。label-only = 心跳/计数（H12 保活载体）；action=refresh = 全量视图帧；action=detail + target = 成员会话查看视图（T5.7，cursor/limit 分页）；action=modelOptions（memberId 可选）= 模型目录 + 成员当前生效值；action=setMemberModel（memberId + model/thoughtLevel）= 受控成员模型变更（stage-8）。",
     visibility: ["app"],
     inputSchema: {
       type: "object" as const,
@@ -348,12 +356,19 @@ const TOOLS = [
         label: { type: "string", description: "调用来源标注（如 heartbeat / manual）" },
         action: {
           type: "string",
-          enum: ["refresh", "detail"],
-          description: "refresh = 全量视图帧；detail = 成员会话查看视图（需 target）",
+          enum: ["refresh", "detail", "modelOptions", "setMemberModel"],
+          description:
+            "refresh = 全量视图帧；detail = 成员会话查看视图（需 target）；modelOptions = 模型目录（memberId 可选）；setMemberModel = 应用成员模型（需 memberId 与 model/thoughtLevel）",
         },
         target: { type: "string", description: "detail 目标成员 id（或成员名；lead 亦可）" },
         cursor: { type: "number", description: "detail seq 游标（返回 seq < cursor 的最近一页；缺省 = 末页/最近上下文）" },
         limit: { type: "number", description: "detail 页大小（默认 100，上限 200）" },
+        memberId: { type: "string", description: "模型设置目标成员 id（modelOptions/setMemberModel）" },
+        model: {
+          type: "string",
+          description: '模型全称 "providerId$modelId"（setMemberModel；取值来自 modelOptions 目录）',
+        },
+        thoughtLevel: { type: "string", description: "思考强度档位（setMemberModel 可选；模型 variants 之一）" },
       },
     },
   },
@@ -362,11 +377,20 @@ const TOOLS = [
 const RESOURCES = [
   { uri: PANEL_URI, name: "agent-team-panel", mimeType: "text/html", description: "智能体团队会话面板（团队视图 + 成员会话下钻）" },
   { uri: VIEW_URI, name: "agent-team-view", mimeType: "application/json", description: "团队视图帧（订阅推送源）" },
+  {
+    uri: MODELS_URI,
+    name: "agent-team-models",
+    mimeType: "application/json",
+    description: "可用模型目录（provider/model/思考强度档位；不含任何凭据）",
+  },
 ];
+
+/** team://models 目录缓存：config.json mtime 变化才重读（模型目录是静态配置，读多写少）。 */
+const readModelsResource = createModelCatalogReader(os.homedir(), (message) => logErr("models", message));
 
 server.setRequestHandler(ListToolsRequestSchema, async () => {
   appendJsonl(path.join(DATA, "logs", "requests.jsonl"), { ts: ts(), method: "tools/list" });
-  // 模型面 = 9 个团队工具（interrupt=false → 8）。team_ping 仅诊断：默认不暴露，
+  // 模型面 = 10 个团队工具（interrupt=false → 9）。team_ping 仅诊断：默认不暴露，
   // TEAM_DEBUG_TOOLS=1 时才进入 tools/list；team_panel_call 保留给面板 app 通道。
   const debugTools = process.env.TEAM_DEBUG_TOOLS === "1";
   const supportTools = debugTools
@@ -461,6 +485,18 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
       case "detail":
         body = { ok: true, detail: result.detail };
         break;
+      case "modelOptions":
+        body = {
+          ok: true,
+          catalog: result.catalog,
+          ...(result.memberId !== undefined ? { memberId: result.memberId } : {}),
+          ...(result.memberName !== undefined ? { memberName: result.memberName } : {}),
+          ...(result.current !== undefined ? { current: result.current } : {}),
+        };
+        break;
+      case "modelSet":
+        body = { ok: true, applied: result.applied, memberId: result.memberId };
+        break;
       case "error":
         body = {
           ok: false,
@@ -479,7 +515,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
     };
   }
 
-  // —— stage-3：9 个团队工具（身份=_meta.session_id 每调解析；紧凑 JSON；错误 code 透传）
+  // —— stage-3/8：10 个团队工具（身份=_meta.session_id 每调解析；紧凑 JSON；错误 code 透传）
   if (isTeamTool(name)) {
     const meta = _meta as import("./mcp/identity.js").CallMeta | undefined;
     return callTeamTool(
@@ -537,6 +573,9 @@ server.setRequestHandler(ReadResourceRequestSchema, async (req) => {
         { uri, mimeType: "application/json", text: JSON.stringify(frame) },
       ],
     };
+  }
+  if (uri === MODELS_URI) {
+    return { contents: [{ uri, mimeType: "application/json", text: JSON.stringify(readModelsResource()) }] };
   }
   throw new Error(`TEAM_UNKNOWN_RESOURCE: ${uri}`);
 });

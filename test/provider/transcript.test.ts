@@ -6,7 +6,7 @@ import crypto from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { TranscriptReader } from "../../src/provider/transcript.js";
-import { createTestDb } from "./kit.js";
+import { createTestDb, insertModelUsage, insertSessionEntry } from "./kit.js";
 
 let dir = "";
 let dbPath = "";
@@ -57,6 +57,8 @@ describe("TranscriptReader", () => {
     expect(reader.session("sess_x")).toBeUndefined();
     expect(reader.hasUserText("sess_x", "t")).toBe(false);
     expect(reader.findSessionByFirstPrompt({ cwd: "/ws", firstPrompt: "t", sinceMs: 0 })).toBeUndefined();
+    expect(reader.latestModelSelection("sess_x")).toBeUndefined();
+    expect(reader.latestModelUsage("sess_x")).toBeUndefined();
     reader.close();
   });
 
@@ -92,6 +94,71 @@ describe("TranscriptReader", () => {
       { role: "assistant", text: "doing", toolNames: [] },
     ]);
     expect(reader.latestModel("s1")).toBe("m1");
+    reader.close();
+  });
+});
+
+describe("TranscriptReader · 模型选择/模型调用探针（stage-8 Round B）", () => {
+  it("latestModelSelection：嵌套三元组优先，time_created 最新者胜", () => {
+    insertSessionEntry(dbPath, {
+      sessionId: "s1",
+      id: "entry-old",
+      timeCreated: 1,
+      data: { modelSelection: { providerId: "p1", modelId: "m1", options: { reasoningLevel: "high" } } },
+    });
+    insertSessionEntry(dbPath, {
+      sessionId: "s1",
+      id: "entry-new",
+      timeCreated: 2,
+      data: { modelSelection: { providerId: "p2", modelId: "m2" } },
+    });
+    const reader = new TranscriptReader({ dbPath });
+    expect(reader.latestModelSelection("s1")).toEqual({ providerId: "p2", modelId: "m2" });
+    expect(reader.latestModelSelection("s-none")).toBeUndefined();
+    reader.close();
+  });
+
+  it("latestModelSelection：兼容平铺旧行；坏 JSON / 无效形状 → undefined", () => {
+    insertSessionEntry(dbPath, {
+      sessionId: "s-flat",
+      data: { providerId: "p3", modelId: "m3", thoughtLevel: "low" },
+    });
+    const raw = new DatabaseSync(dbPath);
+    raw.prepare(
+      "INSERT INTO session_entry (id, session_id, type, time_created, time_updated, data) VALUES (?,?,?,?,?,?)",
+    ).run("entry-bad", "s-bad", "runtime/model_selection", 1, 1, "{broken");
+    raw.prepare(
+      "INSERT INTO session_entry (id, session_id, type, time_created, time_updated, data) VALUES (?,?,?,?,?,?)",
+    ).run(
+      "entry-invalid",
+      "s-invalid",
+      "runtime/model_selection",
+      1,
+      1,
+      JSON.stringify({ modelSelection: { providerId: "p" }, modelId: "m-top" }),
+    );
+    raw.close();
+    const reader = new TranscriptReader({ dbPath });
+    expect(reader.latestModelSelection("s-flat")).toEqual({
+      providerId: "p3",
+      modelId: "m3",
+      reasoningLevel: "low",
+    });
+    expect(reader.latestModelSelection("s-bad")).toBeUndefined();
+    expect(reader.latestModelSelection("s-invalid")).toBeUndefined();
+    reader.close();
+  });
+
+  it("latestModelUsage：最新记录；variant → reasoningLevel；空 variant/空三元组归一", () => {
+    insertModelUsage(dbPath, { sessionId: "u1", providerId: "p1", modelId: "m1", variant: "high", startedAt: 1 });
+    insertModelUsage(dbPath, { sessionId: "u1", providerId: "p2", modelId: "m2", variant: null, startedAt: 2 });
+    insertModelUsage(dbPath, { sessionId: "u2", providerId: "p3", modelId: "m3", variant: "max", startedAt: 1 });
+    insertModelUsage(dbPath, { sessionId: "u-empty", providerId: " ", modelId: "m4", startedAt: 1 });
+    const reader = new TranscriptReader({ dbPath });
+    expect(reader.latestModelUsage("u1")).toEqual({ providerId: "p2", modelId: "m2" });
+    expect(reader.latestModelUsage("u2")).toEqual({ providerId: "p3", modelId: "m3", reasoningLevel: "max" });
+    expect(reader.latestModelUsage("u-empty")).toBeUndefined();
+    expect(reader.latestModelUsage("u-none")).toBeUndefined();
     reader.close();
   });
 });

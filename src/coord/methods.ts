@@ -17,6 +17,8 @@ import type { JournalTeamStore } from "./store-adapter.js";
 import type { RpcServer } from "./rpc.js";
 import type { ContentBlock, TeamTaskStatus } from "../domain/events.js";
 import type { TaskAction } from "../domain/taskboard.js";
+import type { TeammateProvider } from "../provider/teammate-provider.js";
+import { parseModelSelection, type MemberModelSelection } from "../provider/model-selection.js";
 
 const TASK_ACTIONS: readonly TaskAction[] = [
   "claim",
@@ -36,6 +38,8 @@ export const WAIT_AGENT_GRACE_MS = 5_000;
 export const METHOD_TIMEOUT_OVERRIDES: Readonly<Record<string, number>> = {
   "member.spawn": 180_000,
   "message.send": 30_000,
+  // mid-life setModel = 临时 app-server ready(≤20s)+resume+setModel（各 20s）+ 关停，留裕量。
+  "member.set_model": 60_000,
 };
 
 export function methodTimeoutMs(method: string): number | undefined {
@@ -53,6 +57,8 @@ export interface MethodTableDeps {
   runtime: TeamRuntime;
   store: JournalTeamStore;
   coordinatorBootId: string;
+  /** stage-8 Round C：mid-life 模型修改（host 传入同一 provider 实例）。 */
+  provider?: TeammateProvider;
 }
 
 /** 真方法表（host 装配 + 进程内直执行共用一份）。键序即接口草案 §2 终版方法表。 */
@@ -88,6 +94,8 @@ export function buildTeamMethodTable(deps: MethodTableDeps): Map<string, TeamMet
       | "fork"
       | undefined;
     const model = optionalString(p, "model", "member.spawn");
+    const thoughtLevel = optionalString(p, "thoughtLevel", "member.spawn");
+    const modelSelection = optionalModelSelection(p, "modelSelection", "member.spawn");
     return runtime.roster.spawnTeammate(sessionId, {
       // 空串下沉到域层：name → TEAM_INVALID_MEMBER_NAME；description → <field> must be non-empty。
       name: requireString(p, "name", "member.spawn", { allowEmpty: true }),
@@ -95,11 +103,52 @@ export function buildTeamMethodTable(deps: MethodTableDeps): Map<string, TeamMet
       prompt: requireString(p, "prompt", "member.spawn", { allowEmpty: true }),
       ...(context !== undefined ? { context } : {}),
       ...(model !== undefined ? { model } : {}),
+      ...(modelSelection !== undefined ? { modelSelection } : {}),
+      ...(thoughtLevel !== undefined ? { thoughtLevel } : {}),
     });
   };
   // 首轮持久接收等待最长 120s；服务端/客户端都必须给足裕量（不得先于域层超时）。
   memberSpawn.timeoutMs = 180_000;
   table.set("member.spawn", memberSpawn);
+
+  /**
+   * stage-8 Round C · mid-life 改模型（对话通道）：Lead-only（工具描述即此口径）→ 目标成员
+   * 必须 active → provider.setMemberModel（立即/pending 由 provider 决定）。
+   * member_id 接受成员 id 或 target 名（backend 传工具面的 target 名）。
+   */
+  const memberSetModel: TeamMethodHandler = async (raw) => {
+    const p = asParams(raw, "member.set_model");
+    assertTeamTarget(p, "member.set_model", deps);
+    const sessionId = requireSessionId(p, "member.set_model");
+    if (sessionId !== deps.teamId) {
+      throw new TeamError("TEAM_LEAD_REQUIRED", "only the Team Lead can change teammate models");
+    }
+    const target = requireString(p, "member_id", "member.set_model", { allowEmpty: true });
+    const modelSelection = optionalModelSelection(p, "modelSelection", "member.set_model");
+    const thoughtLevel = optionalString(p, "thoughtLevel", "member.set_model");
+    if (modelSelection === undefined && thoughtLevel === undefined) {
+      throw new TeamError(
+        "TEAM_INVALID_ARGUMENT",
+        'member.set_model requires "modelSelection" or "thoughtLevel"',
+      );
+    }
+    const state = membershipStateLoader(store)();
+    const member = state.members.find((m) => m.id === target || m.name === target);
+    if (member === undefined || member.phase !== "active") {
+      throw new TeamError("TEAM_MEMBER_NOT_FOUND", `active teammate "${target}" not found`);
+    }
+    const provider = deps.provider;
+    if (provider?.setMemberModel === undefined) {
+      throw new TeamError("TEAM_INVALID_ARGUMENT", "this provider does not support changing member models");
+    }
+    return provider.setMemberModel({
+      memberId: member.id,
+      ...(modelSelection !== undefined ? { modelSelection } : {}),
+      ...(thoughtLevel !== undefined ? { thoughtLevel } : {}),
+    });
+  };
+  memberSetModel.timeoutMs = 60_000;
+  table.set("member.set_model", memberSetModel);
 
   // 目标为名字（02 §5.6；冻结参数名 `name`）
   table.set("member.interrupt", async (raw) => {
@@ -357,4 +406,22 @@ function optionalStringArray(p: Record<string, unknown>, key: string, method: st
     throw new TeamError("TEAM_INVALID_ARGUMENT", `${method} param "${key}" must be an array of strings`);
   }
   return v as string[];
+}
+
+/** 结构化模型选择（{providerId, modelId, options?: {reasoningLevel?}}）——形状由共享校验器冻结。 */
+function optionalModelSelection(
+  p: Record<string, unknown>,
+  key: string,
+  method: string,
+): MemberModelSelection | undefined {
+  const v = p[key];
+  if (v === undefined) return undefined;
+  const selection = parseModelSelection(v);
+  if (selection === undefined) {
+    throw new TeamError(
+      "TEAM_INVALID_ARGUMENT",
+      `${method} param "${key}" must be an object with providerId and modelId`,
+    );
+  }
+  return selection;
 }

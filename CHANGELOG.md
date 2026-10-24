@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.2.0 — 2026-10-25
+
+描述：智能体团队：在会话中创建并协调多个 teammate 子会话、共享任务板与成员消息。
+
+- **teammate 模型可配置化**（F33–F36，02 规格 §9.13/§10 修订）：
+  - spawn 默认**继承 Lead 的模型与思考强度**（Lead 会话 `runtime/model_selection` 权威条目 → `model_usage` 兜底；条目不可用时兜底重试一次，origin 只记实际生效者）。
+  - `spawn_teammate` 新增可选参数 `model`（`"providerId$modelId"` 或裸 modelId，经 `team://models` 目录消歧）与 `thoughtLevel`。
+  - 新增第 10 个工具 **`member_set_model`**：mid-life 修改成员模型/思考强度；空闲成员立即生效，运行中成员下一轮生效（pending 标记 + 下轮兜底）。
+  - 新增只读资源 **`team://models`**：模型目录（运行时注册表 `provider_config.json` 白名单投影，含 config.json 回退；**绝不输出 apiKey/baseURL**）。
+  - 面板成员卡右上角**齿轮 → 模型设置弹窗**：provider/模型/思考强度三级联动、当前生效值与来源标识（继承自 Lead / spawn 指定 / 手动修改 / CLI 缺省）、高级模式引导（ZCode 设置加 provider 后刷新；弹窗零凭据输入）。`team_panel_call` 新增 `modelOptions`/`setMemberModel` 两动作——面板通道首个（且唯一）受控变更动作，任务板仍零变更。
+  - 生效机制：会话库 `session_entry(runtime/model_selection)`（`session/setModel`，`persistAsWorkspaceLastUsed:false`），headless `--resume` 每轮自动恢复；一次设置全轮次生效。
+- 测试 697 → 836；视觉基线 72 → 76（重录 28 + 新增 settings 弹窗 4）。
+
 ## 0.1.3 — 2026-10-24
 
 描述：智能体团队：在会话中创建并协调多个 teammate 子会话、共享任务板与成员消息。

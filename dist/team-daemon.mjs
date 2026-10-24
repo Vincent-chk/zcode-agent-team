@@ -3257,8 +3257,8 @@ var require_utils = __commonJS({
       }
       return ind;
     }
-    function removeDotSegments(path20) {
-      let input = path20;
+    function removeDotSegments(path21) {
+      let input = path21;
       const output = [];
       let nextSlash = -1;
       let len = 0;
@@ -3667,8 +3667,8 @@ var require_schemes = __commonJS({
       }
       if (wsComponent.resourceName) {
         const queryIndex = wsComponent.resourceName.indexOf("?");
-        const path20 = queryIndex === -1 ? wsComponent.resourceName : wsComponent.resourceName.slice(0, queryIndex);
-        wsComponent.path = path20 && path20 !== "/" ? path20 : void 0;
+        const path21 = queryIndex === -1 ? wsComponent.resourceName : wsComponent.resourceName.slice(0, queryIndex);
+        wsComponent.path = path21 && path21 !== "/" ? path21 : void 0;
         wsComponent.query = queryIndex === -1 ? void 0 : wsComponent.resourceName.slice(queryIndex + 1);
         wsComponent.resourceName = void 0;
       }
@@ -7181,12 +7181,12 @@ var require_dist = __commonJS({
         throw new Error(`Unknown format "${name}"`);
       return f;
     };
-    function addFormats(ajv, list, fs21, exportName) {
+    function addFormats(ajv, list, fs22, exportName) {
       var _a;
       var _b;
       (_a = (_b = ajv.opts.code).formats) !== null && _a !== void 0 ? _a : _b.formats = (0, codegen_1._)`require("ajv-formats/dist/formats").${exportName}`;
       for (const f of list)
-        ajv.addFormat(f, fs21[f]);
+        ajv.addFormat(f, fs22[f]);
     }
     module.exports = exports = formatsPlugin;
     Object.defineProperty(exports, "__esModule", { value: true });
@@ -7195,8 +7195,9 @@ var require_dist = __commonJS({
 });
 
 // src/daemon.ts
-import fs20 from "node:fs";
-import path19 from "node:path";
+import fs21 from "node:fs";
+import os8 from "node:os";
+import path20 from "node:path";
 import { fileURLToPath as fileURLToPath3 } from "node:url";
 
 // node_modules/zod/v3/external.js
@@ -7677,8 +7678,8 @@ function getErrorMap() {
 
 // node_modules/zod/v3/helpers/parseUtil.js
 var makeIssue = (params) => {
-  const { data, path: path20, errorMaps, issueData } = params;
-  const fullPath = [...path20, ...issueData.path || []];
+  const { data, path: path21, errorMaps, issueData } = params;
+  const fullPath = [...path21, ...issueData.path || []];
   const fullIssue = {
     ...issueData,
     path: fullPath
@@ -7794,11 +7795,11 @@ var errorUtil;
 
 // node_modules/zod/v3/types.js
 var ParseInputLazyPath = class {
-  constructor(parent, value, path20, key) {
+  constructor(parent, value, path21, key) {
     this._cachedPath = [];
     this.parent = parent;
     this.data = value;
-    this._path = path20;
+    this._path = path21;
     this._key = key;
   }
   get path() {
@@ -11436,10 +11437,10 @@ function assignProp(target, prop, value) {
     configurable: true
   });
 }
-function getElementAtPath(obj, path20) {
-  if (!path20)
+function getElementAtPath(obj, path21) {
+  if (!path21)
     return obj;
-  return path20.reduce((acc, key) => acc?.[key], obj);
+  return path21.reduce((acc, key) => acc?.[key], obj);
 }
 function promiseAllObject(promisesObj) {
   const keys = Object.keys(promisesObj);
@@ -11759,11 +11760,11 @@ function aborted(x, startIndex = 0) {
   }
   return false;
 }
-function prefixIssues(path20, issues) {
+function prefixIssues(path21, issues) {
   return issues.map((iss) => {
     var _a;
     (_a = iss).path ?? (_a.path = []);
-    iss.path.unshift(path20);
+    iss.path.unshift(path21);
     return iss;
   });
 }
@@ -20448,6 +20449,44 @@ async function callCoordinator(teamDir, teamId, method, params, opts = {}) {
   }
 }
 
+// src/provider/model-selection.ts
+var DEFAULT_REASONING_LEVEL = "max";
+function parseModelSpec(spec) {
+  const trimmed = spec.trim();
+  if (trimmed.length === 0) throw new Error("model spec is empty");
+  const cut = trimmed.indexOf("$");
+  if (cut < 0) return { modelId: trimmed };
+  const providerId = trimmed.slice(0, cut).trim();
+  const modelId = trimmed.slice(cut + 1).trim();
+  if (providerId.length === 0 || modelId.length === 0) {
+    throw new Error(`invalid model spec "${trimmed}": providerId and modelId are both required`);
+  }
+  return { providerId, modelId };
+}
+function parseModelSelection(value) {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return void 0;
+  const record2 = value;
+  const providerId = nonEmptyString(record2.providerId);
+  const modelId = nonEmptyString(record2.modelId);
+  if (providerId === void 0 || modelId === void 0) return void 0;
+  const options = record2.options;
+  if (options !== void 0 && (typeof options !== "object" || options === null || Array.isArray(options))) {
+    return void 0;
+  }
+  let reasoningLevel;
+  const rawLevel = options !== void 0 ? options.reasoningLevel : record2.reasoningLevel;
+  if (rawLevel !== void 0) {
+    reasoningLevel = nonEmptyString(rawLevel);
+    if (reasoningLevel === void 0) return void 0;
+  }
+  return { providerId, modelId, ...reasoningLevel !== void 0 ? { reasoningLevel } : {} };
+}
+function nonEmptyString(value) {
+  if (typeof value !== "string") return void 0;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : void 0;
+}
+
 // src/coord/methods.ts
 var TASK_ACTIONS = [
   "claim",
@@ -20462,7 +20501,9 @@ var TASK_ACTIONS = [
 var WAIT_AGENT_GRACE_MS = 5e3;
 var METHOD_TIMEOUT_OVERRIDES = {
   "member.spawn": 18e4,
-  "message.send": 3e4
+  "message.send": 3e4,
+  // mid-life setModel = 临时 app-server ready(≤20s)+resume+setModel（各 20s）+ 关停，留裕量。
+  "member.set_model": 6e4
 };
 function methodTimeoutMs(method) {
   return METHOD_TIMEOUT_OVERRIDES[method];
@@ -20491,17 +20532,54 @@ function buildTeamMethodTable(deps) {
     const sessionId = requireSessionId(p, "member.spawn");
     const context = optionalString(p, "context", "member.spawn", { enum: ["fresh", "fork"] });
     const model = optionalString(p, "model", "member.spawn");
+    const thoughtLevel = optionalString(p, "thoughtLevel", "member.spawn");
+    const modelSelection = optionalModelSelection(p, "modelSelection", "member.spawn");
     return runtime.roster.spawnTeammate(sessionId, {
       // 空串下沉到域层：name → TEAM_INVALID_MEMBER_NAME；description → <field> must be non-empty。
       name: requireString(p, "name", "member.spawn", { allowEmpty: true }),
       description: requireString(p, "description", "member.spawn", { allowEmpty: true }),
       prompt: requireString(p, "prompt", "member.spawn", { allowEmpty: true }),
       ...context !== void 0 ? { context } : {},
-      ...model !== void 0 ? { model } : {}
+      ...model !== void 0 ? { model } : {},
+      ...modelSelection !== void 0 ? { modelSelection } : {},
+      ...thoughtLevel !== void 0 ? { thoughtLevel } : {}
     });
   };
   memberSpawn.timeoutMs = 18e4;
   table.set("member.spawn", memberSpawn);
+  const memberSetModel = async (raw) => {
+    const p = asParams(raw, "member.set_model");
+    assertTeamTarget(p, "member.set_model", deps);
+    const sessionId = requireSessionId(p, "member.set_model");
+    if (sessionId !== deps.teamId) {
+      throw new TeamError("TEAM_LEAD_REQUIRED", "only the Team Lead can change teammate models");
+    }
+    const target = requireString(p, "member_id", "member.set_model", { allowEmpty: true });
+    const modelSelection = optionalModelSelection(p, "modelSelection", "member.set_model");
+    const thoughtLevel = optionalString(p, "thoughtLevel", "member.set_model");
+    if (modelSelection === void 0 && thoughtLevel === void 0) {
+      throw new TeamError(
+        "TEAM_INVALID_ARGUMENT",
+        'member.set_model requires "modelSelection" or "thoughtLevel"'
+      );
+    }
+    const state = membershipStateLoader(store)();
+    const member = state.members.find((m) => m.id === target || m.name === target);
+    if (member === void 0 || member.phase !== "active") {
+      throw new TeamError("TEAM_MEMBER_NOT_FOUND", `active teammate "${target}" not found`);
+    }
+    const provider = deps.provider;
+    if (provider?.setMemberModel === void 0) {
+      throw new TeamError("TEAM_INVALID_ARGUMENT", "this provider does not support changing member models");
+    }
+    return provider.setMemberModel({
+      memberId: member.id,
+      ...modelSelection !== void 0 ? { modelSelection } : {},
+      ...thoughtLevel !== void 0 ? { thoughtLevel } : {}
+    });
+  };
+  memberSetModel.timeoutMs = 6e4;
+  table.set("member.set_model", memberSetModel);
   table.set("member.interrupt", async (raw) => {
     const p = asParams(raw, "member.interrupt");
     assertTeamTarget(p, "member.interrupt", deps);
@@ -20700,6 +20778,18 @@ function optionalStringArray(p, key, method) {
     throw new TeamError("TEAM_INVALID_ARGUMENT", `${method} param "${key}" must be an array of strings`);
   }
   return v;
+}
+function optionalModelSelection(p, key, method) {
+  const v = p[key];
+  if (v === void 0) return void 0;
+  const selection = parseModelSelection(v);
+  if (selection === void 0) {
+    throw new TeamError(
+      "TEAM_INVALID_ARGUMENT",
+      `${method} param "${key}" must be an object with providerId and modelId`
+    );
+  }
+  return selection;
 }
 
 // src/domain/lifecycle.ts
@@ -21032,6 +21122,8 @@ var TeamRoster = class {
           // 对齐轮：0.2.1 初始任务不含身份前缀
           context,
           model: args.model,
+          ...args.modelSelection !== void 0 ? { modelSelection: args.modelSelection } : {},
+          ...args.thoughtLevel !== void 0 ? { thoughtLevel: args.thoughtLevel } : {},
           signal
         });
       } catch (err) {
@@ -21164,6 +21256,7 @@ var TeamRoster = class {
     this.requireMember(callerId);
     const state = this.loadState();
     const presentation = this.deps.presentation;
+    const leadModel = presentation?.leadModelOf?.() ?? this.deps.leadModel;
     const rows = [
       {
         target: "lead",
@@ -21171,7 +21264,7 @@ var TeamRoster = class {
         // availability(root)：Lead 调用方视角恒 running；teammate 视角无法观测宿主 Lead 回合，
         // 保守呈 inactive（D19 登记）。此前恒 running 会让 teammate 的 noProgress 捷径失效。
         status: callerId === state.id ? "running" : "inactive",
-        ...this.deps.leadModel !== void 0 ? { model: this.deps.leadModel } : {},
+        ...leadModel !== void 0 ? { model: leadModel } : {},
         diagnostics: []
       }
     ];
@@ -21827,11 +21920,15 @@ var MockProvider = class {
   drainCalls = 0;
   startCalls = 0;
   deliverCalls = 0;
+  /** setMemberModel 调用记录（参数原样；断言工具面/方法表转发用）。 */
+  modelSetCalls = [];
   program = {};
   deliverScript = [];
+  modelSetScript = [];
   programWith(program) {
     this.program = program;
     this.deliverScript = program.deliverResults ? [...program.deliverResults] : [];
+    this.modelSetScript = program.modelSetResults ? [...program.modelSetResults] : [];
     return this;
   }
   async startContinuable(args) {
@@ -21853,6 +21950,8 @@ var MockProvider = class {
       name: args.name,
       context: args.context,
       model: args.model,
+      modelSelection: args.modelSelection,
+      thoughtLevel: args.thoughtLevel,
       firstPrompt: args.firstPrompt,
       alive: true,
       received: /* @__PURE__ */ new Set(),
@@ -21883,6 +21982,8 @@ var MockProvider = class {
           name: args.memberId,
           context: "fresh",
           model: void 0,
+          modelSelection: void 0,
+          thoughtLevel: void 0,
           firstPrompt: "",
           alive: false,
           received: /* @__PURE__ */ new Set(),
@@ -21986,7 +22087,31 @@ var MockProvider = class {
     return this.isAlive(memberId) ? "running" : "inactive";
   }
   modelOf(memberId) {
-    return this.teamChildren.get(memberId)?.model;
+    const child = this.teamChildren.get(memberId);
+    return child?.modelSelection?.modelId ?? child?.model;
+  }
+  /** Lead 行模型桩（可编程；缺省 undefined → roster 回落 deps.leadModel）。 */
+  leadModelOf() {
+    return this.program.leadModel;
+  }
+  /** Lead 当前结构化选择桩（backend 裸 id 消歧：先 Lead provider）。 */
+  leadModelSelectionOf() {
+    return this.program.leadModelSelection;
+  }
+  /** mid-life 改模型桩（不落盘；按脚本返回 now/next-turn/throw）。 */
+  async setMemberModel(args) {
+    this.modelSetCalls.push({
+      memberId: args.memberId,
+      ...args.modelSelection !== void 0 ? { modelSelection: args.modelSelection } : {},
+      ...args.thoughtLevel !== void 0 ? { thoughtLevel: args.thoughtLevel } : {}
+    });
+    const verdict = this.modelSetScript.length > 0 ? this.modelSetScript.shift() : "now";
+    if (verdict === "throw") throw new Error(`mock setMemberModel failure for ${args.memberId}`);
+    if (verdict === "now" && args.modelSelection !== void 0) {
+      const child = this.teamChildren.get(args.memberId);
+      if (child !== void 0) child.modelSelection = args.modelSelection;
+    }
+    return { applied: verdict };
   }
   newId() {
     return randomUUID2();
@@ -22318,7 +22443,8 @@ var TeamCoordinatorHost = class _TeamCoordinatorHost {
       teamId: this.teamId,
       runtime,
       store,
-      coordinatorBootId: this.lock.info?.bootId ?? bootId()
+      coordinatorBootId: this.lock.info?.bootId ?? bootId(),
+      provider: this.provider
     });
     registerTeamMethods(server2, table);
     await server2.listen({ callTimeoutMs: this.opts.callTimeoutMs });
@@ -22449,6 +22575,269 @@ function noProgressResult() {
   return { timedOut: false, noProgress: { reason: NO_PROGRESS_REASON, message: NO_PROGRESS_MESSAGE } };
 }
 
+// src/provider/model-catalog.ts
+import fs8 from "node:fs";
+import os3 from "node:os";
+import path7 from "node:path";
+function defaultModelConfigPath(homedir = os3.homedir()) {
+  return path7.join(homedir, ".zcode", "v2", "config.json");
+}
+function defaultProviderConfigPath(homedir = os3.homedir()) {
+  return path7.join(homedir, ".zcode", "v2", "provider_config.json");
+}
+function readModelCatalogDetailed(homedir = os3.homedir()) {
+  const registry2 = readRegistryCatalog(homedir);
+  if ("catalog" in registry2) {
+    return { catalog: registry2.catalog, source: "provider-config" };
+  }
+  const registryError = "error" in registry2 ? registry2.error : void 0;
+  const legacy = readLegacyCatalog(homedir);
+  return {
+    ...legacy,
+    source: "config-json",
+    ...legacy.error !== void 0 ? { error: registryError !== void 0 ? `${registryError}; ${legacy.error}` : legacy.error } : registryError !== void 0 ? { warning: registryError } : {}
+  };
+}
+function readModelCatalog(homedir = os3.homedir()) {
+  return readModelCatalogDetailed(homedir).catalog;
+}
+function createModelCatalogReader(homedir = os3.homedir(), onError) {
+  const watched = [defaultProviderConfigPath(homedir), defaultModelConfigPath(homedir)];
+  let key = null;
+  let cached2 = { providers: [] };
+  let error2;
+  const reader = () => {
+    const parts = watched.map((file) => {
+      try {
+        const stat = fs8.statSync(file);
+        return `${file}:${stat.mtimeMs}:${stat.size}`;
+      } catch {
+        return `${file}:missing`;
+      }
+    });
+    const nextKey = parts.join("|");
+    if (nextKey === key) return cached2;
+    const result = readModelCatalogDetailed(homedir);
+    error2 = result.error;
+    const diagnose = result.error ?? result.warning;
+    if (diagnose !== void 0) onError?.(diagnose);
+    key = nextKey;
+    cached2 = result.catalog;
+    return cached2;
+  };
+  reader.lastError = () => error2;
+  return reader;
+}
+function findCatalogProvider(catalog, providerId) {
+  return catalog.providers.find((p) => p.providerId === providerId);
+}
+function findCatalogModel(catalog, providerId, modelId) {
+  return findCatalogProvider(catalog, providerId)?.models.find((m) => m.id === modelId);
+}
+function enabledProvidersOffering(catalog, modelId) {
+  return catalog.providers.filter((p) => p.enabled && p.models.some((m) => m.id === modelId && m.enabled !== false)).map((p) => p.providerId);
+}
+function reasoningVariantsOf(model) {
+  return model?.reasoning?.variants;
+}
+function defaultReasoningLevel(catalog, providerId, modelId) {
+  const model = findCatalogModel(catalog, providerId, modelId);
+  const variants = model?.reasoning?.variants;
+  const preferred = model?.reasoning?.defaultVariant;
+  if (preferred !== void 0 && (variants === void 0 || variants.includes(preferred))) return preferred;
+  if (variants === void 0) return DEFAULT_REASONING_LEVEL;
+  return variants.includes(DEFAULT_REASONING_LEVEL) ? DEFAULT_REASONING_LEVEL : variants[0] ?? DEFAULT_REASONING_LEVEL;
+}
+function applyReasoningDefault(catalog, selection) {
+  if (selection.reasoningLevel !== void 0) return selection;
+  return {
+    ...selection,
+    reasoningLevel: defaultReasoningLevel(catalog, selection.providerId, selection.modelId)
+  };
+}
+function readRegistryCatalog(homedir) {
+  const file = defaultProviderConfigPath(homedir);
+  let doc;
+  try {
+    doc = JSON.parse(fs8.readFileSync(file, "utf8"));
+  } catch (err) {
+    if (err.code === "ENOENT") return { missing: true };
+    return { error: `provider registry unavailable: ${err instanceof Error ? err.message : String(err)}` };
+  }
+  const config3 = doc?.config;
+  if (config3 === null || typeof config3 !== "object" || Array.isArray(config3)) {
+    return { error: "provider registry unavailable: config is not an object" };
+  }
+  const cfg = config3;
+  const order = cfg.providerOrder;
+  const rules = cfg.providerConfigRules?.providerRules;
+  if (!Array.isArray(order) || !Array.isArray(rules)) {
+    return { error: "provider registry unavailable: providerOrder/providerRules is not an array" };
+  }
+  const ruleById = /* @__PURE__ */ new Map();
+  for (const raw of rules) {
+    if (raw === null || typeof raw !== "object" || Array.isArray(raw)) continue;
+    const rule = raw;
+    const providerId = nonEmpty(rule.providerId);
+    if (providerId !== void 0) ruleById.set(providerId, rule);
+  }
+  const modelRules = registryModelRules(cfg);
+  const legacyReasoning = readLegacyReasoning(homedir);
+  const providers = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const rawId of order) {
+    const providerId = nonEmpty(rawId);
+    if (providerId === void 0 || seen.has(providerId)) continue;
+    seen.add(providerId);
+    const rule = ruleById.get(providerId);
+    const ruleConfig = recordOf(rule?.config);
+    const models = [];
+    const modelSeen = /* @__PURE__ */ new Set();
+    for (const rawModel of arrayOf(ruleConfig?.modelOrder)) {
+      const id = nonEmpty(rawModel);
+      if (id === void 0 || modelSeen.has(id)) continue;
+      modelSeen.add(id);
+      const ruleConfigForModel = modelRules.get(modelKey(providerId, id));
+      const enabled = ruleConfigForModel?.enabled !== false;
+      const reasoning = legacyReasoning.get(modelKey(providerId, id)) ?? registryReasoning(ruleConfigForModel);
+      models.push({
+        id,
+        enabled,
+        ...reasoning !== void 0 ? { reasoning } : {}
+      });
+    }
+    providers.push({
+      providerId,
+      name: nonEmpty(rule?.providerName) ?? providerId,
+      // api.type 是协议族（anthropic/openai-responses…）——只取该字符串，绝不带 baseUrl。
+      kind: nonEmpty(recordOf(ruleConfig?.api)?.type) ?? "unknown",
+      enabled: true,
+      models
+    });
+  }
+  return { catalog: { providers } };
+}
+function registryModelRules(cfg) {
+  const rules = cfg.modelConfigRules?.providerModelRules;
+  const out = /* @__PURE__ */ new Map();
+  for (const raw of arrayOf(rules)) {
+    if (raw === null || typeof raw !== "object" || Array.isArray(raw)) continue;
+    const rule = raw;
+    const providerId = nonEmpty(rule.providerId);
+    const modelId = nonEmpty(rule.modelId);
+    if (providerId === void 0 || modelId === void 0) continue;
+    out.set(modelKey(providerId, modelId), recordOf(rule.config) ?? {});
+  }
+  return out;
+}
+function registryReasoning(rule) {
+  const specs = recordOf(rule?.optionSpecs);
+  const level = recordOf(specs?.reasoningLevel);
+  return catalogReasoning({ variants: level?.values });
+}
+function readLegacyCatalog(homedir) {
+  const file = defaultModelConfigPath(homedir);
+  const doc = readJsonOrUndefined(file);
+  if ("error" in doc) {
+    return { catalog: { providers: [] }, error: `model catalog unavailable: ${doc.error}` };
+  }
+  const rawProviders = doc.value?.provider;
+  if (rawProviders === null || typeof rawProviders !== "object" || Array.isArray(rawProviders)) {
+    return { catalog: { providers: [] }, error: "model catalog unavailable: config.provider is not an object" };
+  }
+  const providers = [];
+  for (const [providerId, raw] of Object.entries(rawProviders)) {
+    if (providerId.length === 0 || raw === null || typeof raw !== "object" || Array.isArray(raw)) continue;
+    const record2 = raw;
+    const enabled = record2.enabled !== false;
+    const disabledReason = enabled ? void 0 : nonEmpty(record2.systemDisabledReason) ?? "disabled";
+    providers.push({
+      providerId,
+      name: nonEmpty(record2.name) ?? providerId,
+      kind: nonEmpty(record2.kind) ?? "unknown",
+      enabled,
+      ...disabledReason !== void 0 ? { disabledReason } : {},
+      models: legacyModels(record2.models)
+    });
+  }
+  return { catalog: { providers } };
+}
+function legacyModels(raw) {
+  const models = [];
+  if (raw !== null && typeof raw === "object" && !Array.isArray(raw)) {
+    for (const [id, value] of Object.entries(raw)) {
+      const model = legacyModel(id, value);
+      if (model !== void 0) models.push(model);
+    }
+    return models;
+  }
+  if (Array.isArray(raw)) {
+    for (const value of raw) {
+      const id = nonEmpty(value?.id);
+      const model = legacyModel(id ?? "", value);
+      if (model !== void 0) models.push(model);
+    }
+  }
+  return models;
+}
+function legacyModel(id, raw) {
+  if (id.length === 0) return void 0;
+  const record2 = raw !== null && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+  const reasoning = catalogReasoning(record2.reasoning);
+  return { id, enabled: true, ...reasoning !== void 0 ? { reasoning } : {} };
+}
+function readLegacyReasoning(homedir) {
+  const out = /* @__PURE__ */ new Map();
+  const doc = readJsonOrUndefined(defaultModelConfigPath(homedir));
+  if ("error" in doc) return out;
+  const rawProviders = doc.value?.provider;
+  if (rawProviders === null || typeof rawProviders !== "object" || Array.isArray(rawProviders)) return out;
+  for (const [providerId, raw] of Object.entries(rawProviders)) {
+    const record2 = recordOf(raw);
+    const models = recordOf(record2?.models);
+    if (models === void 0) continue;
+    for (const [modelId, modelRaw] of Object.entries(models)) {
+      const reasoning = catalogReasoning(recordOf(modelRaw)?.reasoning);
+      if (reasoning !== void 0) out.set(modelKey(providerId, modelId), reasoning);
+    }
+  }
+  return out;
+}
+function catalogReasoning(raw) {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return void 0;
+  const record2 = raw;
+  if (record2.enabled === false) return void 0;
+  if (!Array.isArray(record2.variants)) return void 0;
+  const variants = [...new Set(record2.variants.map(nonEmpty).filter((v) => v !== void 0))];
+  if (variants.length === 0) return void 0;
+  const defaultVariant = nonEmpty(record2.defaultVariant);
+  return {
+    variants,
+    ...defaultVariant !== void 0 && variants.includes(defaultVariant) ? { defaultVariant } : {}
+  };
+}
+function modelKey(providerId, modelId) {
+  return `${providerId}\0${modelId}`;
+}
+function recordOf(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? value : void 0;
+}
+function arrayOf(value) {
+  return Array.isArray(value) ? value : [];
+}
+function readJsonOrUndefined(file) {
+  try {
+    return { value: JSON.parse(fs8.readFileSync(file, "utf8")) };
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : String(err) };
+  }
+}
+function nonEmpty(value) {
+  if (typeof value !== "string") return void 0;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : void 0;
+}
+
 // src/mcp/backend.ts
 var WAIT_PROGRESS_INTERVAL_MS = 9e3;
 var WAIT_DEFAULT_TIMEOUT_MS = 3e4;
@@ -22475,6 +22864,7 @@ var TeamToolBackend = class {
     let entry = this.teams.get(teamId);
     if (entry === void 0) {
       const provider = this.opts.providerFactory !== void 0 ? this.opts.providerFactory(teamId) : this.opts.provider !== void 0 ? this.opts.provider : void 0;
+      const resolvedProvider = provider;
       const opening = TeamCoordinatorHost.open({
         dataRoot: this.opts.dataRoot,
         teamId,
@@ -22482,7 +22872,14 @@ var TeamToolBackend = class {
         ...provider !== void 0 ? { provider } : {},
         warn: this.opts.warn
       });
-      entry = { host: null, opening, lastUsedAt: this.now(), inflight: 0 };
+      entry = {
+        host: null,
+        opening,
+        // 缺省装配（host 内部 new MockProvider）时拿不到实例 → 模型消歧退化为「按目录唯一命中」。
+        ...resolvedProvider !== void 0 ? { provider: resolvedProvider } : {},
+        lastUsedAt: this.now(),
+        inflight: 0
+      };
       const self = entry;
       void opening.then(
         (host) => {
@@ -22567,20 +22964,138 @@ var TeamToolBackend = class {
       throw new AggregateError(errors, "Agent Teams tool backend close failed");
     }
   }
-  // ---------------------------------------------------------------- 9 工具操作
+  // ---------------------------------------------------------------- 10 工具操作
   /** spawn_teammate（02 §9.3；context 缺省 fresh 由域层承担；〔对齐轮〕0.2.1：初始任务不含身份前缀）。
-   *  参数原值直传——类型/枚举守卫在方法表 requireString/optionalString（冻结消息）。 */
+   *  参数原值直传——类型/枚举守卫在方法表 requireString/optionalString（冻结消息）。
+   *  stage-8：model（"providerId$modelId" / 裸 id）在此按目录消歧成结构化选择；thoughtLevel 并入
+   *  选择的 reasoningLevel（目录不可用时原样透传）。 */
   async spawnTeammate(identity, args) {
-    return this.withHost(
-      identity.teamId,
-      async (host) => await host.dispatch("member.spawn", {
+    return this.withHost(identity.teamId, async (host) => {
+      const modelSelection = this.resolveModelArgs(identity, args.model, args.thoughtLevel);
+      return await host.dispatch("member.spawn", {
         session_id: identity.agentId,
         name: args.name,
         description: args.description,
         prompt: args.prompt,
-        ...args.context !== void 0 ? { context: args.context } : {}
-      })
+        ...args.context !== void 0 ? { context: args.context } : {},
+        ...args.model !== void 0 ? { model: args.model } : {},
+        ...modelSelection !== void 0 ? { modelSelection: wireModelSelection(modelSelection) } : {},
+        // thoughtLevel 只在「无结构化选择」时单独下发（有选择时强度已并入 selection）。
+        ...modelSelection === void 0 && args.thoughtLevel !== void 0 ? { thoughtLevel: args.thoughtLevel } : {}
+      });
+    });
+  }
+  /**
+   * member_set_model（02 §9.13）：target 存在性（active）先校验 → model 规格按目录消歧 →
+   * host.dispatch 到协调者（provider.setMemberModel 决定 now/next-turn）。
+   */
+  async setMemberModel(identity, args) {
+    const target = args.target;
+    return this.withHost(identity.teamId, async (host) => {
+      const modelSelection = this.resolveModelArgs(identity, args.model, args.thoughtLevel);
+      const rows = await this.memberRows(host, identity);
+      if (typeof target === "string" && target === "lead") {
+        throw new TeamError("TEAM_INVALID_TARGET", "target must be a teammate; the Lead model is session-scoped");
+      }
+      const row = rows.find((r) => r.target === target && r.role === "teammate");
+      if (row === void 0 || row.status === "failed" || row.status === "provisioning") {
+        throw new TeamError("TEAM_MEMBER_NOT_FOUND", `active teammate "${String(target)}" not found`);
+      }
+      return await host.dispatch("member.set_model", {
+        session_id: identity.agentId,
+        member_id: target,
+        ...modelSelection !== void 0 ? { modelSelection: wireModelSelection(modelSelection) } : {},
+        ...modelSelection === void 0 && args.thoughtLevel !== void 0 ? { thoughtLevel: args.thoughtLevel } : {}
+      });
+    });
+  }
+  /** list_agents 的行派生（协调者 = roster 全保真；代理 = 本地重放派生）。 */
+  async memberRows(host, identity) {
+    const runtime = host.teamRuntime;
+    if (runtime !== null) {
+      return runtime.roster.listMembers(identity.agentId).members;
+    }
+    const loaded = await host.readBoard();
+    requireMembership(
+      () => {
+        if (loaded.state.failure !== void 0) throw new Error(loaded.state.failure);
+        return loaded.state;
+      },
+      identity.agentId
     );
+    return memberRowsFromState(loaded.state.id, loaded.state.members, identity.agentId);
+  }
+  /** 模型目录（注入优先；读取失败/漂移 → 空目录）。 */
+  catalog() {
+    return (this.opts.modelCatalog ?? (() => readModelCatalog()))();
+  }
+  /** Lead 当前 provider（裸 id 消歧优先级 1）；provider 不支持或无记录 → undefined。 */
+  leadProviderId(teamId) {
+    const provider = this.teams.get(teamId)?.provider;
+    return provider?.leadModelSelectionOf?.()?.providerId;
+  }
+  /**
+   * model/thoughtLevel → 结构化选择。
+   * - model 给出：解析规格（全称 → 目录含该 provider 时必须含该 model，否则报错列模型清单；
+   *   目录没有该 provider 如 `account:` 形态 → 原样透传，server 是最终裁判。裸 id → Lead 当前
+   *   provider → enabled provider；多处命中报错列候选）。
+   * - model 缺省 + thoughtLevel：不构造选择（provider 侧按成员/Lead 现有模型合并）。
+   * - thoughtLevel 校验：目录里有该模型时按 variants 校验；无该模型/目录不可用 → 原样透传。
+   * - 档位缺省由 provider 层统一补齐（resume-provider#withReasoningDefault：defaultVariant → "max"），
+   *   本层只校验不补值——工具面返回的就是用户显式选择。
+   */
+  resolveModelArgs(identity, rawModel, rawThoughtLevel) {
+    const thoughtLevel = typeof rawThoughtLevel === "string" && rawThoughtLevel.trim().length > 0 ? rawThoughtLevel.trim() : void 0;
+    if (rawModel === void 0) return void 0;
+    if (typeof rawModel !== "string") {
+      throw invalidModel('param "model" must be a string');
+    }
+    const catalog = this.catalog();
+    let spec;
+    try {
+      spec = parseModelSpec(rawModel);
+    } catch (err) {
+      throw invalidModel(err instanceof Error ? err.message : String(err));
+    }
+    let providerId;
+    if ("providerId" in spec) {
+      providerId = spec.providerId;
+      const provider = findCatalogProvider(catalog, providerId);
+      if (provider !== void 0) {
+        const model = provider.models.find((m) => m.id === spec.modelId);
+        if (model === void 0) {
+          const available = provider.models.map((m) => m.id);
+          throw invalidModel(
+            `model "${spec.modelId}" not found in provider "${providerId}" (available: ${available.length > 0 ? available.join(", ") : "none"})`
+          );
+        }
+        if (model.enabled === false) {
+          throw invalidModel(`model "${spec.modelId}" is disabled in provider "${providerId}"`);
+        }
+      }
+    } else {
+      const candidates = enabledProvidersOffering(catalog, spec.modelId);
+      const leadProvider = this.leadProviderId(identity.teamId);
+      if (leadProvider !== void 0 && candidates.includes(leadProvider)) {
+        providerId = leadProvider;
+      } else if (candidates.length === 0) {
+        throw invalidModel(
+          catalog.providers.length === 0 ? `model catalog unavailable: use "providerId$modelId" for "${spec.modelId}"` : `model "${spec.modelId}" not found in any enabled provider`
+        );
+      } else if (candidates.length > 1) {
+        throw invalidModel(
+          `model "${spec.modelId}" is ambiguous; use providerId$modelId (candidates: ${candidates.join(", ")})`
+        );
+      } else {
+        providerId = candidates[0];
+      }
+    }
+    const selection = { providerId, modelId: spec.modelId };
+    if (thoughtLevel !== void 0) {
+      validateThoughtLevel(catalog, providerId, spec.modelId, thoughtLevel);
+      selection.reasoningLevel = thoughtLevel;
+    }
+    return selection;
   }
   /** send_message（02 §9.5；内容映射 content=[{type:"text",text:message}]，target 原值直传）。
    *  〔对齐轮〕0.2.1：工具层输出 {sent:true}（不暴露 messageId；投递状态为内部适配层）。 */
@@ -22597,21 +23112,7 @@ var TeamToolBackend = class {
   }
   /** list_agents（02 §9.6；输出 MEMBER_VIEW[]，Lead 伪行 target="lead"）。 */
   async listAgents(identity) {
-    return this.withHost(identity.teamId, async (host) => {
-      const runtime = host.teamRuntime;
-      if (runtime !== null) {
-        return runtime.roster.listMembers(identity.agentId).members;
-      }
-      const loaded = await host.readBoard();
-      requireMembership(
-        () => {
-          if (loaded.state.failure !== void 0) throw new Error(loaded.state.failure);
-          return loaded.state;
-        },
-        identity.agentId
-      );
-      return memberRowsFromState(loaded.state.id, loaded.state.members, identity.agentId);
-    });
+    return this.withHost(identity.teamId, (host) => this.memberRows(host, identity));
   }
   /** interrupt_agent（02 §9.8；Lead-only 域层校验，工具层不放宽；target 原值直传）。
    *  〔对齐轮〕0.2.1 D3：interrupt=false 时本工具未注册——调用按「未知工具」拒绝（handlers 承担）。 */
@@ -22738,6 +23239,27 @@ var TeamToolBackend = class {
     return ["Task"];
   }
 };
+function invalidModel(message) {
+  return new TeamError("TEAM_INVALID_ARGUMENT", message);
+}
+function wireModelSelection(selection) {
+  return {
+    providerId: selection.providerId,
+    modelId: selection.modelId,
+    ...selection.reasoningLevel !== void 0 ? { options: { reasoningLevel: selection.reasoningLevel } } : {}
+  };
+}
+function validateThoughtLevel(catalog, providerId, modelId, thoughtLevel) {
+  const model = findCatalogModel(catalog, providerId, modelId);
+  if (model === void 0) return;
+  const variants = reasoningVariantsOf(model);
+  if (variants === void 0 || variants.length === 0) return;
+  if (!variants.includes(thoughtLevel)) {
+    throw invalidModel(
+      `thoughtLevel "${thoughtLevel}" is not supported by model ${modelId} (variants: ${variants.join(", ")})`
+    );
+  }
+}
 function isValidTimeout(value) {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= WAIT_MIN_TIMEOUT_MS && value <= WAIT_MAX_TIMEOUT_MS;
 }
@@ -22794,6 +23316,14 @@ var TEAM_TOOL_DEFINITIONS = [
           type: "string",
           enum: ["fresh", "fork"],
           description: "fresh starts without Lead history; fork inherits completed Lead turns. Defaults to fresh."
+        },
+        model: {
+          type: "string",
+          description: 'Optional model as "providerId$modelId" or a bare modelId from the team://models resource. Defaults to inheriting the Lead model.'
+        },
+        thoughtLevel: {
+          type: "string",
+          description: 'Optional reasoning level for the model (one of its variants from team://models, for example "high").'
         }
       },
       required: ["name", "description", "prompt"],
@@ -22840,6 +23370,30 @@ var TEAM_TOOL_DEFINITIONS = [
         target: {
           type: "string",
           description: "Teammate target returned by spawn_teammate or list_agents."
+        }
+      },
+      required: ["target"],
+      additionalProperties: false
+    }
+  },
+  {
+    // 02 §9.13（stage-8 Round C）
+    name: "member_set_model",
+    description: 'Change the model or reasoning level of one teammate. A running target applies it on its next turn; an idle target applies it immediately. Use "providerId$modelId" or a bare modelId; list models with the team://models resource. Team Lead only.',
+    inputSchema: {
+      type: "object",
+      properties: {
+        target: {
+          type: "string",
+          description: "Teammate target returned by spawn_teammate or list_agents."
+        },
+        model: {
+          type: "string",
+          description: 'Model as "providerId$modelId" or a bare modelId from team://models.'
+        },
+        thoughtLevel: {
+          type: "string",
+          description: "Reasoning level (one of the model's variants); omit to keep the model default."
         }
       },
       required: ["target"],
@@ -22999,10 +23553,10 @@ function withFailLoud(result, identity) {
 }
 
 // src/mcp/identity.ts
-import fs8 from "node:fs";
-import path7 from "node:path";
+import fs9 from "node:fs";
+import path8 from "node:path";
 function sessionMapPath(dataRoot) {
-  return path7.join(dataRoot, "session-map.json");
+  return path8.join(dataRoot, "session-map.json");
 }
 function safeSessionKey(sessionId) {
   return sessionId.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 128);
@@ -23016,12 +23570,12 @@ function withRegistryLock(dataRoot, fn) {
   let fd = null;
   while (Date.now() - started < 2e3) {
     try {
-      fd = fs8.openSync(lock, "wx", 384);
+      fd = fs9.openSync(lock, "wx", 384);
       break;
     } catch {
       try {
-        const stat = fs8.statSync(lock);
-        if (Date.now() - stat.mtimeMs > 5e3) fs8.unlinkSync(lock);
+        const stat = fs9.statSync(lock);
+        if (Date.now() - stat.mtimeMs > 5e3) fs9.unlinkSync(lock);
       } catch {
       }
       const until = Date.now() + 20;
@@ -23034,8 +23588,8 @@ function withRegistryLock(dataRoot, fn) {
   } finally {
     if (fd !== null) {
       try {
-        fs8.closeSync(fd);
-        fs8.unlinkSync(lock);
+        fs9.closeSync(fd);
+        fs9.unlinkSync(lock);
       } catch {
       }
     }
@@ -23043,7 +23597,7 @@ function withRegistryLock(dataRoot, fn) {
 }
 function readSessionRegistry(dataRoot) {
   try {
-    const parsed = JSON.parse(fs8.readFileSync(sessionMapPath(dataRoot), "utf8"));
+    const parsed = JSON.parse(fs9.readFileSync(sessionMapPath(dataRoot), "utf8"));
     if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return {};
     return parsed;
   } catch {
@@ -23053,18 +23607,18 @@ function readSessionRegistry(dataRoot) {
 function upsertSessionEntry(dataRoot, sessionId, patch) {
   const file = sessionMapPath(dataRoot);
   try {
-    fs8.mkdirSync(path7.dirname(file), { recursive: true });
+    fs9.mkdirSync(path8.dirname(file), { recursive: true });
     withRegistryLock(dataRoot, () => {
       let registry2 = {};
       try {
-        const parsed = JSON.parse(fs8.readFileSync(file, "utf8"));
+        const parsed = JSON.parse(fs9.readFileSync(file, "utf8"));
         if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
           registry2 = parsed;
         }
       } catch (err) {
         if (err.code !== "ENOENT") {
           try {
-            fs8.renameSync(file, `${file}.corrupt-${Date.now()}`);
+            fs9.renameSync(file, `${file}.corrupt-${Date.now()}`);
           } catch {
           }
         }
@@ -23073,14 +23627,14 @@ function upsertSessionEntry(dataRoot, sessionId, patch) {
       const prior = registry2[key] ?? {};
       registry2[key] = { ...prior, ...patch, session_id: sessionId };
       const tmp = `${file}.tmp-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
-      const fd = fs8.openSync(tmp, "w", 384);
+      const fd = fs9.openSync(tmp, "w", 384);
       try {
-        fs8.writeFileSync(fd, JSON.stringify(registry2, null, 2));
-        fs8.fsyncSync(fd);
+        fs9.writeFileSync(fd, JSON.stringify(registry2, null, 2));
+        fs9.fsyncSync(fd);
       } finally {
-        fs8.closeSync(fd);
+        fs9.closeSync(fd);
       }
-      fs8.renameSync(tmp, file);
+      fs9.renameSync(tmp, file);
     });
   } catch {
   }
@@ -23183,7 +23737,9 @@ async function dispatch(opts, identity, tool) {
         name: args.name,
         description: args.description,
         prompt: args.prompt,
-        ...args.context !== void 0 ? { context: args.context } : {}
+        ...args.context !== void 0 ? { context: args.context } : {},
+        ...args.model !== void 0 ? { model: args.model } : {},
+        ...args.thoughtLevel !== void 0 ? { thoughtLevel: args.thoughtLevel } : {}
       });
     case "send_message":
       guardNonEmptyString(args.message, "message");
@@ -23193,6 +23749,15 @@ async function dispatch(opts, identity, tool) {
     case "interrupt_agent":
       if (!backend2.interruptEnabled) throw new TypeError("unsupported team tool: interrupt_agent");
       return backend2.interruptAgent(identity, { target: args.target });
+    case "member_set_model":
+      if (args.model === void 0 && args.thoughtLevel === void 0) {
+        throw invalidArg('param "model" or "thoughtLevel" is required');
+      }
+      return backend2.setMemberModel(identity, {
+        target: args.target,
+        ...args.model !== void 0 ? { model: args.model } : {},
+        ...args.thoughtLevel !== void 0 ? { thoughtLevel: args.thoughtLevel } : {}
+      });
     case "wait_agent":
       return backend2.waitAgent(
         identity,
@@ -23304,54 +23869,55 @@ function buildProgressSink(input, notifier) {
 
 // src/provider/resume-provider.ts
 import { createHash as createHash2 } from "node:crypto";
-import fs17 from "node:fs";
-import path16 from "node:path";
+import fs18 from "node:fs";
+import path17 from "node:path";
 
 // src/provider/lead-wake.ts
-import fs11 from "node:fs";
-import path10 from "node:path";
+import fs12 from "node:fs";
+import path11 from "node:path";
 
 // src/provider/procgroup.ts
 import { execFile } from "node:child_process";
-import fs10 from "node:fs";
-import path9 from "node:path";
+import fs11 from "node:fs";
+import path10 from "node:path";
 import { fileURLToPath } from "node:url";
 
 // src/provider/member-files.ts
-import fs9 from "node:fs";
-import path8 from "node:path";
+import fs10 from "node:fs";
+import path9 from "node:path";
 function memberPaths(teamDir, memberId) {
-  const memberDir = path8.join(teamDir, "members", memberId);
-  const runDir = path8.join(memberDir, "run");
+  const memberDir = path9.join(teamDir, "members", memberId);
+  const runDir = path9.join(memberDir, "run");
   return {
     memberDir,
-    originFile: path8.join(memberDir, "origin.json"),
-    receiptsFile: path8.join(memberDir, "receipts.jsonl"),
-    stopBudgetFile: path8.join(memberDir, "stop-budget.json"),
+    originFile: path9.join(memberDir, "origin.json"),
+    receiptsFile: path9.join(memberDir, "receipts.jsonl"),
+    stopBudgetFile: path9.join(memberDir, "stop-budget.json"),
     runDir,
-    currentFile: path8.join(runDir, "current.json"),
-    drainMarkerFile: path8.join(runDir, "drain-requested.json")
+    currentFile: path9.join(runDir, "current.json"),
+    drainMarkerFile: path9.join(runDir, "drain-requested.json"),
+    modelPendingFile: path9.join(memberDir, "model-pending.json")
   };
 }
 function turnFile(runDir, turnId) {
-  return path8.join(runDir, `${turnId}.json`);
+  return path9.join(runDir, `${turnId}.json`);
 }
 function writeJsonAtomic(file, value) {
-  fs9.mkdirSync(path8.dirname(file), { recursive: true, mode: 448 });
+  fs10.mkdirSync(path9.dirname(file), { recursive: true, mode: 448 });
   const tmp = `${file}.tmp-${process.pid}-${Date.now()}`;
-  const fd = fs9.openSync(tmp, "w", 384);
+  const fd = fs10.openSync(tmp, "w", 384);
   try {
-    fs9.writeFileSync(fd, JSON.stringify(value, null, 2));
-    fs9.fsyncSync(fd);
+    fs10.writeFileSync(fd, JSON.stringify(value, null, 2));
+    fs10.fsyncSync(fd);
   } finally {
-    fs9.closeSync(fd);
+    fs10.closeSync(fd);
   }
-  fs9.renameSync(tmp, file);
+  fs10.renameSync(tmp, file);
 }
 function readJson(file) {
   let raw;
   try {
-    raw = fs9.readFileSync(file, "utf8");
+    raw = fs10.readFileSync(file, "utf8");
   } catch (err) {
     if (err.code === "ENOENT") return void 0;
     throw err;
@@ -23379,12 +23945,12 @@ function readCurrentTurnId(paths) {
 function listTurns(runDir) {
   let names;
   try {
-    names = fs9.readdirSync(runDir);
+    names = fs10.readdirSync(runDir);
   } catch (err) {
     if (err.code === "ENOENT") return [];
     throw err;
   }
-  return names.filter((n) => /^turn-\d+\.json$/.test(n)).sort((a, b) => turnNumber(a) - turnNumber(b)).map((n) => readJson(path8.join(runDir, n))).filter((t) => t !== void 0);
+  return names.filter((n) => /^turn-\d+\.json$/.test(n)).sort((a, b) => turnNumber(a) - turnNumber(b)).map((n) => readJson(path9.join(runDir, n))).filter((t) => t !== void 0);
 }
 function turnNumber(name) {
   return Number(name.slice("turn-".length, -".json".length));
@@ -23392,7 +23958,7 @@ function turnNumber(name) {
 function nextTurnId(runDir) {
   let names = [];
   try {
-    names = fs9.readdirSync(runDir);
+    names = fs10.readdirSync(runDir);
   } catch {
   }
   let max = 0;
@@ -23402,19 +23968,19 @@ function nextTurnId(runDir) {
   return `turn-${max + 1}`;
 }
 function appendReceipt(paths, receipt) {
-  fs9.mkdirSync(path8.dirname(paths.receiptsFile), { recursive: true, mode: 448 });
-  const fd = fs9.openSync(paths.receiptsFile, "a", 384);
+  fs10.mkdirSync(path9.dirname(paths.receiptsFile), { recursive: true, mode: 448 });
+  const fd = fs10.openSync(paths.receiptsFile, "a", 384);
   try {
-    fs9.writeFileSync(fd, JSON.stringify(receipt) + "\n");
-    fs9.fsyncSync(fd);
+    fs10.writeFileSync(fd, JSON.stringify(receipt) + "\n");
+    fs10.fsyncSync(fd);
   } finally {
-    fs9.closeSync(fd);
+    fs10.closeSync(fd);
   }
 }
 function readReceipts(paths) {
   let raw;
   try {
-    raw = fs9.readFileSync(paths.receiptsFile, "utf8");
+    raw = fs10.readFileSync(paths.receiptsFile, "utf8");
   } catch (err) {
     if (err.code === "ENOENT") return [];
     throw err;
@@ -23437,12 +24003,12 @@ function writeStopBudget(paths, budget) {
 }
 
 // src/provider/procgroup.ts
-var HELPER_DEFAULT = path9.join(path9.dirname(fileURLToPath(import.meta.url)), "detach-helper.mjs");
+var HELPER_DEFAULT = path10.join(path10.dirname(fileURLToPath(import.meta.url)), "detach-helper.mjs");
 var SPAWN_HELPER_TIMEOUT_MS = 1e4;
 async function spawnDetached(spec) {
-  const dir = path9.dirname(spec.stdoutFile);
-  const specFile = spec.specFile ?? path9.join(dir, `${path9.basename(spec.stdoutFile, ".out")}.spec.json`);
-  const resultFile = spec.resultFile ?? path9.join(dir, `${path9.basename(spec.stdoutFile, ".out")}.spawn.json`);
+  const dir = path10.dirname(spec.stdoutFile);
+  const specFile = spec.specFile ?? path10.join(dir, `${path10.basename(spec.stdoutFile, ".out")}.spec.json`);
+  const resultFile = spec.resultFile ?? path10.join(dir, `${path10.basename(spec.stdoutFile, ".out")}.spawn.json`);
   const specDoc = {
     command: spec.command,
     argv: spec.argv,
@@ -23466,7 +24032,7 @@ async function spawnDetached(spec) {
   });
   let result;
   try {
-    result = JSON.parse(fs10.readFileSync(resultFile, "utf8"));
+    result = JSON.parse(fs11.readFileSync(resultFile, "utf8"));
   } catch (err) {
     throw new Error(`detach helper produced no result file: ${err instanceof Error ? err.message : String(err)}`);
   }
@@ -23527,17 +24093,17 @@ var WAKE_COOLDOWN_MS = 3e4;
 var WAKE_LOCK_STALE_MS = 12e4;
 var WAKE_PROMPT = "[agent-team] \u4F60\u6709\u5F85\u6536\u56E2\u961F\u6D88\u606F\u3002\u8BF7\u53EA\u5904\u7406\u6536\u4EF6\u7BB1\uFF08\u8BFB\u53D6\u5E76\u56DE\u590D\u6458\u8981\uFF09\uFF0C\u4E0D\u8981\u6267\u884C\u5176\u4ED6\u4EFB\u52A1\u3002";
 function leadDir(teamDir) {
-  return path10.join(teamDir, "lead");
+  return path11.join(teamDir, "lead");
 }
 function leadStatePath(teamDir) {
-  return path10.join(leadDir(teamDir), "state.json");
+  return path11.join(leadDir(teamDir), "state.json");
 }
 function wakeLockPath(teamDir) {
-  return path10.join(leadDir(teamDir), "wake.lock");
+  return path11.join(leadDir(teamDir), "wake.lock");
 }
 function readLeadState(teamDir) {
   try {
-    const parsed = JSON.parse(fs11.readFileSync(leadStatePath(teamDir), "utf8"));
+    const parsed = JSON.parse(fs12.readFileSync(leadStatePath(teamDir), "utf8"));
     if (typeof parsed.active !== "boolean" || typeof parsed.updatedAt !== "string") return void 0;
     return parsed;
   } catch {
@@ -23546,35 +24112,35 @@ function readLeadState(teamDir) {
 }
 function writeLeadState(teamDir, state) {
   const dir = leadDir(teamDir);
-  fs11.mkdirSync(dir, { recursive: true });
+  fs12.mkdirSync(dir, { recursive: true });
   const file = leadStatePath(teamDir);
   const tmp = `${file}.tmp-${process.pid}`;
-  const fd = fs11.openSync(tmp, "w", 384);
+  const fd = fs12.openSync(tmp, "w", 384);
   try {
-    fs11.writeFileSync(fd, JSON.stringify(state, null, 2));
-    fs11.fsyncSync(fd);
+    fs12.writeFileSync(fd, JSON.stringify(state, null, 2));
+    fs12.fsyncSync(fd);
   } finally {
-    fs11.closeSync(fd);
+    fs12.closeSync(fd);
   }
-  fs11.renameSync(tmp, file);
+  fs12.renameSync(tmp, file);
 }
 function acquireLock(teamDir, now2) {
   const dir = leadDir(teamDir);
-  fs11.mkdirSync(dir, { recursive: true });
+  fs12.mkdirSync(dir, { recursive: true });
   const file = wakeLockPath(teamDir);
   try {
-    const fd = fs11.openSync(file, "wx", 384);
-    fs11.writeFileSync(fd, JSON.stringify({ pid: process.pid, at: now2 }));
-    fs11.closeSync(fd);
+    const fd = fs12.openSync(file, "wx", 384);
+    fs12.writeFileSync(fd, JSON.stringify({ pid: process.pid, at: now2 }));
+    fs12.closeSync(fd);
     return true;
   } catch {
     try {
-      const stat = fs11.statSync(file);
+      const stat = fs12.statSync(file);
       if (now2 - stat.mtimeMs > WAKE_LOCK_STALE_MS) {
-        fs11.unlinkSync(file);
-        const fd = fs11.openSync(file, "wx", 384);
-        fs11.writeFileSync(fd, JSON.stringify({ pid: process.pid, at: now2 }));
-        fs11.closeSync(fd);
+        fs12.unlinkSync(file);
+        const fd = fs12.openSync(file, "wx", 384);
+        fs12.writeFileSync(fd, JSON.stringify({ pid: process.pid, at: now2 }));
+        fs12.closeSync(fd);
         return true;
       }
     } catch {
@@ -23584,7 +24150,7 @@ function acquireLock(teamDir, now2) {
 }
 function releaseLock(teamDir) {
   try {
-    fs11.unlinkSync(wakeLockPath(teamDir));
+    fs12.unlinkSync(wakeLockPath(teamDir));
   } catch {
   }
 }
@@ -23605,9 +24171,9 @@ async function maybeWakeLead(args) {
     }
   }
   if (!acquireLock(args.teamDir, now2)) return Promise.resolve({ woke: false, reason: "wake-locked" });
-  const runDir = path10.join(leadDir(args.teamDir), "run");
-  fs11.mkdirSync(runDir, { recursive: true });
-  const stdoutFile = path10.join(runDir, `wake-${now2}.out`);
+  const runDir = path11.join(leadDir(args.teamDir), "run");
+  fs12.mkdirSync(runDir, { recursive: true });
+  const stdoutFile = path11.join(runDir, `wake-${now2}.out`);
   try {
     const argv = [
       ...args.zcode.argvPrefix,
@@ -23647,12 +24213,12 @@ function leadWakeEnabled() {
 }
 
 // src/provider/transcript.ts
-import fs12 from "node:fs";
-import os3 from "node:os";
-import path11 from "node:path";
+import fs13 from "node:fs";
+import os4 from "node:os";
+import path12 from "node:path";
 import { DatabaseSync } from "node:sqlite";
 function defaultDbPath() {
-  return process.env.TEAM_DB_PATH ?? path11.join(os3.homedir(), ".zcode", "cli", "db", "db.sqlite");
+  return process.env.TEAM_DB_PATH ?? path12.join(os4.homedir(), ".zcode", "cli", "db", "db.sqlite");
 }
 var TranscriptReader = class {
   dbPath;
@@ -23666,14 +24232,14 @@ var TranscriptReader = class {
   }
   /** 库不存在 = 空库语义（探针方法走缺省值，不建临时库）。 */
   missing() {
-    if (!this.dbMissing) this.dbMissing = !fs12.existsSync(this.dbPath);
-    else if (!fs12.existsSync(this.dbPath)) return true;
+    if (!this.dbMissing) this.dbMissing = !fs13.existsSync(this.dbPath);
+    else if (!fs13.existsSync(this.dbPath)) return true;
     else this.dbMissing = false;
     return this.dbMissing;
   }
   open() {
     if (this.db !== null) return this.db;
-    if (!fs12.existsSync(this.dbPath)) {
+    if (!fs13.existsSync(this.dbPath)) {
       throw new Error("transcript db missing");
     }
     this.db = new DatabaseSync(this.dbPath, { readOnly: true });
@@ -23759,6 +24325,51 @@ var TranscriptReader = class {
          ORDER BY m.sequence DESC LIMIT 1`
     ).get(sessionId);
     return row?.model;
+  }
+  /**
+   * 会话库中最近一次 setModel 的选择（Round A 实证：条目为 UPSERT 单行，canonical id
+   * `<sessionId>:runtime-model-selection`，时间排序安全）。data 取嵌套 modelSelection 优先；
+   * 兼容旧行把 providerId/modelId/thoughtLevel 平铺在顶层的形态。
+   */
+  latestModelSelection(sessionId) {
+    if (this.missing()) return void 0;
+    const row = this.open().prepare(
+      `SELECT data FROM session_entry
+         WHERE session_id = ? AND type = 'runtime/model_selection'
+         ORDER BY time_created DESC LIMIT 1`
+    ).get(sessionId);
+    if (row === void 0) return void 0;
+    const data = parseOrNull(row.data);
+    if (data === null) return void 0;
+    const nested = parseModelSelection(data.modelSelection);
+    if (nested !== void 0) return nested;
+    const providerId = typeof data.providerId === "string" ? data.providerId.trim() : "";
+    const modelId = typeof data.modelId === "string" ? data.modelId.trim() : "";
+    if (providerId.length === 0 || modelId.length === 0) return void 0;
+    const thoughtLevel = typeof data.thoughtLevel === "string" ? data.thoughtLevel.trim() : "";
+    return {
+      providerId,
+      modelId,
+      ...thoughtLevel.length > 0 ? { reasoningLevel: thoughtLevel } : {}
+    };
+  }
+  /** 最近一次真实模型调用（session_entry 缺失时的继承兜底；variant = 思考强度）。 */
+  latestModelUsage(sessionId) {
+    if (this.missing()) return void 0;
+    const row = this.open().prepare(
+      `SELECT provider_id, model_id, variant FROM model_usage
+         WHERE session_id = ? ORDER BY started_at DESC LIMIT 1`
+    ).get(sessionId);
+    if (row === void 0) return void 0;
+    const providerId = row.provider_id.trim();
+    const modelId = row.model_id.trim();
+    if (providerId.length === 0 || modelId.length === 0) return void 0;
+    const variant = typeof row.variant === "string" ? row.variant.trim() : "";
+    return {
+      providerId,
+      modelId,
+      ...variant.length > 0 ? { reasoningLevel: variant } : {}
+    };
   }
   /** 完成回合导出（D3 fork 转录）：真实用户消息 + 助手文本；tool 部分记工具名。 */
   exportTurns(sessionId) {
@@ -23918,8 +24529,8 @@ function truncateTurns(turns, maxChars) {
 }
 
 // src/provider/zcode-bin.ts
-import fs13 from "node:fs";
-import path12 from "node:path";
+import fs14 from "node:fs";
+import path13 from "node:path";
 import { execFileSync } from "node:child_process";
 var DESKTOP_ZCODE_CJS = "/Applications/ZCode.app/Contents/Resources/glm/zcode.cjs";
 function resolveZcodeBin(env = process.env) {
@@ -23929,10 +24540,10 @@ function resolveZcodeBin(env = process.env) {
   }
   const rg = env.ZCODE_RG_BINARY;
   if (rg && rg.trim()) {
-    const derived = path12.join(path12.dirname(path12.dirname(path12.dirname(rg))), "glm", "zcode.cjs");
-    if (fs13.existsSync(derived)) return binFor(derived, "rg-derive");
+    const derived = path13.join(path13.dirname(path13.dirname(path13.dirname(rg))), "glm", "zcode.cjs");
+    if (fs14.existsSync(derived)) return binFor(derived, "rg-derive");
   }
-  if (fs13.existsSync(DESKTOP_ZCODE_CJS)) return binFor(DESKTOP_ZCODE_CJS, "desktop-default");
+  if (fs14.existsSync(DESKTOP_ZCODE_CJS)) return binFor(DESKTOP_ZCODE_CJS, "desktop-default");
   try {
     const which = execFileSync("which", ["zcode"], { encoding: "utf8" }).trim();
     if (which.length > 0) return binFor(which, "which");
@@ -23950,18 +24561,18 @@ function binFor(p, source) {
 }
 
 // src/provider/session-breeder.ts
-import fs16 from "node:fs";
-import os6 from "node:os";
-import path15 from "node:path";
+import fs17 from "node:fs";
+import os7 from "node:os";
+import path16 from "node:path";
 import { DatabaseSync as DatabaseSync3 } from "node:sqlite";
 
 // src/provider/app-server-client.mjs
 import { execFile as execFile2 } from "node:child_process";
-import fs14 from "node:fs";
-import os4 from "node:os";
-import path13 from "node:path";
+import fs15 from "node:fs";
+import os5 from "node:os";
+import path14 from "node:path";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
-var BRIDGE_DEFAULT = path13.join(path13.dirname(fileURLToPath2(import.meta.url)), "app-server-bridge.mjs");
+var BRIDGE_DEFAULT = path14.join(path14.dirname(fileURLToPath2(import.meta.url)), "app-server-bridge.mjs");
 var AppServerClient = class _AppServerClient {
   #child;
   #specFile;
@@ -23975,13 +24586,13 @@ var AppServerClient = class _AppServerClient {
   #log;
   constructor(opts) {
     this.#log = opts.log;
-    const specDir = fs14.mkdtempSync(path13.join(os4.tmpdir(), "at-appserver-"));
+    const specDir = fs15.mkdtempSync(path14.join(os5.tmpdir(), "at-appserver-"));
     try {
-      fs14.chmodSync(specDir, 448);
+      fs15.chmodSync(specDir, 448);
     } catch {
     }
-    this.#specFile = path13.join(specDir, "spec.json");
-    fs14.writeFileSync(
+    this.#specFile = path14.join(specDir, "spec.json");
+    fs15.writeFileSync(
       this.#specFile,
       JSON.stringify({
         executable: opts.executable,
@@ -24016,7 +24627,7 @@ var AppServerClient = class _AppServerClient {
   }
   /** 校验可执行文件为绝对路径后启动（相对路径/空串一律拒绝）。 */
   static spawn(opts) {
-    if (typeof opts.executable !== "string" || !path13.isAbsolute(opts.executable)) {
+    if (typeof opts.executable !== "string" || !path14.isAbsolute(opts.executable)) {
       throw new Error("app-server executable must be an absolute path");
     }
     return new _AppServerClient(opts);
@@ -24128,7 +24739,7 @@ var AppServerClient = class _AppServerClient {
       });
     }
     try {
-      fs14.rmSync(path13.dirname(this.#specFile), { recursive: true, force: true });
+      fs15.rmSync(path14.dirname(this.#specFile), { recursive: true, force: true });
     } catch {
     }
     this.#log?.({ event: "app-server-closed", stderrTail: this.#stderr.slice(-800) });
@@ -24136,13 +24747,13 @@ var AppServerClient = class _AppServerClient {
 };
 
 // src/sidebar/tasks-index.ts
-import fs15 from "node:fs";
-import os5 from "node:os";
-import path14 from "node:path";
+import fs16 from "node:fs";
+import os6 from "node:os";
+import path15 from "node:path";
 import { DatabaseSync as DatabaseSync2 } from "node:sqlite";
 var ANCHOR_TITLE = "Agent Team anchor";
 function defaultTasksIndexPath() {
-  return process.env.TEAM_TASKS_INDEX ?? path14.join(os5.homedir(), ".zcode", "v2", "tasks-index.sqlite");
+  return process.env.TEAM_TASKS_INDEX ?? path15.join(os6.homedir(), ".zcode", "v2", "tasks-index.sqlite");
 }
 function withRetry(fn, attempts = 3) {
   let last;
@@ -24162,7 +24773,7 @@ function withRetry(fn, attempts = 3) {
 }
 function tombstoneAnchor(input) {
   const dbPath = input.dbPath ?? defaultTasksIndexPath();
-  if (!fs15.existsSync(dbPath)) return { applied: false, reason: "tasks-index-missing" };
+  if (!fs16.existsSync(dbPath)) return { applied: false, reason: "tasks-index-missing" };
   const now2 = input.now ?? Date.now();
   return withRetry(() => {
     const db = new DatabaseSync2(dbPath);
@@ -24231,7 +24842,7 @@ function tombstoneAnchor(input) {
 
 // src/provider/session-breeder.ts
 function defaultSessionDbPath() {
-  return process.env.TEAM_DB_PATH ?? path15.join(os6.homedir(), ".zcode", "cli", "db", "db.sqlite");
+  return process.env.TEAM_DB_PATH ?? path16.join(os7.homedir(), ".zcode", "cli", "db", "db.sqlite");
 }
 var BreedError = class extends Error {
   constructor(code, message) {
@@ -24261,20 +24872,20 @@ var AppServerSessionBreeder = class {
    * anchor 必须建在 Lead 自己的目录，否则 teammate 工具 cwd 会错。
    */
   resolveWorkspace(leadSessionId, fallback) {
-    if (!fs16.existsSync(this.dbPath)) return path15.resolve(fallback);
+    if (!fs17.existsSync(this.dbPath)) return path16.resolve(fallback);
     try {
       const db = new DatabaseSync3(this.dbPath, { readOnly: true });
       try {
         const row = db.prepare("select directory from session where id = ?").get(leadSessionId);
         if (typeof row?.directory === "string" && row.directory.length > 0) {
-          return path15.resolve(row.directory);
+          return path16.resolve(row.directory);
         }
       } finally {
         db.close();
       }
     } catch {
     }
-    return path15.resolve(fallback);
+    return path16.resolve(fallback);
   }
   /**
    * 培育失败清理：把已创建的 anchor 再写一次 tombstone（幂等），防止 child 未建成时
@@ -24354,6 +24965,23 @@ var AppServerSessionBreeder = class {
         throw new BreedError("command-rejected", describeAck("createSelectionSideSession", sideAck));
       }
       childSessionId = createdChildId;
+      let appliedModel;
+      if (input.modelSelection !== void 0) {
+        appliedModel = await this.#trySetModel(client, {
+          teamId: input.teamId,
+          childSessionId,
+          selection: input.modelSelection,
+          which: "primary"
+        });
+        if (appliedModel === void 0 && input.modelFallback !== void 0) {
+          appliedModel = await this.#trySetModel(client, {
+            teamId: input.teamId,
+            childSessionId,
+            selection: input.modelFallback,
+            which: "fallback"
+          });
+        }
+      }
       if (anchorSessionId === null || childSessionId === null) {
         throw new BreedError("unsupported", "session breeding produced no anchor/child id");
       }
@@ -24366,7 +24994,13 @@ var AppServerSessionBreeder = class {
         tombstone,
         elapsedMs
       });
-      return { anchorSessionId, childSessionId, elapsedMs, workspacePath };
+      return {
+        anchorSessionId,
+        childSessionId,
+        elapsedMs,
+        workspacePath,
+        ...appliedModel !== void 0 ? { appliedModel } : {}
+      };
     } catch (err) {
       const stderr = client.getStderr().slice(-800);
       if (err instanceof BreedError) {
@@ -24403,6 +25037,91 @@ var AppServerSessionBreeder = class {
       await client.close();
     }
   }
+  /**
+   * mid-life 修改模型（Round A PoC-2 已证）：临时 app-server 实例 → `session/resume {sessionId}`
+   * 重新激活会话 → `session/setModel`。返回 applied 而非抛错：调用方据此决定「立即生效」或
+   * 落 pending 兜底（下一轮 launchTurn 前重试）。
+   * resume/setModel 的 result 是巨型消息快照——只记成功/失败与目标三元组，绝不整包落日志。
+   */
+  async applyModelSelection(input) {
+    const readyTimeoutMs = input.timeoutMs ?? this.readyTimeoutMs;
+    let client;
+    try {
+      client = this.#spawnClient(input.workspacePath);
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      this.log({ event: "model-apply-failed", sessionId: input.sessionId, reason });
+      return { applied: false, reason };
+    }
+    try {
+      const ready = await client.waitReady(readyTimeoutMs);
+      if (!ready) {
+        const reason = `app-server did not become ready within ${readyTimeoutMs}ms`;
+        this.log({ event: "model-apply-failed", sessionId: input.sessionId, reason });
+        return { applied: false, reason };
+      }
+      await client.rpc("session/resume", { sessionId: input.sessionId }, 2e4);
+      await this.#setModel(client, input.sessionId, input.selection);
+      this.log({
+        event: "model-applied",
+        sessionId: input.sessionId,
+        providerId: input.selection.providerId,
+        modelId: input.selection.modelId,
+        reasoningLevel: input.selection.reasoningLevel ?? null
+      });
+      return { applied: true };
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      this.log({ event: "model-apply-failed", sessionId: input.sessionId, reason });
+      return { applied: false, reason };
+    } finally {
+      await client.close();
+    }
+  }
+  /**
+   * 应用一次模型选择并返回是否生效（primary / fallback 共用）。失败只留痕不抛：
+   * 主选失败记 `model-set-failed`，兜底失败记 `model-set-fallback-failed`；
+   * 任一成功记 `model-set`（含 which），供排障区分「继承生效」与「降级到兜底」。
+   * result 是巨型消息快照（PoC 事实 1）：只记目标三元组与错误文本，绝不整包落日志。
+   */
+  async #trySetModel(client, args) {
+    const { selection } = args;
+    const target = {
+      teamId: args.teamId,
+      childSessionId: args.childSessionId,
+      providerId: selection.providerId,
+      modelId: selection.modelId,
+      reasoningLevel: selection.reasoningLevel ?? null
+    };
+    try {
+      await this.#setModel(client, args.childSessionId, selection);
+      this.log({ event: "model-set", ...target, which: args.which });
+      return selection;
+    } catch (err) {
+      this.log({
+        event: args.which === "primary" ? "model-set-failed" : "model-set-fallback-failed",
+        ...target,
+        message: err instanceof Error ? err.message : String(err)
+      });
+      return void 0;
+    }
+  }
+  /** setModel 请求体（createChild / applyModelSelection 共用；persistAsWorkspaceLastUsed 恒 false）。 */
+  async #setModel(client, sessionId, selection) {
+    await client.rpc(
+      "session/setModel",
+      {
+        sessionId,
+        model: {
+          providerId: selection.providerId,
+          modelId: selection.modelId,
+          ...selection.reasoningLevel !== void 0 ? { options: { reasoningLevel: selection.reasoningLevel } } : {}
+        },
+        persistAsWorkspaceLastUsed: false
+      },
+      2e4
+    );
+  }
   #spawnClient(workspacePath) {
     try {
       return AppServerClient.spawn({
@@ -24432,7 +25151,7 @@ var LEAD_DELIVERY_VIA_HOOKS = true;
 var ResumePerTurnProvider = class {
   constructor(opts) {
     this.opts = opts;
-    this.teamDir = path16.join(opts.dataRoot, "teams", safeDir(opts.teamId));
+    this.teamDir = path17.join(opts.dataRoot, "teams", safeDir(opts.teamId));
     this.cwd = opts.cwd ?? process.env.TEAM_PROJECT_DIR ?? process.cwd();
     this.reader = new TranscriptReader({ ...opts.dbPath !== void 0 ? { dbPath: opts.dbPath } : {} });
     this.zcode = opts.zcode ?? resolveZcodeBin();
@@ -24451,6 +25170,7 @@ var ResumePerTurnProvider = class {
       now: opts.now ?? Date.now
     });
     this.now = opts.now ?? Date.now;
+    this.modelCatalog = opts.modelCatalog ?? (() => readModelCatalog());
     this.sleep = opts.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
     this.log = opts.log ?? (() => {
     });
@@ -24469,6 +25189,7 @@ var ResumePerTurnProvider = class {
   sessionIsolation;
   leadWakeMinIdleMs;
   breeder;
+  modelCatalog;
   now;
   sleep;
   log;
@@ -24614,7 +25335,7 @@ var ResumePerTurnProvider = class {
     const paths = memberPaths(this.teamDir, this.opts.teamId);
     let mtimeMs = null;
     try {
-      mtimeMs = fs17.statSync(paths.receiptsFile).mtimeMs;
+      mtimeMs = fs18.statSync(paths.receiptsFile).mtimeMs;
     } catch {
       mtimeMs = null;
     }
@@ -24632,9 +25353,21 @@ var ResumePerTurnProvider = class {
     }
     const paths = memberPaths(this.teamDir, args.memberId);
     const prompt = args.context === "fork" ? buildForkFirstPrompt(this.reader, this.opts.teamId, args.firstPrompt).prompt : args.firstPrompt;
+    const explicitSelection = args.modelSelection;
+    const inheritedSelections = this.sessionIsolation === "child" && explicitSelection === void 0 ? this.lookupLeadModelSelections() : [];
+    const primarySelection = this.sessionIsolation !== "child" ? void 0 : explicitSelection ?? inheritedSelections[0];
+    const finalSelection = primarySelection !== void 0 && args.thoughtLevel !== void 0 ? { ...primarySelection, reasoningLevel: args.thoughtLevel } : primarySelection;
+    const fallbackSelection = explicitSelection !== void 0 ? void 0 : inheritedSelections[1];
+    const appliedSelection = finalSelection !== void 0 ? this.withReasoningDefault(finalSelection) : void 0;
+    const appliedFallback = fallbackSelection !== void 0 ? this.withReasoningDefault(fallbackSelection) : void 0;
     let bred = null;
     if (this.sessionIsolation === "child") {
-      bred = await this.breeder.createChild({ teamId: this.opts.teamId, workspacePath: this.cwd });
+      bred = await this.breeder.createChild({
+        teamId: this.opts.teamId,
+        workspacePath: this.cwd,
+        ...appliedSelection !== void 0 ? { modelSelection: appliedSelection } : {},
+        ...appliedFallback !== void 0 ? { modelFallback: appliedFallback } : {}
+      });
     }
     const spawnCwd = bred?.workspacePath ?? this.cwd;
     const origin = {
@@ -24651,6 +25384,12 @@ var ResumePerTurnProvider = class {
       sessionId: bred?.childSessionId ?? null,
       initialUserMessageAccepted: false,
       ...args.model !== void 0 ? { model: args.model } : {},
+      // 只记**实际生效**者（BreedResult.appliedModel）：继承条目失败→usage 兜底成功时记 usage；
+      // 两者都没生效则不记（origin 不谎报），modelSource 规则不变。
+      ...bred?.appliedModel !== void 0 ? {
+        modelSelection: bred.appliedModel,
+        modelSource: explicitSelection !== void 0 ? "explicit" : "inherited"
+      } : {},
       sessionIsolation: bred !== null ? "child" : "legacy",
       ...bred !== null ? {
         anchorSessionId: bred.anchorSessionId,
@@ -24708,7 +25447,11 @@ var ResumePerTurnProvider = class {
       if (sessionId !== null) {
         const landed = this.reader.hasUserText(sessionId, origin.firstPromptText);
         if (landed) {
-          const nextOrigin = { ...origin, sessionId, initialUserMessageAccepted: true };
+          const nextOrigin = {
+            ...readOrigin(paths) ?? origin,
+            sessionId,
+            initialUserMessageAccepted: true
+          };
           writeOrigin(paths, nextOrigin);
           const current = readTurn(paths.runDir, turn.turnId) ?? turn;
           writeTurn(paths.runDir, { ...current, sessionId, landed: true });
@@ -24953,8 +25696,61 @@ var ResumePerTurnProvider = class {
   }
   modelOf(memberId) {
     const origin = readOrigin(memberPaths(this.teamDir, memberId));
-    if (origin?.sessionId == null) return void 0;
-    return this.reader.latestModel(origin.sessionId);
+    if (origin === void 0) return void 0;
+    const observed = origin.sessionId !== null ? this.reader.latestModel(origin.sessionId) : void 0;
+    return observed ?? origin.modelSelection?.modelId ?? origin.model;
+  }
+  /** Lead 行模型（roster Lead 伪行）：Lead 会话最近消息实查 → model_usage 兜底。 */
+  leadModelOf() {
+    return this.reader.latestModel(this.opts.teamId) ?? this.reader.latestModelUsage(this.opts.teamId)?.modelId;
+  }
+  /** Lead 当前结构化选择（backend 裸 modelId 消歧用：先 Lead 当前 provider）。 */
+  leadModelSelectionOf() {
+    return this.lookupLeadModelSelection();
+  }
+  /**
+   * stage-8 Round C · mid-life 改模型：空闲 → 立即应用（成功改 origin）；运行中或即时失败 →
+   * 落 pending（下一轮 launchTurn 前兜底应用）。目标会话未落定 → 抛错。
+   */
+  async setMemberModel(args) {
+    const paths = memberPaths(this.teamDir, args.memberId);
+    const origin = readOrigin(paths);
+    if (origin === void 0 || origin.sessionId === null) {
+      throw new Error(`member session not settled: ${args.memberId}`);
+    }
+    const base = args.modelSelection ?? this.currentModelSelection(origin);
+    if (base === void 0) {
+      throw new Error(
+        `member model is unknown: specify a model (providerId$modelId or a catalog model id) for ${args.memberId}`
+      );
+    }
+    const merged = args.thoughtLevel !== void 0 ? { ...base, reasoningLevel: args.thoughtLevel } : base;
+    const selection = this.withReasoningDefault(merged);
+    if (this.currentRunningTurn(paths) !== null) {
+      this.writeModelPending(paths, selection);
+      this.log({
+        ts: iso(this.now()),
+        kind: "model-set-pending",
+        teamId: this.opts.teamId,
+        memberId: args.memberId,
+        reason: "turn-running"
+      });
+      return { applied: "next-turn" };
+    }
+    const result = await this.applySelectionNow(origin.sessionId, origin.cwd, selection, args.memberId);
+    if (result.applied) {
+      this.recordModelSelection(paths, origin, selection);
+      return { applied: "now" };
+    }
+    this.writeModelPending(paths, selection);
+    this.log({
+      ts: iso(this.now()),
+      kind: "model-set-pending",
+      teamId: this.opts.teamId,
+      memberId: args.memberId,
+      reason: result.reason ?? "apply-failed"
+    });
+    return { applied: "next-turn" };
   }
   // ---------------------------------------------------------------- hook 回执（Lead 投递 landed 依据）
   /** hook 注入成功后落回执（hooks 进程与协调者双写者安全：O_APPEND+fsync）。 */
@@ -25000,8 +25796,9 @@ var ResumePerTurnProvider = class {
   /** 孵化一轮（turn 记录先落盘 → spawn → 回填 pid/running）。 */
   async launchTurn(args) {
     const turnId = nextTurnId(args.paths.runDir);
-    const stdoutFile = path16.join(args.paths.runDir, `${turnId}.out`);
+    const stdoutFile = path17.join(args.paths.runDir, `${turnId}.out`);
     const turnCwd = args.cwd ?? this.cwd;
+    await this.applyPendingModelSelection(args.paths, args.sessionId, turnCwd, args.memberId);
     const scriptArgs = [
       ...this.zcode.argvPrefix,
       "-p",
@@ -25073,7 +25870,7 @@ var ResumePerTurnProvider = class {
       messageIds: args.messageIds,
       resume: args.resume,
       // 只记 flag 名；prompt/session id/cwd 值不落 provider.jsonl（隐私/体积）。
-      argv: [path16.basename(scriptArgs[0] ?? ""), ...scriptArgs.slice(1).map((a) => a.startsWith("--") ? a : "<redacted>")]
+      argv: [path17.basename(scriptArgs[0] ?? ""), ...scriptArgs.slice(1).map((a) => a.startsWith("--") ? a : "<redacted>")]
     });
     return running;
   }
@@ -25114,6 +25911,96 @@ var ResumePerTurnProvider = class {
       excludeSessionIds: this.claimedSessionsExcluding(origin.memberId)
     }) ?? null;
   }
+  /** Lead 当前模型选择：setModel 权威条目 → 最近一次 model_usage（都无 = undefined，不调 setModel）。 */
+  lookupLeadModelSelection() {
+    return this.lookupLeadModelSelections()[0];
+  }
+  /** 档位缺省（已有则不覆盖）：目录 defaultVariant → "max"（E-1b 统一落点，backend 不重复补）。 */
+  withReasoningDefault(selection) {
+    return applyReasoningDefault(this.modelCatalog(), selection);
+  }
+  /**
+   * Lead 继承链（至多两档，按序）：`session_entry` 权威条目 → `model_usage` 最近调用。
+   * 去重：两档三元组完全相同则只留一个（避免对同一目标重试一次必败的 setModel）。
+   */
+  lookupLeadModelSelections() {
+    const candidates = [
+      this.reader.latestModelSelection(this.opts.teamId),
+      this.reader.latestModelUsage(this.opts.teamId)
+    ];
+    const out = [];
+    for (const selection of candidates) {
+      if (selection === void 0) continue;
+      if (out.some((existing) => sameModelSelection(existing, selection))) continue;
+      out.push(selection);
+    }
+    return out;
+  }
+  /** 成员当前选择（thoughtLevel-only 修改的基底）：origin 记录 → transcript 条目 → 最近调用。 */
+  currentModelSelection(origin) {
+    if (origin.modelSelection !== void 0) return origin.modelSelection;
+    if (origin.sessionId === null) return void 0;
+    return this.reader.latestModelSelection(origin.sessionId) ?? this.reader.latestModelUsage(origin.sessionId);
+  }
+  /** 立即应用（无培育器能力/失败 → applied:false，由调用方落 pending）。 */
+  async applySelectionNow(sessionId, workspacePath, selection, memberId) {
+    if (this.breeder.applyModelSelection === void 0) {
+      this.log({ ts: iso(this.now()), kind: "model-apply-unsupported", memberId });
+      return { applied: false, reason: "breeder does not support model application" };
+    }
+    try {
+      const result = await this.breeder.applyModelSelection({ sessionId, workspacePath, selection });
+      if (!result.applied) {
+        this.log({
+          ts: iso(this.now()),
+          kind: "model-apply-failed",
+          teamId: this.opts.teamId,
+          memberId,
+          reason: result.reason ?? "unknown"
+        });
+      }
+      return result;
+    } catch (err) {
+      const reason = errText2(err);
+      this.log({ ts: iso(this.now()), kind: "model-apply-failed", teamId: this.opts.teamId, memberId, reason });
+      return { applied: false, reason };
+    }
+  }
+  /** pending 标记落盘（幂等覆盖：最后一次请求胜出）。 */
+  writeModelPending(paths, selection) {
+    writeJsonAtomic(paths.modelPendingFile, { modelSelection: selection, requestedAt: iso(this.now()) });
+  }
+  /** origin 回写（展示/审计；再读一次避免覆盖并发更新）。 */
+  recordModelSelection(paths, origin, selection) {
+    writeOrigin(paths, { ...readOrigin(paths) ?? origin, modelSelection: selection, modelSource: "explicit" });
+  }
+  /** 下一轮拉起前应用 pending（成功删标记并同步 origin；失败保留标记，不阻塞轮次）。 */
+  async applyPendingModelSelection(paths, sessionId, workspacePath, memberId) {
+    if (sessionId === null) return;
+    const pending = readJson(paths.modelPendingFile);
+    if (pending === void 0) return;
+    const selection = parseModelSelection(pending.modelSelection);
+    if (selection === void 0) {
+      this.log({ ts: iso(this.now()), kind: "model-pending-invalid", teamId: this.opts.teamId, memberId });
+      return;
+    }
+    const applied = this.withReasoningDefault(selection);
+    const result = await this.applySelectionNow(sessionId, workspacePath, applied, memberId);
+    if (!result.applied) return;
+    try {
+      fs18.unlinkSync(paths.modelPendingFile);
+    } catch {
+    }
+    const origin = readOrigin(paths);
+    if (origin !== void 0) this.recordModelSelection(paths, origin, applied);
+    this.log({
+      ts: iso(this.now()),
+      kind: "model-pending-applied",
+      teamId: this.opts.teamId,
+      memberId,
+      modelId: applied.modelId
+    });
+  }
   /** daemon 侧补写 teammate 映射（hook 未及写时的兜底；不覆盖已有 teammate 映射）。 */
   writeTeammateMapping(sessionId, origin) {
     const registry2 = readSessionRegistry(this.opts.dataRoot);
@@ -25131,7 +26018,7 @@ var ResumePerTurnProvider = class {
     const marker = readJson(paths.drainMarkerFile);
     if (marker === void 0) return;
     try {
-      fs17.unlinkSync(paths.drainMarkerFile);
+      fs18.unlinkSync(paths.drainMarkerFile);
     } catch {
     }
     if (marker.policy === "kill" && marker.turnId !== void 0) {
@@ -25145,10 +26032,10 @@ var ResumePerTurnProvider = class {
   }
 };
 function listMembers(teamDir) {
-  const membersDir = path16.join(teamDir, "members");
+  const membersDir = path17.join(teamDir, "members");
   let names;
   try {
-    names = fs17.readdirSync(membersDir);
+    names = fs18.readdirSync(membersDir);
   } catch {
     return [];
   }
@@ -25166,13 +26053,16 @@ function iso(ms) {
 function errText2(err) {
   return err instanceof Error ? `${err.name}: ${err.message}` : String(err);
 }
+function sameModelSelection(a, b) {
+  return a.providerId === b.providerId && a.modelId === b.modelId && (a.reasoningLevel ?? "") === (b.reasoningLevel ?? "");
+}
 function drainPolicyFromEnv() {
   return process.env.TEAM_DRAIN_ON_DISPOSE === "kill" ? "kill" : "keep";
 }
 
 // src/panel/view-service.ts
-import fs18 from "node:fs";
-import path17 from "node:path";
+import fs19 from "node:fs";
+import path18 from "node:path";
 
 // src/ui-core/view.ts
 var VIEW_STATE_VERSION = 4;
@@ -25189,7 +26079,7 @@ function emptyViewFrame(generatedAt, sessionId) {
 
 // src/panel/view-service.ts
 function snapshotFile(teamDir) {
-  return path17.join(teamDir, "ui", "view-snapshot.json");
+  return path18.join(teamDir, "ui", "view-snapshot.json");
 }
 function resolveMemberSession(teamDir, dataRoot, memberId) {
   const origin = readOrigin(memberPaths(teamDir, memberId))?.sessionId;
@@ -25201,9 +26091,9 @@ function resolveMemberSession(teamDir, dataRoot, memberId) {
 }
 function replayFingerprint(teamDir) {
   const parts = [];
-  for (const f of [path17.join(teamDir, "events.jsonl"), path17.join(teamDir, "checkpoint.json")]) {
+  for (const f of [path18.join(teamDir, "events.jsonl"), path18.join(teamDir, "checkpoint.json")]) {
     try {
-      const st = fs18.statSync(f);
+      const st = fs19.statSync(f);
       parts.push(`${st.mtimeMs}:${st.size}`);
     } catch {
       parts.push("missing");
@@ -25293,7 +26183,7 @@ var PanelViewService = class {
   async buildFrameForIdentity(identity, nowIso = ts()) {
     const teamId = identity.teamId;
     const paths = teamPaths(this.deps.dataRoot, teamId);
-    if (!fs18.existsSync(paths.eventsFile)) {
+    if (!fs19.existsSync(paths.eventsFile)) {
       const snap = this.readSnapshot(teamId);
       if (snap === void 0) {
         return { ...emptyViewFrame(nowIso, identity.sessionId), team: null };
@@ -25358,10 +26248,10 @@ var PanelViewService = class {
   writeSnapshot(teamId, frame) {
     const file = snapshotFile(teamPaths(this.deps.dataRoot, teamId).teamDir);
     try {
-      fs18.mkdirSync(path17.dirname(file), { recursive: true, mode: 448 });
+      fs19.mkdirSync(path18.dirname(file), { recursive: true, mode: 448 });
       const tmp = `${file}.${process.pid}.tmp`;
-      fs18.writeFileSync(tmp, JSON.stringify(frame), { mode: 384 });
-      fs18.renameSync(tmp, file);
+      fs19.writeFileSync(tmp, JSON.stringify(frame), { mode: 384 });
+      fs19.renameSync(tmp, file);
     } catch (err) {
       this.deps.warn?.(`panel view: snapshot write failed (${err instanceof Error ? err.message : String(err)})`);
     }
@@ -25370,7 +26260,7 @@ var PanelViewService = class {
   readSnapshot(teamId) {
     const file = snapshotFile(teamPaths(this.deps.dataRoot, teamId).teamDir);
     try {
-      const parsed = JSON.parse(fs18.readFileSync(file, "utf8"));
+      const parsed = JSON.parse(fs19.readFileSync(file, "utf8"));
       return parsed.type === "view" && parsed.stateVersion === VIEW_STATE_VERSION ? parsed : void 0;
     } catch {
       return void 0;
@@ -25527,6 +26417,12 @@ async function handlePanelCall(deps, args, meta) {
       }
       return { kind: "detail", detail: await buildDetailCall(deps, args, meta) };
     }
+    if (action === "modelOptions") {
+      return await buildModelOptions(deps, args, meta);
+    }
+    if (action === "setMemberModel") {
+      return await applyMemberModel(deps, args, meta);
+    }
     throw new TeamError("TEAM_INVALID_ARGUMENT", `unknown panel action "${String(action)}"`);
   } catch (err) {
     if (err instanceof TeamError) {
@@ -25566,18 +26462,112 @@ async function buildDetailCall(deps, args, meta) {
 function now(deps) {
   return deps.now !== void 0 ? deps.now() : (/* @__PURE__ */ new Date()).toISOString();
 }
+async function loadPanelMemberContext(deps, meta) {
+  const identity = resolveIdentity({
+    dataRoot: deps.dataRoot,
+    meta,
+    bootTimeMs: deps.bootTimeMs
+  });
+  const paths = teamPaths(deps.dataRoot, identity.teamId);
+  const loaded = await load(paths.teamDir, identity.teamId);
+  requireMembership(() => {
+    if (loaded.state.failure !== void 0) throw new Error(loaded.state.failure);
+    return loaded.state;
+  }, identity.agentId);
+  return { identity, state: loaded.state, teamDir: paths.teamDir };
+}
+function requireActiveMember(state, memberId) {
+  const member = state.members.find((m) => m.id === memberId);
+  if (member === void 0 || member.phase !== "active") {
+    throw new TeamError("TEAM_MEMBER_NOT_FOUND", `active teammate "${memberId}" not found`);
+  }
+  return { id: member.id, name: member.name };
+}
+function currentModelOf(deps, teamDir, dataRoot, memberId) {
+  const origin = readOrigin(memberPaths(teamDir, memberId));
+  const sessionId = resolveMemberSession(teamDir, dataRoot, memberId);
+  const reader = deps.reader ?? new TranscriptReader();
+  if (origin?.modelSelection !== void 0) {
+    const selection = origin.modelSelection;
+    const source = origin.modelSource === "inherited" ? "inherited" : origin.modelSource === "explicit" ? "explicit" : "explicit";
+    return {
+      model: selection.modelId,
+      providerId: selection.providerId,
+      ...selection.reasoningLevel !== void 0 ? { reasoningLevel: selection.reasoningLevel } : {},
+      source
+    };
+  }
+  if (sessionId !== void 0) {
+    const entry = reader.latestModelSelection(sessionId);
+    if (entry !== void 0) {
+      return {
+        model: entry.modelId,
+        providerId: entry.providerId,
+        ...entry.reasoningLevel !== void 0 ? { reasoningLevel: entry.reasoningLevel } : {},
+        source: "observed"
+      };
+    }
+    const observed = reader.latestModel(sessionId);
+    if (observed !== void 0) return { model: observed, source: "observed" };
+  }
+  return { source: "cli-default" };
+}
+async function buildModelOptions(deps, args, meta) {
+  const catalog = (deps.catalog ?? (() => readModelCatalog()))();
+  if (args.memberId === void 0) return { kind: "modelOptions", catalog };
+  if (typeof args.memberId !== "string" || args.memberId.length === 0) {
+    throw new TeamError("TEAM_INVALID_ARGUMENT", 'param "memberId" must be a non-empty string');
+  }
+  const ctx = await loadPanelMemberContext(deps, meta);
+  const member = requireActiveMember(ctx.state, args.memberId);
+  return {
+    kind: "modelOptions",
+    memberId: member.id,
+    memberName: member.name,
+    catalog,
+    current: currentModelOf(deps, ctx.teamDir, deps.dataRoot, member.id)
+  };
+}
+async function applyMemberModel(deps, args, meta) {
+  if (typeof args.memberId !== "string" || args.memberId.length === 0) {
+    throw new TeamError("TEAM_INVALID_ARGUMENT", 'param "memberId" must be a non-empty string');
+  }
+  const hasModel = typeof args.model === "string" && args.model.length > 0;
+  const hasLevel = typeof args.thoughtLevel === "string" && args.thoughtLevel.length > 0;
+  if (args.model !== void 0 && !hasModel) {
+    throw new TeamError("TEAM_INVALID_ARGUMENT", 'param "model" must be a non-empty string');
+  }
+  if (args.thoughtLevel !== void 0 && !hasLevel) {
+    throw new TeamError("TEAM_INVALID_ARGUMENT", 'param "thoughtLevel" must be a non-empty string');
+  }
+  if (!hasModel && !hasLevel) {
+    throw new TeamError("TEAM_INVALID_ARGUMENT", 'param "model" or "thoughtLevel" is required');
+  }
+  const backend2 = deps.backend;
+  if (backend2 === void 0) {
+    throw new TeamError("TEAM_INVALID_ARGUMENT", "model changes are unavailable in this panel session");
+  }
+  const ctx = await loadPanelMemberContext(deps, meta);
+  const member = requireActiveMember(ctx.state, args.memberId);
+  const applied = await backend2.setMemberModel(ctx.identity, {
+    target: member.name,
+    ...hasModel ? { model: args.model } : {},
+    ...hasLevel ? { thoughtLevel: args.thoughtLevel } : {}
+  });
+  return { kind: "modelSet", applied: applied.applied, memberId: member.id };
+}
 
 // src/panel/companion-server.ts
 import crypto3 from "node:crypto";
-import fs19 from "node:fs";
+import fs20 from "node:fs";
 import http from "node:http";
-import path18 from "node:path";
+import path19 from "node:path";
 var COMPANION_REGISTRY_RELPATH = "logs/panel-http.json";
 var SSE_POLL_MS = 500;
 function companionRegistryFile(dataRoot) {
-  const root = path18.resolve(dataRoot);
-  const file = path18.join(root, COMPANION_REGISTRY_RELPATH);
-  if (file !== path18.join(root, "logs", "panel-http.json")) {
+  const root = path19.resolve(dataRoot);
+  const file = path19.join(root, COMPANION_REGISTRY_RELPATH);
+  if (file !== path19.join(root, "logs", "panel-http.json")) {
     throw new Error("companion registry path escapes dataRoot");
   }
   return file;
@@ -25636,7 +26626,7 @@ async function startCompanionServer(deps) {
   }
   function servePage(res) {
     try {
-      const html = fs19.readFileSync(deps.pageFile, "utf8");
+      const html = fs20.readFileSync(deps.pageFile, "utf8");
       res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
       res.end(html);
     } catch (err) {
@@ -25761,14 +26751,14 @@ data: ${JSON.stringify(frame)}
   const addr = server2.address();
   const url = `http://127.0.0.1:${addr.port}/panel?token=${token}`;
   try {
-    fs19.mkdirSync(path18.dirname(registryFile), { recursive: true });
+    fs20.mkdirSync(path19.dirname(registryFile), { recursive: true });
     const tmp = `${registryFile}.${process.pid}.tmp`;
-    fs19.writeFileSync(
+    fs20.writeFileSync(
       tmp,
       JSON.stringify({ port: addr.port, token, pid: process.pid, startedAt: (/* @__PURE__ */ new Date()).toISOString() }),
       { mode: 384 }
     );
-    fs19.renameSync(tmp, registryFile);
+    fs20.renameSync(tmp, registryFile);
   } catch (err) {
     deps.warn?.(`companion registry write failed: ${err instanceof Error ? err.message : String(err)}`);
   }
@@ -25782,8 +26772,8 @@ data: ${JSON.stringify(frame)}
       for (const client of sseClients) client.end();
       sseClients.clear();
       try {
-        const current = JSON.parse(fs19.readFileSync(registryFile, "utf8"));
-        if (current.pid === process.pid) fs19.unlinkSync(registryFile);
+        const current = JSON.parse(fs20.readFileSync(registryFile, "utf8"));
+        if (current.pid === process.pid) fs20.unlinkSync(registryFile);
       } catch {
       }
       await new Promise((resolve) => server2.close(() => resolve()));
@@ -25798,8 +26788,9 @@ function timingSafeEqualStr(a, b) {
 }
 
 // src/daemon.ts
-var __dirname = path19.dirname(fileURLToPath3(import.meta.url));
+var __dirname = path20.dirname(fileURLToPath3(import.meta.url));
 var VIEW_URI = "team://view";
+var MODELS_URI = "team://models";
 var PANEL_URI = "ui://agent-team/team-panel.html";
 var NODE_MIN = 22;
 var BOOT_TIME_MS = Date.now();
@@ -25807,12 +26798,12 @@ var nodeMajor = Number(process.versions.node.split(".")[0]);
 var nodeWarn = nodeMajor < NODE_MIN ? `agent-team daemon \u9700\u8981 Node >= ${NODE_MIN}\uFF08\u5F53\u524D ${process.versions.node}\uFF09\uFF0C\u9762\u677F\u4E0E\u5DE5\u5177\u53EF\u80FD\u4E0D\u53EF\u7528\u3002\u8BF7\u5B89\u88C5 Node 22+\u3002` : null;
 var DATA = dataDir();
 ensurePrivateDir(DATA);
-ensurePrivateDir(path19.join(DATA, "logs"));
-ensurePrivateDir(path19.join(DATA, "meta"));
-ensurePrivateDir(path19.join(DATA, "session-map"));
+ensurePrivateDir(path20.join(DATA, "logs"));
+ensurePrivateDir(path20.join(DATA, "meta"));
+ensurePrivateDir(path20.join(DATA, "session-map"));
 var staleSpecs = cleanupStaleSpecs(DATA);
 var prunedMeta = pruneMetaFiles(DATA);
-appendJsonl(path19.join(DATA, "logs", "daemon-lifecycle.jsonl"), {
+appendJsonl(path20.join(DATA, "logs", "daemon-lifecycle.jsonl"), {
   event: "startup",
   ts: ts(),
   pid: process.pid,
@@ -25835,7 +26826,7 @@ if (nodeWarn) logErr("daemon", nodeWarn);
 var config2 = loadConfig();
 if (!config2.ok) {
   logErr("daemon", config2.error);
-  appendJsonl(path19.join(DATA, "logs", "daemon-lifecycle.jsonl"), {
+  appendJsonl(path20.join(DATA, "logs", "daemon-lifecycle.jsonl"), {
     event: "invalid-config",
     ts: ts(),
     error: config2.error
@@ -25851,7 +26842,7 @@ if (config2.ok) {
   writeRuntimeConfig({ interrupt: interruptEnabled, leadMode, limits: config2.values });
 }
 var sessionIsolation = isolationModeFromEnv();
-var providerLog = (record2) => appendJsonl(path19.join(DATA, "logs", "provider.jsonl"), record2);
+var providerLog = (record2) => appendJsonl(path20.join(DATA, "logs", "provider.jsonl"), record2);
 var backend = new TeamToolBackend({
   dataRoot: DATA,
   limits: config2.ok ? config2.values : DEFAULT_HOST_LIMITS,
@@ -25865,21 +26856,21 @@ var backend = new TeamToolBackend({
   }),
   warn: (m) => logErr("backend", m)
 });
-appendJsonl(path19.join(DATA, "logs", "provider.jsonl"), {
+appendJsonl(path20.join(DATA, "logs", "provider.jsonl"), {
   event: "session-isolation-mode",
   mode: sessionIsolation,
   ts: ts(),
   pid: process.pid
 });
-var signalTestMode = fs20.existsSync(path19.join(DATA, "signal-test"));
-var signalLog = path19.join(DATA, "logs", "signals.jsonl");
+var signalTestMode = fs21.existsSync(path20.join(DATA, "signal-test"));
+var signalLog = path20.join(DATA, "logs", "signals.jsonl");
 for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"]) {
   process.on(sig, () => {
     appendJsonl(signalLog, { sig, ts: ts(), pid: process.pid, mode: signalTestMode ? "observe" : "graceful" });
     logErr("daemon", `signal ${sig} received`);
     if (signalTestMode) return;
     const deadline = setTimeout(() => {
-      appendJsonl(path19.join(DATA, "logs", "daemon-lifecycle.jsonl"), {
+      appendJsonl(path20.join(DATA, "logs", "daemon-lifecycle.jsonl"), {
         event: "dispose-timeout",
         ts: ts(),
         sig,
@@ -25888,14 +26879,14 @@ for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"]) {
       process.exit(0);
     }, 200);
     backend.close().then(() => companion !== null ? companion.close() : void 0).then(() => {
-      appendJsonl(path19.join(DATA, "logs", "daemon-lifecycle.jsonl"), {
+      appendJsonl(path20.join(DATA, "logs", "daemon-lifecycle.jsonl"), {
         event: "dispose-ok",
         ts: ts(),
         sig,
         pid: process.pid
       });
     }).catch((err) => {
-      appendJsonl(path19.join(DATA, "logs", "daemon-lifecycle.jsonl"), {
+      appendJsonl(path20.join(DATA, "logs", "daemon-lifecycle.jsonl"), {
         event: "dispose-failed",
         ts: ts(),
         sig,
@@ -25909,7 +26900,7 @@ for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"]) {
   });
 }
 process.on("exit", (code) => {
-  appendJsonl(path19.join(DATA, "logs", "daemon-lifecycle.jsonl"), { event: "exit", ts: ts(), code, pid: process.pid });
+  appendJsonl(path20.join(DATA, "logs", "daemon-lifecycle.jsonl"), { event: "exit", ts: ts(), code, pid: process.pid });
 });
 var panelView = new PanelViewService({
   dataRoot: DATA,
@@ -25979,6 +26970,10 @@ var panelCallDeps = {
   bootTimeMs: BOOT_TIME_MS,
   reader: new TranscriptReader(),
   bumpCounter: () => view.counter += 1,
+  // stage-8 D：成员模型受控变更复用 Round C backend 通路；目录共用 mtime 缓存读器
+  // （懒引用：读器常量定义在本行之后，避免模块初始化期 TDZ）。
+  backend,
+  catalog: () => readModelsResource(),
   now: ts,
   warn: (m) => logErr("panel-call", m)
 };
@@ -25988,13 +26983,13 @@ if ((process.env.TEAM_COMPANION ?? "") === "1") {
     dataRoot: DATA,
     view: panelView,
     panelCall: panelCallDeps,
-    pageFile: path19.join(__dirname, "ui", "team-companion.html"),
+    pageFile: path20.join(__dirname, "ui", "team-companion.html"),
     anchoredSession: () => view.lastSessionId,
     warn: (m) => logErr("companion", m)
   }).then(
     (srv) => {
       companion = srv;
-      appendJsonl(path19.join(DATA, "logs", "daemon-lifecycle.jsonl"), {
+      appendJsonl(path20.join(DATA, "logs", "daemon-lifecycle.jsonl"), {
         event: "companion-started",
         ts: ts(),
         pid: process.pid,
@@ -26031,7 +27026,7 @@ var TOOLS = [
   },
   {
     name: "team_panel_call",
-    description: "\u9762\u677F\u56DE\u73AF\u5DE5\u5177\uFF08app \u4E13\u7528\uFF09\uFF1A\u9762\u677F\u7ECF callServerTool \u8C03\u7528\u3002label-only = \u5FC3\u8DF3/\u8BA1\u6570\uFF08H12 \u4FDD\u6D3B\u8F7D\u4F53\uFF09\uFF1Baction=refresh = \u5168\u91CF\u89C6\u56FE\u5E27\uFF1Baction=detail + target = \u6210\u5458\u4F1A\u8BDD\u67E5\u770B\u89C6\u56FE\uFF08T5.7\uFF0Ccursor/limit \u5206\u9875\uFF09\u3002",
+    description: "\u9762\u677F\u56DE\u73AF\u5DE5\u5177\uFF08app \u4E13\u7528\uFF09\uFF1A\u9762\u677F\u7ECF callServerTool \u8C03\u7528\u3002label-only = \u5FC3\u8DF3/\u8BA1\u6570\uFF08H12 \u4FDD\u6D3B\u8F7D\u4F53\uFF09\uFF1Baction=refresh = \u5168\u91CF\u89C6\u56FE\u5E27\uFF1Baction=detail + target = \u6210\u5458\u4F1A\u8BDD\u67E5\u770B\u89C6\u56FE\uFF08T5.7\uFF0Ccursor/limit \u5206\u9875\uFF09\uFF1Baction=modelOptions\uFF08memberId \u53EF\u9009\uFF09= \u6A21\u578B\u76EE\u5F55 + \u6210\u5458\u5F53\u524D\u751F\u6548\u503C\uFF1Baction=setMemberModel\uFF08memberId + model/thoughtLevel\uFF09= \u53D7\u63A7\u6210\u5458\u6A21\u578B\u53D8\u66F4\uFF08stage-8\uFF09\u3002",
     visibility: ["app"],
     inputSchema: {
       type: "object",
@@ -26039,22 +27034,35 @@ var TOOLS = [
         label: { type: "string", description: "\u8C03\u7528\u6765\u6E90\u6807\u6CE8\uFF08\u5982 heartbeat / manual\uFF09" },
         action: {
           type: "string",
-          enum: ["refresh", "detail"],
-          description: "refresh = \u5168\u91CF\u89C6\u56FE\u5E27\uFF1Bdetail = \u6210\u5458\u4F1A\u8BDD\u67E5\u770B\u89C6\u56FE\uFF08\u9700 target\uFF09"
+          enum: ["refresh", "detail", "modelOptions", "setMemberModel"],
+          description: "refresh = \u5168\u91CF\u89C6\u56FE\u5E27\uFF1Bdetail = \u6210\u5458\u4F1A\u8BDD\u67E5\u770B\u89C6\u56FE\uFF08\u9700 target\uFF09\uFF1BmodelOptions = \u6A21\u578B\u76EE\u5F55\uFF08memberId \u53EF\u9009\uFF09\uFF1BsetMemberModel = \u5E94\u7528\u6210\u5458\u6A21\u578B\uFF08\u9700 memberId \u4E0E model/thoughtLevel\uFF09"
         },
         target: { type: "string", description: "detail \u76EE\u6807\u6210\u5458 id\uFF08\u6216\u6210\u5458\u540D\uFF1Blead \u4EA6\u53EF\uFF09" },
         cursor: { type: "number", description: "detail seq \u6E38\u6807\uFF08\u8FD4\u56DE seq < cursor \u7684\u6700\u8FD1\u4E00\u9875\uFF1B\u7F3A\u7701 = \u672B\u9875/\u6700\u8FD1\u4E0A\u4E0B\u6587\uFF09" },
-        limit: { type: "number", description: "detail \u9875\u5927\u5C0F\uFF08\u9ED8\u8BA4 100\uFF0C\u4E0A\u9650 200\uFF09" }
+        limit: { type: "number", description: "detail \u9875\u5927\u5C0F\uFF08\u9ED8\u8BA4 100\uFF0C\u4E0A\u9650 200\uFF09" },
+        memberId: { type: "string", description: "\u6A21\u578B\u8BBE\u7F6E\u76EE\u6807\u6210\u5458 id\uFF08modelOptions/setMemberModel\uFF09" },
+        model: {
+          type: "string",
+          description: '\u6A21\u578B\u5168\u79F0 "providerId$modelId"\uFF08setMemberModel\uFF1B\u53D6\u503C\u6765\u81EA modelOptions \u76EE\u5F55\uFF09'
+        },
+        thoughtLevel: { type: "string", description: "\u601D\u8003\u5F3A\u5EA6\u6863\u4F4D\uFF08setMemberModel \u53EF\u9009\uFF1B\u6A21\u578B variants \u4E4B\u4E00\uFF09" }
       }
     }
   }
 ];
 var RESOURCES = [
   { uri: PANEL_URI, name: "agent-team-panel", mimeType: "text/html", description: "\u667A\u80FD\u4F53\u56E2\u961F\u4F1A\u8BDD\u9762\u677F\uFF08\u56E2\u961F\u89C6\u56FE + \u6210\u5458\u4F1A\u8BDD\u4E0B\u94BB\uFF09" },
-  { uri: VIEW_URI, name: "agent-team-view", mimeType: "application/json", description: "\u56E2\u961F\u89C6\u56FE\u5E27\uFF08\u8BA2\u9605\u63A8\u9001\u6E90\uFF09" }
+  { uri: VIEW_URI, name: "agent-team-view", mimeType: "application/json", description: "\u56E2\u961F\u89C6\u56FE\u5E27\uFF08\u8BA2\u9605\u63A8\u9001\u6E90\uFF09" },
+  {
+    uri: MODELS_URI,
+    name: "agent-team-models",
+    mimeType: "application/json",
+    description: "\u53EF\u7528\u6A21\u578B\u76EE\u5F55\uFF08provider/model/\u601D\u8003\u5F3A\u5EA6\u6863\u4F4D\uFF1B\u4E0D\u542B\u4EFB\u4F55\u51ED\u636E\uFF09"
+  }
 ];
+var readModelsResource = createModelCatalogReader(os8.homedir(), (message) => logErr("models", message));
 server.setRequestHandler(ListToolsRequestSchema, async () => {
-  appendJsonl(path19.join(DATA, "logs", "requests.jsonl"), { ts: ts(), method: "tools/list" });
+  appendJsonl(path20.join(DATA, "logs", "requests.jsonl"), { ts: ts(), method: "tools/list" });
   const debugTools = process.env.TEAM_DEBUG_TOOLS === "1";
   const supportTools = debugTools ? TOOLS : TOOLS.filter((t) => t.name !== "team_ping");
   return { tools: [...supportTools, ...listTeamTools({ interrupt: backend.interruptEnabled })] };
@@ -26069,11 +27077,11 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
     arguments: redactToolArguments(args ?? null),
     sessionIdEnv: process.env.ZCODE_SESSION_ID ?? null
   };
-  appendJsonl(path19.join(DATA, "logs", "meta-log.jsonl"), record2);
+  appendJsonl(path20.join(DATA, "logs", "meta-log.jsonl"), record2);
   const perCallFile = metaFilePath(DATA, name);
   if (perCallFile !== null) {
     try {
-      fs20.writeFileSync(perCallFile, JSON.stringify(record2, null, 2), { mode: 384 });
+      fs21.writeFileSync(perCallFile, JSON.stringify(record2, null, 2), { mode: 384 });
     } catch (err) {
       logErr("daemon", "meta per-call write failed", err instanceof Error ? err.message : String(err));
     }
@@ -26137,6 +27145,18 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
       case "detail":
         body = { ok: true, detail: result.detail };
         break;
+      case "modelOptions":
+        body = {
+          ok: true,
+          catalog: result.catalog,
+          ...result.memberId !== void 0 ? { memberId: result.memberId } : {},
+          ...result.memberName !== void 0 ? { memberName: result.memberName } : {},
+          ...result.current !== void 0 ? { current: result.current } : {}
+        };
+        break;
+      case "modelSet":
+        body = { ok: true, applied: result.applied, memberId: result.memberId };
+        break;
       case "error":
         body = {
           ok: false,
@@ -26171,7 +27191,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
       // F11 实录：每次发射落 logs/progress.jsonl（报文级证据）。
       {
         sendNotification: (notification) => {
-          appendJsonl(path19.join(DATA, "logs", "progress.jsonl"), { ts: ts(), notification });
+          appendJsonl(path20.join(DATA, "logs", "progress.jsonl"), { ts: ts(), notification });
           return extra.sendNotification(
             notification
           );
@@ -26185,7 +27205,7 @@ server.setRequestHandler(ListResourcesRequestSchema, async () => ({ resources: R
 server.setRequestHandler(ReadResourceRequestSchema, async (req) => {
   const { uri } = req.params;
   if (uri === PANEL_URI) {
-    const html = fs20.readFileSync(path19.join(__dirname, "ui", "team-panel.html"), "utf8");
+    const html = fs21.readFileSync(path20.join(__dirname, "ui", "team-panel.html"), "utf8");
     return { contents: [{ uri, mimeType: "text/html", text: html }] };
   }
   if (uri === VIEW_URI) {
@@ -26206,6 +27226,9 @@ server.setRequestHandler(ReadResourceRequestSchema, async (req) => {
       ]
     };
   }
+  if (uri === MODELS_URI) {
+    return { contents: [{ uri, mimeType: "application/json", text: JSON.stringify(readModelsResource()) }] };
+  }
   throw new Error(`TEAM_UNKNOWN_RESOURCE: ${uri}`);
 });
 function pushFrame(uri) {
@@ -26214,7 +27237,7 @@ function pushFrame(uri) {
 }
 server.setRequestHandler(SubscribeRequestSchema, async (req) => {
   const { uri } = req.params;
-  appendJsonl(path19.join(DATA, "logs", "requests.jsonl"), { ts: ts(), method: "resources/subscribe", uri });
+  appendJsonl(path20.join(DATA, "logs", "requests.jsonl"), { ts: ts(), method: "resources/subscribe", uri });
   if (uri === VIEW_URI) {
     view.subscribed = true;
     if (!frameTimer) {
@@ -26227,7 +27250,7 @@ server.setRequestHandler(SubscribeRequestSchema, async (req) => {
 });
 server.setRequestHandler(UnsubscribeRequestSchema, async (req) => {
   const { uri } = req.params;
-  appendJsonl(path19.join(DATA, "logs", "requests.jsonl"), { ts: ts(), method: "resources/unsubscribe", uri });
+  appendJsonl(path20.join(DATA, "logs", "requests.jsonl"), { ts: ts(), method: "resources/unsubscribe", uri });
   if (uri === VIEW_URI) {
     view.subscribed = false;
     if (frameTimer) {

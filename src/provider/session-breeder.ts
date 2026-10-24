@@ -18,6 +18,7 @@ import { DatabaseSync } from "node:sqlite";
 import { AppServerClient } from "./app-server-client.mjs";
 import { tombstoneAnchor, defaultTasksIndexPath } from "../sidebar/tasks-index.js";
 import { resolveZcodeBin, type ZcodeBin } from "./zcode-bin.js";
+import type { MemberModelSelection } from "./model-selection.js";
 
 export type IsolationMode = "child" | "legacy";
 
@@ -30,6 +31,13 @@ export interface BreedInput {
   teamId: string;
   /** 回退工作区（当会话库查不到 Lead 目录时使用）。 */
   workspacePath: string;
+  /** 子会话默认模型（继承 Lead 或显式指定；缺省 = 不调 setModel，CLI 工作区默认）。 */
+  modelSelection?: MemberModelSelection;
+  /**
+   * 主选失败后的唯一兜底（继承链第二档 = Lead model_usage）；仅当 modelSelection 存在且
+   * 应用失败才尝试。显式指定模型时调用方不传（用户显式意图不替换）。
+   */
+  modelFallback?: MemberModelSelection;
   timeoutMs?: number;
 }
 
@@ -39,6 +47,8 @@ export interface BreedResult {
   elapsedMs: number;
   /** 实际解析出的 workspace（Lead 会话目录优先；轮次 cwd 必须与之一致）。 */
   workspacePath: string;
+  /** 实际生效的模型选择（primary 或 fallback；都未生效/未指定 = 缺省，不出现）。 */
+  appliedModel?: MemberModelSelection;
 }
 
 export type BreedFailure =
@@ -139,8 +149,7 @@ export class AppServerSessionBreeder {
     }
   }
 
-  /** 造一个隐藏子会话；失败抛 BreedError（不回退成可见会话——DSH 口径：失败即 failed 成员）。 */
-  async createChild(input: BreedInput): Promise<BreedResult> {
+  /** 造一个隐藏子会话；失败抛 BreedError（不回退成可见会话——DSH 口径：失败即 failed 成员）。 */  async createChild(input: BreedInput): Promise<BreedResult> {
     const startedAt = this.now();
     const workspacePath = this.resolveWorkspace(input.teamId, input.workspacePath);
     const client = this.#spawnClient(workspacePath);
@@ -200,6 +209,28 @@ export class AppServerSessionBreeder {
       }
       childSessionId = createdChildId;
 
+      // 同实例内 child 活跃（Round A PoC-1 已证）：setModel 落 runtime/model_selection 条目，
+      // 后续 `--resume` 每轮生效。失败只留痕并继续 spawn（CLI 缺省模型仍可用，不杀成员）。
+      // E-1 修复：继承链主选（Lead 条目）可能指向服务端解析不了的组合（计划未开通等）→ 用
+      // Lead model_usage 兜底再试一次；只记录实际生效者（appliedModel），origin 不谎报。
+      let appliedModel: MemberModelSelection | undefined;
+      if (input.modelSelection !== undefined) {
+        appliedModel = await this.#trySetModel(client, {
+          teamId: input.teamId,
+          childSessionId,
+          selection: input.modelSelection,
+          which: "primary",
+        });
+        if (appliedModel === undefined && input.modelFallback !== undefined) {
+          appliedModel = await this.#trySetModel(client, {
+            teamId: input.teamId,
+            childSessionId,
+            selection: input.modelFallback,
+            which: "fallback",
+          });
+        }
+      }
+
       if (anchorSessionId === null || childSessionId === null) {
         throw new BreedError("unsupported", "session breeding produced no anchor/child id");
       }
@@ -212,7 +243,13 @@ export class AppServerSessionBreeder {
         tombstone,
         elapsedMs,
       });
-      return { anchorSessionId, childSessionId, elapsedMs, workspacePath };
+      return {
+        anchorSessionId,
+        childSessionId,
+        elapsedMs,
+        workspacePath,
+        ...(appliedModel !== undefined ? { appliedModel } : {}),
+      };
     } catch (err) {
       const stderr = client.getStderr().slice(-800);
       if (err instanceof BreedError) {
@@ -253,6 +290,115 @@ export class AppServerSessionBreeder {
     } finally {
       await client.close();
     }
+  }
+
+  /**
+   * mid-life 修改模型（Round A PoC-2 已证）：临时 app-server 实例 → `session/resume {sessionId}`
+   * 重新激活会话 → `session/setModel`。返回 applied 而非抛错：调用方据此决定「立即生效」或
+   * 落 pending 兜底（下一轮 launchTurn 前重试）。
+   * resume/setModel 的 result 是巨型消息快照——只记成功/失败与目标三元组，绝不整包落日志。
+   */
+  async applyModelSelection(input: {
+    sessionId: string;
+    workspacePath: string;
+    selection: MemberModelSelection;
+    /** 复用 createChild 的 ready 上限（测试可收紧）。 */
+    timeoutMs?: number;
+  }): Promise<{ applied: boolean; reason?: string }> {
+    const readyTimeoutMs = input.timeoutMs ?? this.readyTimeoutMs;
+    let client: AppServerClient;
+    try {
+      client = this.#spawnClient(input.workspacePath);
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      this.log({ event: "model-apply-failed", sessionId: input.sessionId, reason });
+      return { applied: false, reason };
+    }
+    try {
+      const ready = await client.waitReady(readyTimeoutMs);
+      if (!ready) {
+        const reason = `app-server did not become ready within ${readyTimeoutMs}ms`;
+        this.log({ event: "model-apply-failed", sessionId: input.sessionId, reason });
+        return { applied: false, reason };
+      }
+      await client.rpc("session/resume", { sessionId: input.sessionId }, 20_000);
+      await this.#setModel(client, input.sessionId, input.selection);
+      this.log({
+        event: "model-applied",
+        sessionId: input.sessionId,
+        providerId: input.selection.providerId,
+        modelId: input.selection.modelId,
+        reasoningLevel: input.selection.reasoningLevel ?? null,
+      });
+      return { applied: true };
+    } catch (err) {
+      // 错误文本可能含协议 message；不含任何 result 体（见上）。
+      const reason = err instanceof Error ? err.message : String(err);
+      this.log({ event: "model-apply-failed", sessionId: input.sessionId, reason });
+      return { applied: false, reason };
+    } finally {
+      await client.close();
+    }
+  }
+
+  /**
+   * 应用一次模型选择并返回是否生效（primary / fallback 共用）。失败只留痕不抛：
+   * 主选失败记 `model-set-failed`，兜底失败记 `model-set-fallback-failed`；
+   * 任一成功记 `model-set`（含 which），供排障区分「继承生效」与「降级到兜底」。
+   * result 是巨型消息快照（PoC 事实 1）：只记目标三元组与错误文本，绝不整包落日志。
+   */
+  async #trySetModel(
+    client: AppServerClient,
+    args: {
+      teamId: string;
+      childSessionId: string;
+      selection: MemberModelSelection;
+      which: "primary" | "fallback";
+    },
+  ): Promise<MemberModelSelection | undefined> {
+    const { selection } = args;
+    const target = {
+      teamId: args.teamId,
+      childSessionId: args.childSessionId,
+      providerId: selection.providerId,
+      modelId: selection.modelId,
+      reasoningLevel: selection.reasoningLevel ?? null,
+    };
+    try {
+      await this.#setModel(client, args.childSessionId, selection);
+      this.log({ event: "model-set", ...target, which: args.which });
+      return selection;
+    } catch (err) {
+      this.log({
+        event: args.which === "primary" ? "model-set-failed" : "model-set-fallback-failed",
+        ...target,
+        message: err instanceof Error ? err.message : String(err),
+      });
+      return undefined;
+    }
+  }
+
+  /** setModel 请求体（createChild / applyModelSelection 共用；persistAsWorkspaceLastUsed 恒 false）。 */
+  async #setModel(
+    client: AppServerClient,
+    sessionId: string,
+    selection: MemberModelSelection,
+  ): Promise<void> {
+    await client.rpc(
+      "session/setModel",
+      {
+        sessionId,
+        model: {
+          providerId: selection.providerId,
+          modelId: selection.modelId,
+          ...(selection.reasoningLevel !== undefined
+            ? { options: { reasoningLevel: selection.reasoningLevel } }
+            : {}),
+        },
+        persistAsWorkspaceLastUsed: false,
+      },
+      20_000,
+    );
   }
 
   #spawnClient(workspacePath: string): AppServerClient {

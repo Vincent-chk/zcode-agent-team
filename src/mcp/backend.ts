@@ -1,4 +1,4 @@
-// 工具面后端（stage-3 T3.1/T3.2）：9 工具 → 协调层/域服务的接线。
+// 工具面后端（stage-3 T3.1/T3.2）：10 工具 → 协调层/域服务的接线（stage-8 Round C +member_set_model）。
 // 冷启动即服务：按 teamId 惰性打开 TeamCoordinatorHost（首调即开；并发调用共享同一
 // open promise），持锁 → 协调者模式（方法表进程内直执行）；他人持锁 → 代理模式
 // （经 socket 转发）。参数守卫复用方法表冻结口径（requireString/enum 等，stage-2 已测）。
@@ -29,6 +29,15 @@ import type { ContentBlock } from "../domain/events.js";
 import type { ResolvedIdentity } from "./identity.js";
 import { noProgressResult, NO_PROGRESS_REASON } from "./policy.js";
 import type { TeammateProvider } from "../provider/teammate-provider.js";
+import { parseModelSelection, parseModelSpec, type MemberModelSelection } from "../provider/model-selection.js";
+import {
+  enabledProvidersOffering,
+  findCatalogModel,
+  findCatalogProvider,
+  readModelCatalog,
+  reasoningVariantsOf,
+  type ModelCatalog,
+} from "../provider/model-catalog.js";
 import type { ReconciliationSource, TargetInspector } from "../domain/ports.js";
 
 /**
@@ -55,6 +64,8 @@ export interface BackendOptions {
   idleReclaimMs?: number;
   /** 时钟注入（回收测试用）。 */
   now?: () => number;
+  /** 模型目录读取（缺省 readModelCatalog；测试注入固定目录）。 */
+  modelCatalog?: () => ModelCatalog;
   warn?: (message: string) => void;
 }
 
@@ -66,6 +77,8 @@ export interface ProgressSink {
 interface TeamBackend {
   host: TeamCoordinatorHost | null;
   opening: Promise<TeamCoordinatorHost>;
+  /** 本团队 provider 实例（模型目录消歧要读 Lead 当前选择；代理模式下也读本地只读库）。 */
+  provider?: TeammateProvider & ReconciliationSource & TargetInspector;
   /** 最近一次工具调用时间（空闲回收判定）。 */
   lastUsedAt: number;
   /** 在途工具调用数（>0 不回收：避免关掉正在 wait/dispatch 的 host）。 */
@@ -101,6 +114,7 @@ export class TeamToolBackend {
           : this.opts.provider !== undefined
             ? this.opts.provider
             : undefined;
+      const resolvedProvider = provider;
       const opening = TeamCoordinatorHost.open({
         dataRoot: this.opts.dataRoot,
         teamId,
@@ -108,7 +122,14 @@ export class TeamToolBackend {
         ...(provider !== undefined ? { provider } : {}),
         warn: this.opts.warn,
       });
-      entry = { host: null, opening, lastUsedAt: this.now(), inflight: 0 };
+      entry = {
+        host: null,
+        opening,
+        // 缺省装配（host 内部 new MockProvider）时拿不到实例 → 模型消歧退化为「按目录唯一命中」。
+        ...(resolvedProvider !== undefined ? { provider: resolvedProvider } : {}),
+        lastUsedAt: this.now(),
+        inflight: 0,
+      };
       const self = entry;
       void opening.then(
         (host) => {
@@ -202,23 +223,178 @@ export class TeamToolBackend {
     }
   }
 
-  // ---------------------------------------------------------------- 9 工具操作
+  // ---------------------------------------------------------------- 10 工具操作
 
   /** spawn_teammate（02 §9.3；context 缺省 fresh 由域层承担；〔对齐轮〕0.2.1：初始任务不含身份前缀）。
-   *  参数原值直传——类型/枚举守卫在方法表 requireString/optionalString（冻结消息）。 */
+   *  参数原值直传——类型/枚举守卫在方法表 requireString/optionalString（冻结消息）。
+   *  stage-8：model（"providerId$modelId" / 裸 id）在此按目录消歧成结构化选择；thoughtLevel 并入
+   *  选择的 reasoningLevel（目录不可用时原样透传）。 */
   async spawnTeammate(
     identity: ResolvedIdentity,
-    args: { name: unknown; description: unknown; prompt: unknown; context?: unknown },
+    args: {
+      name: unknown;
+      description: unknown;
+      prompt: unknown;
+      context?: unknown;
+      model?: unknown;
+      thoughtLevel?: unknown;
+    },
   ): Promise<{ member: MemberRow }> {
-    return this.withHost(identity.teamId, async (host) =>
-      (await host.dispatch("member.spawn", {
+    return this.withHost(identity.teamId, async (host) => {
+      // 目录消歧要读 Lead 当前 provider（本团队 provider 实例由 backendFor 装配）→ 必须在 withHost 内解析。
+      const modelSelection = this.resolveModelArgs(identity, args.model, args.thoughtLevel);
+      return (await host.dispatch("member.spawn", {
         session_id: identity.agentId,
         name: args.name,
         description: args.description,
         prompt: args.prompt,
         ...(args.context !== undefined ? { context: args.context } : {}),
-      })) as { member: MemberRow },
+        ...(args.model !== undefined ? { model: args.model } : {}),
+        ...(modelSelection !== undefined ? { modelSelection: wireModelSelection(modelSelection) } : {}),
+        // thoughtLevel 只在「无结构化选择」时单独下发（有选择时强度已并入 selection）。
+        ...(modelSelection === undefined && args.thoughtLevel !== undefined
+          ? { thoughtLevel: args.thoughtLevel }
+          : {}),
+      })) as { member: MemberRow };
+    });
+  }
+
+  /**
+   * member_set_model（02 §9.13）：target 存在性（active）先校验 → model 规格按目录消歧 →
+   * host.dispatch 到协调者（provider.setMemberModel 决定 now/next-turn）。
+   */
+  async setMemberModel(
+    identity: ResolvedIdentity,
+    args: { target: unknown; model?: unknown; thoughtLevel?: unknown },
+  ): Promise<{ applied: "now" | "next-turn" }> {
+    const target = args.target;
+    return this.withHost(identity.teamId, async (host) => {
+      const modelSelection = this.resolveModelArgs(identity, args.model, args.thoughtLevel);
+      const rows = await this.memberRows(host, identity);
+      if (typeof target === "string" && target === "lead") {
+        throw new TeamError("TEAM_INVALID_TARGET", "target must be a teammate; the Lead model is session-scoped");
+      }
+      const row = rows.find((r) => r.target === target && r.role === "teammate");
+      if (row === undefined || row.status === "failed" || row.status === "provisioning") {
+        throw new TeamError("TEAM_MEMBER_NOT_FOUND", `active teammate "${String(target)}" not found`);
+      }
+      return (await host.dispatch("member.set_model", {
+        session_id: identity.agentId,
+        member_id: target,
+        ...(modelSelection !== undefined ? { modelSelection: wireModelSelection(modelSelection) } : {}),
+        ...(modelSelection === undefined && args.thoughtLevel !== undefined
+          ? { thoughtLevel: args.thoughtLevel }
+          : {}),
+      })) as { applied: "now" | "next-turn" };
+    });
+  }
+
+  /** list_agents 的行派生（协调者 = roster 全保真；代理 = 本地重放派生）。 */
+  private async memberRows(host: TeamCoordinatorHost, identity: ResolvedIdentity): Promise<MemberRow[]> {
+    const runtime = host.teamRuntime;
+    if (runtime !== null) {
+      return runtime.roster.listMembers(identity.agentId).members;
+    }
+    // 代理模式：本地重放派生（保守 availability；成员资格校验同 C5 口径）
+    const loaded = await host.readBoard();
+    requireMembership(
+      () => {
+        if (loaded.state.failure !== undefined) throw new Error(loaded.state.failure);
+        return loaded.state;
+      },
+      identity.agentId,
     );
+    return memberRowsFromState(loaded.state.id, loaded.state.members, identity.agentId);
+  }
+
+  /** 模型目录（注入优先；读取失败/漂移 → 空目录）。 */
+  private catalog(): ModelCatalog {
+    return (this.opts.modelCatalog ?? (() => readModelCatalog()))();
+  }
+
+  /** Lead 当前 provider（裸 id 消歧优先级 1）；provider 不支持或无记录 → undefined。 */
+  private leadProviderId(teamId: string): string | undefined {
+    const provider = this.teams.get(teamId)?.provider as
+      | { leadModelSelectionOf?: () => MemberModelSelection | undefined }
+      | undefined;
+    return provider?.leadModelSelectionOf?.()?.providerId;
+  }
+
+  /**
+   * model/thoughtLevel → 结构化选择。
+   * - model 给出：解析规格（全称 → 目录含该 provider 时必须含该 model，否则报错列模型清单；
+   *   目录没有该 provider 如 `account:` 形态 → 原样透传，server 是最终裁判。裸 id → Lead 当前
+   *   provider → enabled provider；多处命中报错列候选）。
+   * - model 缺省 + thoughtLevel：不构造选择（provider 侧按成员/Lead 现有模型合并）。
+   * - thoughtLevel 校验：目录里有该模型时按 variants 校验；无该模型/目录不可用 → 原样透传。
+   * - 档位缺省由 provider 层统一补齐（resume-provider#withReasoningDefault：defaultVariant → "max"），
+   *   本层只校验不补值——工具面返回的就是用户显式选择。
+   */
+  private resolveModelArgs(
+    identity: ResolvedIdentity,
+    rawModel: unknown,
+    rawThoughtLevel: unknown,
+  ): MemberModelSelection | undefined {
+    const thoughtLevel =
+      typeof rawThoughtLevel === "string" && rawThoughtLevel.trim().length > 0
+        ? rawThoughtLevel.trim()
+        : undefined;
+    if (rawModel === undefined) return undefined;
+    if (typeof rawModel !== "string") {
+      throw invalidModel('param "model" must be a string');
+    }
+    const catalog = this.catalog();
+    let spec: ReturnType<typeof parseModelSpec>;
+    try {
+      spec = parseModelSpec(rawModel);
+    } catch (err) {
+      throw invalidModel(err instanceof Error ? err.message : String(err));
+    }
+    let providerId: string;
+    if ("providerId" in spec) {
+      providerId = spec.providerId;
+      // E-1 修复：全称规格也查目录（防「provider 在、model 打错」→ setModel 恒失败 → pending 每轮
+      // 重试的无限循环）。目录没有该 provider（外部/account 形态）→ 放行，由 server 终审。
+      const provider = findCatalogProvider(catalog, providerId);
+      if (provider !== undefined) {
+        const model = provider.models.find((m) => m.id === spec.modelId);
+        if (model === undefined) {
+          const available = provider.models.map((m) => m.id);
+          throw invalidModel(
+            `model "${spec.modelId}" not found in provider "${providerId}" ` +
+              `(available: ${available.length > 0 ? available.join(", ") : "none"})`,
+          );
+        }
+        // 注册表里被显式停用的模型同理：选中必然失败 → 提前拒绝（同属 pending 死循环防线）。
+        if (model.enabled === false) {
+          throw invalidModel(`model "${spec.modelId}" is disabled in provider "${providerId}"`);
+        }
+      }
+    } else {
+      const candidates = enabledProvidersOffering(catalog, spec.modelId);
+      const leadProvider = this.leadProviderId(identity.teamId);
+      if (leadProvider !== undefined && candidates.includes(leadProvider)) {
+        providerId = leadProvider;
+      } else if (candidates.length === 0) {
+        throw invalidModel(
+          catalog.providers.length === 0
+            ? `model catalog unavailable: use "providerId$modelId" for "${spec.modelId}"`
+            : `model "${spec.modelId}" not found in any enabled provider`,
+        );
+      } else if (candidates.length > 1) {
+        throw invalidModel(
+          `model "${spec.modelId}" is ambiguous; use providerId$modelId (candidates: ${candidates.join(", ")})`,
+        );
+      } else {
+        providerId = candidates[0]!;
+      }
+    }
+    const selection: MemberModelSelection = { providerId, modelId: spec.modelId };
+    if (thoughtLevel !== undefined) {
+      validateThoughtLevel(catalog, providerId, spec.modelId, thoughtLevel);
+      selection.reasoningLevel = thoughtLevel;
+    }
+    return selection;
   }
 
   /** send_message（02 §9.5；内容映射 content=[{type:"text",text:message}]，target 原值直传）。
@@ -241,22 +417,7 @@ export class TeamToolBackend {
 
   /** list_agents（02 §9.6；输出 MEMBER_VIEW[]，Lead 伪行 target="lead"）。 */
   async listAgents(identity: ResolvedIdentity): Promise<MemberRow[]> {
-    return this.withHost(identity.teamId, async (host) => {
-      const runtime = host.teamRuntime;
-      if (runtime !== null) {
-        return runtime.roster.listMembers(identity.agentId).members;
-      }
-      // 代理模式：本地重放派生（保守 availability；成员资格校验同 C5 口径）
-      const loaded = await host.readBoard();
-      requireMembership(
-        () => {
-          if (loaded.state.failure !== undefined) throw new Error(loaded.state.failure);
-          return loaded.state;
-        },
-        identity.agentId,
-      );
-      return memberRowsFromState(loaded.state.id, loaded.state.members, identity.agentId);
-    });
+    return this.withHost(identity.teamId, (host) => this.memberRows(host, identity));
   }
 
   /** interrupt_agent（02 §9.8；Lead-only 域层校验，工具层不放宽；target 原值直传）。
@@ -428,6 +589,49 @@ export type WaitAgentResult = {
   timedOut: boolean;
   noProgress?: { reason: typeof NO_PROGRESS_REASON; message: string };
 };
+
+// ---------------------------------------------------------------- 模型参数（stage-8 Round C）
+
+function invalidModel(message: string): TeamError {
+  return new TeamError("TEAM_INVALID_ARGUMENT", message);
+}
+
+/** 结构化选择 → RPC 线形状（session_entry/协议同形：reasoningLevel 嵌在 options 下）。 */
+function wireModelSelection(selection: MemberModelSelection): {
+  providerId: string;
+  modelId: string;
+  options?: { reasoningLevel: string };
+} {
+  return {
+    providerId: selection.providerId,
+    modelId: selection.modelId,
+    ...(selection.reasoningLevel !== undefined
+      ? { options: { reasoningLevel: selection.reasoningLevel } }
+      : {}),
+  };
+}
+
+/**
+ * thoughtLevel 目录校验：只有「目录里有该模型且 variants 已知」时才判（不符即报错，列候选）；
+ * 模型不在目录、目录不可用、或 variants 未知（provider_config 源不带 reasoning 元数据——
+ * 宿主对该类模型仍可能强制要求档位，如 deepseek-flash）→ 原样透传（写入后由宿主裁判）。
+ */
+function validateThoughtLevel(
+  catalog: ModelCatalog,
+  providerId: string,
+  modelId: string,
+  thoughtLevel: string,
+): void {
+  const model = findCatalogModel(catalog, providerId, modelId);
+  if (model === undefined) return;
+  const variants = reasoningVariantsOf(model);
+  if (variants === undefined || variants.length === 0) return;
+  if (!variants.includes(thoughtLevel)) {
+    throw invalidModel(
+      `thoughtLevel "${thoughtLevel}" is not supported by model ${modelId} (variants: ${variants.join(", ")})`,
+    );
+  }
+}
 
 /** 02 §8 合法域：[10000, 3600000] 的 safe integer。 */
 export function isValidTimeout(value: unknown): value is number {

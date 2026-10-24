@@ -9,9 +9,11 @@ import {
   framedText,
   waitFor,
   openHost,
+  insertModelUsage,
+  insertSessionEntry,
   type ProviderKit,
 } from "./kit.js";
-import { memberPaths, readOrigin, listTurns, readTurn, readCurrentTurnId, writeTurn as writeTurnDirect } from "../../src/provider/member-files.js";
+import { memberPaths, readOrigin, listTurns, readTurn, readCurrentTurnId, writeOrigin, writeTurn as writeTurnDirect, type OriginRecord } from "../../src/provider/member-files.js";
 import { readSessionRegistry } from "../../src/mcp/identity.js";
 import type { BoundaryEvent } from "../../src/provider/resume-provider.js";
 
@@ -102,6 +104,106 @@ describe("F01 · fresh spawn 全链路（真子进程）", () => {
     await waitFor(() => boundaries.some((b) => b.memberId === "m-s4-a"), 3000); // watcher tick（≤200ms 轮询）
     const turns = listTurns(memberPaths(kit!.provider.teamDir, "m-s4-a").runDir);
     expect(turns[turns.length - 1].status).toBe("exited");
+  });
+});
+
+describe("模型呈现（stage-8 Round B）", () => {
+  it("modelOf：transcript 实查优先；无消息回退 origin 三元组/旧 model；无 origin → undefined", async () => {
+    const started = await kit!.provider.startContinuable(SPAWN_ARGS);
+    expect(started.accepted).toBe(true);
+    expect(kit!.provider.modelOf("m-s4-a")).toBe("fake-flash"); // 消息里的 modelSelection 实查
+
+    const originBase: Omit<OriginRecord, "memberId" | "sessionId"> = {
+      teamId: kit!.teamId,
+      name: "n",
+      provider: "spawn",
+      mode: "continuable",
+      context: "fresh",
+      createdAt: new Date().toISOString(),
+      cwd: kit!.cwd,
+      firstPromptText: "p",
+      firstPromptSha256: "sha",
+      initialUserMessageAccepted: false,
+    };
+    const selected = memberPaths(kit!.provider.teamDir, "m-origin-sel");
+    writeOrigin(selected, {
+      ...originBase,
+      memberId: "m-origin-sel",
+      sessionId: null,
+      modelSelection: { providerId: "p", modelId: "cfg-model" },
+      modelSource: "explicit",
+    });
+    expect(kit!.provider.modelOf("m-origin-sel")).toBe("cfg-model");
+
+    const legacy = memberPaths(kit!.provider.teamDir, "m-origin-legacy");
+    writeOrigin(legacy, {
+      ...originBase,
+      memberId: "m-origin-legacy",
+      sessionId: "sess_no_rows",
+      model: "legacy-model",
+    });
+    expect(kit!.provider.modelOf("m-origin-legacy")).toBe("legacy-model");
+    expect(kit!.provider.modelOf("m-nobody")).toBeUndefined();
+  });
+
+  it("leadModelSelectionOf：Lead 条目优先 → usage 兜底 → undefined（backend 裸 id 消歧用）", () => {
+    expect(kit!.provider.leadModelSelectionOf()).toBeUndefined();
+    insertModelUsage(kit!.dbPath, {
+      sessionId: kit!.teamId,
+      providerId: "usage-prov",
+      modelId: "usage-model",
+      variant: "high",
+      startedAt: 1,
+    });
+    expect(kit!.provider.leadModelSelectionOf()).toEqual({
+      providerId: "usage-prov",
+      modelId: "usage-model",
+      reasoningLevel: "high",
+    });
+    insertSessionEntry(kit!.dbPath, {
+      sessionId: kit!.teamId,
+      data: {
+        modelSelection: {
+          providerId: "entry-prov",
+          modelId: "entry-model",
+          options: { reasoningLevel: "max" },
+        },
+      },
+    });
+    // 条目是权威：即使 usage 更新也不影响（继承链第一档）
+    expect(kit!.provider.leadModelSelectionOf()).toEqual({
+      providerId: "entry-prov",
+      modelId: "entry-model",
+      reasoningLevel: "max",
+    });
+  });
+
+  it("leadModelOf：Lead 最近消息 → model_usage 兜底 → undefined", () => {
+    expect(kit!.provider.leadModelOf()).toBeUndefined();
+    insertModelUsage(kit!.dbPath, {
+      sessionId: kit!.teamId,
+      providerId: "p",
+      modelId: "usage-lead",
+      startedAt: 1,
+    });
+    expect(kit!.provider.leadModelOf()).toBe("usage-lead");
+    const d = db();
+    d.prepare(
+      "INSERT INTO message (id, session_id, time_created, time_updated, data, sequence) VALUES (?,?,?,?,?,?)",
+    ).run(
+      "msg_lead",
+      kit!.teamId,
+      Date.now(),
+      Date.now(),
+      JSON.stringify({
+        role: "user",
+        semantics: { origin: "real_user" },
+        modelSelection: { providerId: "p", modelId: "message-lead" },
+      }),
+      0,
+    );
+    d.close();
+    expect(kit!.provider.leadModelOf()).toBe("message-lead");
   });
 });
 

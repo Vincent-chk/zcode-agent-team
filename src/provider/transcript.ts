@@ -8,6 +8,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { parseModelSelection, type MemberModelSelection } from "./model-selection.js";
 
 export interface TranscriptSessionRow {
   id: string;
@@ -181,6 +182,60 @@ export class TranscriptReader {
       )
       .get(sessionId) as { model: string } | undefined;
     return row?.model;
+  }
+
+  /**
+   * 会话库中最近一次 setModel 的选择（Round A 实证：条目为 UPSERT 单行，canonical id
+   * `<sessionId>:runtime-model-selection`，时间排序安全）。data 取嵌套 modelSelection 优先；
+   * 兼容旧行把 providerId/modelId/thoughtLevel 平铺在顶层的形态。
+   */
+  latestModelSelection(sessionId: string): MemberModelSelection | undefined {
+    if (this.missing()) return undefined;
+    const row = this.open()
+      .prepare(
+        `SELECT data FROM session_entry
+         WHERE session_id = ? AND type = 'runtime/model_selection'
+         ORDER BY time_created DESC LIMIT 1`,
+      )
+      .get(sessionId) as { data: string } | undefined;
+    if (row === undefined) return undefined;
+    const data = parseOrNull(row.data) as
+      | { modelSelection?: unknown; providerId?: unknown; modelId?: unknown; thoughtLevel?: unknown }
+      | null;
+    if (data === null) return undefined;
+    const nested = parseModelSelection(data.modelSelection);
+    if (nested !== undefined) return nested;
+    // 旧行/别路写入的平铺形态（无嵌套对象时兜底）
+    const providerId = typeof data.providerId === "string" ? data.providerId.trim() : "";
+    const modelId = typeof data.modelId === "string" ? data.modelId.trim() : "";
+    if (providerId.length === 0 || modelId.length === 0) return undefined;
+    const thoughtLevel = typeof data.thoughtLevel === "string" ? data.thoughtLevel.trim() : "";
+    return {
+      providerId,
+      modelId,
+      ...(thoughtLevel.length > 0 ? { reasoningLevel: thoughtLevel } : {}),
+    };
+  }
+
+  /** 最近一次真实模型调用（session_entry 缺失时的继承兜底；variant = 思考强度）。 */
+  latestModelUsage(sessionId: string): MemberModelSelection | undefined {
+    if (this.missing()) return undefined;
+    const row = this.open()
+      .prepare(
+        `SELECT provider_id, model_id, variant FROM model_usage
+         WHERE session_id = ? ORDER BY started_at DESC LIMIT 1`,
+      )
+      .get(sessionId) as { provider_id: string; model_id: string; variant: string | null } | undefined;
+    if (row === undefined) return undefined;
+    const providerId = row.provider_id.trim();
+    const modelId = row.model_id.trim();
+    if (providerId.length === 0 || modelId.length === 0) return undefined;
+    const variant = typeof row.variant === "string" ? row.variant.trim() : "";
+    return {
+      providerId,
+      modelId,
+      ...(variant.length > 0 ? { reasoningLevel: variant } : {}),
+    };
   }
 
   /** 完成回合导出（D3 fork 转录）：真实用户消息 + 助手文本；tool 部分记工具名。 */

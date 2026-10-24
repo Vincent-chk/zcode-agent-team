@@ -5,6 +5,7 @@
 
 import { randomUUID } from "node:crypto";
 import type { TeammateProvider } from "./teammate-provider.js";
+import type { MemberModelSelection } from "./model-selection.js";
 import type { ProvisioningRecord, ReconciliationSource, TargetInspector } from "../domain/ports.js";
 
 export type StartOutcome =
@@ -18,6 +19,10 @@ export interface MockChild {
   name: string;
   context: "fresh" | "fork";
   model: string | undefined;
+  /** 结构化模型选择（stage-8 Round B：继承/显式下发的记录；modelOf 优先取它）。 */
+  modelSelection: MemberModelSelection | undefined;
+  /** 思考强度覆盖（stage-8 Round C；仅记录，供断言）。 */
+  thoughtLevel: string | undefined;
   firstPrompt: string;
   alive: boolean;
   /** 已持久接收的消息 id（去重口径：再次 deliver 同 id 不重复写入）。 */
@@ -44,6 +49,12 @@ export interface MockProviderProgram {
   drainError?: unknown;
   /** interrupt 行为：抛错（清理失败路径）。 */
   interruptError?: unknown;
+  /** Lead 行实查模型（MemberPresentation.leadModelOf 的可编程返回）。 */
+  leadModel?: string;
+  /** Lead 当前结构化选择（backend 裸 id 消歧的可编程返回）。 */
+  leadModelSelection?: MemberModelSelection;
+  /** setMemberModel 结果序列（循环取用；缺省全 "now"）。 */
+  modelSetResults?: Array<"now" | "next-turn" | "throw">;
 }
 
 export class MockProvider implements TeammateProvider, ReconciliationSource, TargetInspector {
@@ -55,12 +66,16 @@ export class MockProvider implements TeammateProvider, ReconciliationSource, Tar
   drainCalls = 0;
   startCalls = 0;
   deliverCalls = 0;
+  /** setMemberModel 调用记录（参数原样；断言工具面/方法表转发用）。 */
+  modelSetCalls: Array<{ memberId: string; modelSelection?: MemberModelSelection; thoughtLevel?: string }> = [];
   private program: MockProviderProgram = {};
   private deliverScript: Array<"accepted" | "queued" | "throw" | "lost"> = [];
+  private modelSetScript: Array<"now" | "next-turn" | "throw"> = [];
 
   programWith(program: MockProviderProgram): this {
     this.program = program;
     this.deliverScript = program.deliverResults ? [...program.deliverResults] : [];
+    this.modelSetScript = program.modelSetResults ? [...program.modelSetResults] : [];
     return this;
   }
 
@@ -72,6 +87,8 @@ export class MockProvider implements TeammateProvider, ReconciliationSource, Tar
     firstPrompt: string;
     context: "fresh" | "fork";
     model?: string;
+    modelSelection?: MemberModelSelection;
+    thoughtLevel?: string;
     signal?: AbortSignal;
   }): Promise<{ memberId: string; accepted: boolean }> {
     this.startCalls += 1;
@@ -92,6 +109,8 @@ export class MockProvider implements TeammateProvider, ReconciliationSource, Tar
       name: args.name,
       context: args.context,
       model: args.model,
+      modelSelection: args.modelSelection,
+      thoughtLevel: args.thoughtLevel,
       firstPrompt: args.firstPrompt,
       alive: true,
       received: new Set<string>(),
@@ -124,6 +143,8 @@ export class MockProvider implements TeammateProvider, ReconciliationSource, Tar
           name: args.memberId,
           context: "fresh",
           model: undefined,
+          modelSelection: undefined,
+          thoughtLevel: undefined,
           firstPrompt: "",
           alive: false,
           received: new Set<string>(),
@@ -245,7 +266,38 @@ export class MockProvider implements TeammateProvider, ReconciliationSource, Tar
   }
 
   modelOf(memberId: string): string | undefined {
-    return this.teamChildren.get(memberId)?.model;
+    const child = this.teamChildren.get(memberId);
+    return child?.modelSelection?.modelId ?? child?.model;
+  }
+
+  /** Lead 行模型桩（可编程；缺省 undefined → roster 回落 deps.leadModel）。 */
+  leadModelOf(): string | undefined {
+    return this.program.leadModel;
+  }
+
+  /** Lead 当前结构化选择桩（backend 裸 id 消歧：先 Lead provider）。 */
+  leadModelSelectionOf(): MemberModelSelection | undefined {
+    return this.program.leadModelSelection;
+  }
+
+  /** mid-life 改模型桩（不落盘；按脚本返回 now/next-turn/throw）。 */
+  async setMemberModel(args: {
+    memberId: string;
+    modelSelection?: MemberModelSelection;
+    thoughtLevel?: string;
+  }): Promise<{ applied: "now" | "next-turn" }> {
+    this.modelSetCalls.push({
+      memberId: args.memberId,
+      ...(args.modelSelection !== undefined ? { modelSelection: args.modelSelection } : {}),
+      ...(args.thoughtLevel !== undefined ? { thoughtLevel: args.thoughtLevel } : {}),
+    });
+    const verdict = this.modelSetScript.length > 0 ? this.modelSetScript.shift()! : "now";
+    if (verdict === "throw") throw new Error(`mock setMemberModel failure for ${args.memberId}`);
+    if (verdict === "now" && args.modelSelection !== undefined) {
+      const child = this.teamChildren.get(args.memberId);
+      if (child !== undefined) child.modelSelection = args.modelSelection;
+    }
+    return { applied: verdict };
   }
 
   newId(): string {

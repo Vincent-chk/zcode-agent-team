@@ -336,6 +336,19 @@ describe("Roster · listMembers / interrupt（F13/F14）", () => {
     expect(dead?.model).toBeUndefined(); // 无 model 且无 leadModel → 缺省
   });
 
+  it("Lead 行模型：presentation.leadModelOf 实查优先于 leadModel 配置", () => {
+    const { runtime, provider } = buildKit({ leadModel: "m-config" });
+    provider.programWith({ leadModel: "m-observed" });
+    expect(runtime.roster.listMembers(LEAD).members[0]?.model).toBe("m-observed");
+  });
+
+  it("Lead 行模型：leadModelOf 无结果 → leadModel 配置；都没有 → 缺省", () => {
+    const configured = buildKit({ leadModel: "m-config" });
+    expect(configured.runtime.roster.listMembers(LEAD).members[0]?.model).toBe("m-config");
+    const bare = buildKit();
+    expect(bare.runtime.roster.listMembers(LEAD).members[0]?.model).toBeUndefined();
+  });
+
   it("interrupt：Lead-only / 自中断 / 非 active / 不存活 / 存活五分支（F14）", async () => {
     const { runtime, provider } = buildKit();
     const { } = await runtime.roster.spawnTeammate(LEAD, { name: "worker", description: "d", prompt: "p" });

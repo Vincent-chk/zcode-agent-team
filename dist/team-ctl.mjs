@@ -5099,6 +5099,33 @@ import fs6 from "node:fs";
 import os2 from "node:os";
 import path6 from "node:path";
 import { DatabaseSync } from "node:sqlite";
+
+// src/provider/model-selection.ts
+function parseModelSelection(value) {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return void 0;
+  const record = value;
+  const providerId = nonEmptyString(record.providerId);
+  const modelId = nonEmptyString(record.modelId);
+  if (providerId === void 0 || modelId === void 0) return void 0;
+  const options = record.options;
+  if (options !== void 0 && (typeof options !== "object" || options === null || Array.isArray(options))) {
+    return void 0;
+  }
+  let reasoningLevel;
+  const rawLevel = options !== void 0 ? options.reasoningLevel : record.reasoningLevel;
+  if (rawLevel !== void 0) {
+    reasoningLevel = nonEmptyString(rawLevel);
+    if (reasoningLevel === void 0) return void 0;
+  }
+  return { providerId, modelId, ...reasoningLevel !== void 0 ? { reasoningLevel } : {} };
+}
+function nonEmptyString(value) {
+  if (typeof value !== "string") return void 0;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : void 0;
+}
+
+// src/provider/transcript.ts
 function defaultDbPath() {
   return process.env.TEAM_DB_PATH ?? path6.join(os2.homedir(), ".zcode", "cli", "db", "db.sqlite");
 }
@@ -5207,6 +5234,51 @@ var TranscriptReader = class {
          ORDER BY m.sequence DESC LIMIT 1`
     ).get(sessionId);
     return row?.model;
+  }
+  /**
+   * 会话库中最近一次 setModel 的选择（Round A 实证：条目为 UPSERT 单行，canonical id
+   * `<sessionId>:runtime-model-selection`，时间排序安全）。data 取嵌套 modelSelection 优先；
+   * 兼容旧行把 providerId/modelId/thoughtLevel 平铺在顶层的形态。
+   */
+  latestModelSelection(sessionId) {
+    if (this.missing()) return void 0;
+    const row = this.open().prepare(
+      `SELECT data FROM session_entry
+         WHERE session_id = ? AND type = 'runtime/model_selection'
+         ORDER BY time_created DESC LIMIT 1`
+    ).get(sessionId);
+    if (row === void 0) return void 0;
+    const data = parseOrNull(row.data);
+    if (data === null) return void 0;
+    const nested = parseModelSelection(data.modelSelection);
+    if (nested !== void 0) return nested;
+    const providerId = typeof data.providerId === "string" ? data.providerId.trim() : "";
+    const modelId = typeof data.modelId === "string" ? data.modelId.trim() : "";
+    if (providerId.length === 0 || modelId.length === 0) return void 0;
+    const thoughtLevel = typeof data.thoughtLevel === "string" ? data.thoughtLevel.trim() : "";
+    return {
+      providerId,
+      modelId,
+      ...thoughtLevel.length > 0 ? { reasoningLevel: thoughtLevel } : {}
+    };
+  }
+  /** 最近一次真实模型调用（session_entry 缺失时的继承兜底；variant = 思考强度）。 */
+  latestModelUsage(sessionId) {
+    if (this.missing()) return void 0;
+    const row = this.open().prepare(
+      `SELECT provider_id, model_id, variant FROM model_usage
+         WHERE session_id = ? ORDER BY started_at DESC LIMIT 1`
+    ).get(sessionId);
+    if (row === void 0) return void 0;
+    const providerId = row.provider_id.trim();
+    const modelId = row.model_id.trim();
+    if (providerId.length === 0 || modelId.length === 0) return void 0;
+    const variant = typeof row.variant === "string" ? row.variant.trim() : "";
+    return {
+      providerId,
+      modelId,
+      ...variant.length > 0 ? { reasoningLevel: variant } : {}
+    };
   }
   /** 完成回合导出（D3 fork 转录）：真实用户消息 + 助手文本；tool 部分记工具名。 */
   exportTurns(sessionId) {
@@ -5454,7 +5526,8 @@ function memberPaths(teamDir, memberId) {
     stopBudgetFile: path7.join(memberDir, "stop-budget.json"),
     runDir,
     currentFile: path7.join(runDir, "current.json"),
-    drainMarkerFile: path7.join(runDir, "drain-requested.json")
+    drainMarkerFile: path7.join(runDir, "drain-requested.json"),
+    modelPendingFile: path7.join(memberDir, "model-pending.json")
   };
 }
 function readJson(file) {
@@ -5753,6 +5826,177 @@ h3 .count {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* stage-8 D \u6210\u5458\u5361\u5BB9\u5668\uFF1A\u9F7F\u8F6E\u4E0E\u6210\u5458\u6309\u94AE\u5E76\u5217\uFF08HTML \u4E0D\u5141\u8BB8 button \u5D4C button\uFF09\u3002
+   \u7F51\u683C\u5B50\u9879\u7531 .member \u53D8\u4E3A .member-card\uFF1B\u6210\u5458\u6309\u94AE\u94FA\u6EE1\u5BB9\u5668\uFF0C\u53F3\u4FA7\u8BA9\u51FA\u9F7F\u8F6E\u4F4D\u3002 */
+.member-card { position: relative; display: flex; min-width: 0; }
+.member-card .member { width: 100%; padding-right: 28px; }
+/* \u9F7F\u8F6E\uFF1A\u5E38\u663E\u4F4E\u5F3A\u8C03\uFF08tertiary 55%\uFF09\uFF0Chover/focus \u63D0\u4EAE\uFF1B22px \u547D\u4E2D\u533A\u5185\u5D4C 14px \u7EBF\u6027\u56FE\u6807 */
+.member-gear {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  border-radius: 6px;
+  color: var(--at-label-tertiary);
+  cursor: pointer;
+  opacity: 0.55;
+  transition: opacity 0.12s, color 0.12s, background-color 0.12s;
+}
+.member-card:hover .member-gear,
+.member-gear:focus-visible { opacity: 1; }
+.member-gear:hover,
+.member-gear:focus-visible {
+  color: var(--at-label-primary);
+  background: color-mix(in srgb, var(--at-label-tertiary) 12%, transparent);
+}
+.member-gear:focus-visible { outline: 2px solid color-mix(in srgb, var(--at-business) 45%, transparent); outline-offset: 1px; }
+/* stage-8 D \u8BBE\u7F6E\u5F39\u7A97\uFF1A.team-panel \u4E3A position:relative + overflow:hidden \u2192 absolute inset \u8986\u76D6\u9762\u677F */
+.settings-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: color-mix(in srgb, var(--at-label-primary) 22%, transparent);
+}
+.settings-modal {
+  width: min(380px, 100%);
+  max-height: 100%;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+  background: var(--at-bg-menu);
+  color: var(--at-label-primary);
+  border-radius: 12px;
+  box-shadow: var(--at-shadow-prominent);
+  outline: 0.5px solid var(--at-border-l1);
+  padding: 12px 14px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.settings-head { display: flex; align-items: center; gap: 8px; }
+.settings-title {
+  font-size: 13px;
+  font-weight: 500;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.settings-close {
+  margin-left: auto;
+  flex: none;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  background: none;
+  border: none;
+  border-radius: 6px;
+  color: var(--at-label-tertiary);
+  font: inherit;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+.settings-close:hover,
+.settings-close:focus-visible { color: var(--at-label-primary); background: color-mix(in srgb, var(--at-label-tertiary) 12%, transparent); }
+.settings-current {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: var(--at-label-secondary);
+}
+.settings-label { font-size: 11px; color: var(--at-label-tertiary); }
+.settings-current-model { font-size: 12px; font-weight: 500; color: var(--at-label-primary); }
+.source-badge {
+  font-size: 10px;
+  line-height: 15px;
+  padding: 0 6px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--at-business) 16%, transparent);
+  color: var(--at-business);
+}
+.source-badge.inherited {
+  background: color-mix(in srgb, var(--at-state-ongoing) 16%, transparent);
+  color: var(--at-state-ongoing);
+}
+.source-badge.observed {
+  background: color-mix(in srgb, var(--at-label-tertiary) 14%, transparent);
+  color: var(--at-label-secondary);
+}
+.source-badge.cli-default {
+  background: color-mix(in srgb, var(--at-label-tertiary) 10%, transparent);
+  color: var(--at-label-tertiary);
+}
+.settings-field { display: flex; flex-direction: column; gap: 4px; }
+.modal-select {
+  width: 100%;
+  font: inherit;
+  font-size: 12px;
+  line-height: 18px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  border: 0.5px solid var(--at-border-l2);
+  background: var(--at-bg-layer-2);
+  color: var(--at-label-primary);
+}
+.modal-select:disabled { opacity: 0.6; }
+.modal-select:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--at-business) 45%, transparent);
+  outline-offset: 1px;
+}
+.settings-state {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--at-label-tertiary);
+  padding: 8px 0;
+}
+.settings-state.error { color: var(--at-error-text); }
+.settings-notice { font-size: 11px; color: var(--at-state-ongoing); }
+.settings-foot { display: flex; justify-content: flex-end; gap: 8px; }
+.settings-btn {
+  background: none;
+  border: 0.5px solid var(--at-border-l2);
+  border-radius: 6px;
+  color: var(--at-label-secondary);
+  font: inherit;
+  font-size: 12px;
+  line-height: 20px;
+  padding: 1px 10px;
+  cursor: pointer;
+}
+.settings-btn:hover,
+.settings-btn:focus-visible { color: var(--at-label-primary); border-color: var(--at-border-l3); }
+.settings-btn.primary {
+  background: color-mix(in srgb, var(--at-business) 14%, transparent);
+  border-color: color-mix(in srgb, var(--at-business) 45%, transparent);
+  color: var(--at-business);
+  font-weight: 500;
+}
+.settings-btn[disabled] { opacity: 0.45; cursor: default; }
+.settings-advanced {
+  border-top: 0.5px solid var(--at-border-l2);
+  padding-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.settings-advanced-title { font-size: 11px; font-weight: 500; color: var(--at-label-secondary); }
+.settings-advanced-hint { font-size: 11px; line-height: 16px; color: var(--at-label-tertiary); }
+.settings-advanced .settings-btn { align-self: flex-start; }
 /* \u72B6\u6001\u70B9\uFF1A\u76F4\u5F84\u4E00\u81F4 8px\uFF08V06\uFF09 */
 .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; display: inline-block; }
 .dot.ongoing { background: var(--at-state-ongoing); }
@@ -6008,11 +6252,93 @@ function iconUser(size = 14) {
 function iconChevron(size = 12) {
   return svg('<path d="M4 6.2 8 10.2 12 6.2"/>', size);
 }
+function iconGear(size = 14) {
+  return svg(
+    '<circle cx="8" cy="8" r="4.4"/><circle cx="8" cy="8" r="1.9"/><path d="M8 1.5v2.1M8 12.4v2.1M1.5 8h2.1M12.4 8h2.1M3.4 3.4l1.5 1.5M11.1 11.1l1.5 1.5M12.6 3.4l-1.5 1.5M4.9 11.1l-1.5 1.5"/>',
+    size
+  );
+}
 
-// src/ui-core/render.ts
+// src/ui-core/escape.ts
 function esc(s) {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 }
+
+// src/ui-core/member-settings.ts
+var MEMBER_SETTINGS_DICT = {
+  zh: {
+    "settings.open": "\u6210\u5458\u8BBE\u7F6E",
+    "settings.title": "\u6210\u5458\u8BBE\u7F6E",
+    "settings.close": "\u5173\u95ED",
+    "settings.current": "\u5F53\u524D\u751F\u6548",
+    "settings.noModel": "\u672A\u8BB0\u5F55",
+    "settings.source.explicit": "\u624B\u52A8\u6307\u5B9A",
+    "settings.source.inherited": "\u7EE7\u627F\u81EA Lead",
+    "settings.source.observed": "\u8FD0\u884C\u65F6\u89C2\u6D4B",
+    "settings.source.cli-default": "CLI \u9ED8\u8BA4",
+    "settings.provider": "Provider",
+    "settings.model": "\u6A21\u578B",
+    "settings.thoughtLevel": "\u601D\u8003\u5F3A\u5EA6",
+    "settings.levelDefault": "\u6A21\u578B\u9ED8\u8BA4",
+    // 保留：Registry 目前只暴露 variants 或「未知」，尚无「明确不支持档位」标记；
+    // 未来若注册表给出该能力位，用它渲染禁用态（E-1b 起未知档位改走常用档）。
+    "settings.noReasoning": "\u8BE5\u6A21\u578B\u4E0D\u652F\u6301\u601D\u8003\u5F3A\u5EA6",
+    "settings.groupEnabled": "\u5DF2\u542F\u7528",
+    "settings.groupDisabled": "\u4E0D\u53EF\u7528",
+    "settings.disabledBecause": "\uFF08{reason}\uFF09",
+    "settings.advanced": "\u9AD8\u7EA7\u6A21\u5F0F",
+    "settings.advancedHint": "\u9700\u8981\u65B0\u589E\u6A21\u578B\u6216 Provider\uFF1F\u5728 ZCode \u8BBE\u7F6E \u2192 \u6A21\u578B\u670D\u52A1 \u4E2D\u6DFB\u52A0\u540E\uFF0C\u56DE\u5230\u6B64\u5904\u70B9\u51FB\u5237\u65B0",
+    "settings.refresh": "\u5237\u65B0",
+    "settings.cancel": "\u53D6\u6D88",
+    "settings.apply": "\u5E94\u7528",
+    "settings.saving": "\u6B63\u5728\u5E94\u7528\u2026",
+    "settings.applied": "\u5DF2\u5E94\u7528",
+    "settings.nextTurn": "\u5DF2\u4FDD\u5B58\uFF0C\u4E0B\u4E00\u8F6E\u751F\u6548",
+    "settings.loading": "\u6B63\u5728\u52A0\u8F7D\u6A21\u578B\u2026",
+    "settings.error": "\u6A21\u578B\u8BBE\u7F6E\u4E0D\u53EF\u7528\uFF1A{message}",
+    "settings.emptyCatalog": "\u6A21\u578B\u76EE\u5F55\u4E3A\u7A7A\uFF08\u53EF\u5728\u9AD8\u7EA7\u6A21\u5F0F\u5237\u65B0\uFF09",
+    "settings.noSelection": "\u8BF7\u5148\u9009\u62E9 Provider \u4E0E\u6A21\u578B"
+  },
+  en: {
+    "settings.open": "Member settings",
+    "settings.title": "Member settings",
+    "settings.close": "Close",
+    "settings.current": "Currently in effect",
+    "settings.noModel": "Not recorded",
+    "settings.source.explicit": "Set explicitly",
+    "settings.source.inherited": "Inherited from Lead",
+    "settings.source.observed": "Observed at runtime",
+    "settings.source.cli-default": "CLI default",
+    "settings.provider": "Provider",
+    "settings.model": "Model",
+    "settings.thoughtLevel": "Reasoning level",
+    "settings.levelDefault": "Model default",
+    // 保留（同上）：显式「不支持档位」能力位尚未由注册表提供。
+    "settings.noReasoning": "This model has no reasoning levels",
+    "settings.groupEnabled": "Enabled",
+    "settings.groupDisabled": "Unavailable",
+    "settings.disabledBecause": " ({reason})",
+    "settings.advanced": "Advanced",
+    "settings.advancedHint": "Need another model or provider? Add it in ZCode Settings \u2192 Model services, then come back and refresh.",
+    "settings.refresh": "Refresh",
+    "settings.cancel": "Cancel",
+    "settings.apply": "Apply",
+    "settings.saving": "Applying\u2026",
+    "settings.applied": "Applied",
+    "settings.nextTurn": "Saved; applies on the next turn",
+    "settings.loading": "Loading models\u2026",
+    "settings.error": "Model settings unavailable: {message}",
+    "settings.emptyCatalog": "Model catalog is empty (use Refresh in Advanced)",
+    "settings.noSelection": "Select a provider and model first"
+  }
+};
+function tms(lang, key, vars) {
+  const template = MEMBER_SETTINGS_DICT[lang][key];
+  if (vars === void 0) return template;
+  return template.replace(/\{(\w+)\}/g, (m, k) => k in vars ? String(vars[k]) : m);
+}
+
+// src/ui-core/render.ts
 function isCompact(frame) {
   return frame.members.length === 1 && frame.tasks.length === 0;
 }
@@ -6067,9 +6393,14 @@ function renderMember(m, opts) {
   const sub = `<span class="sub">${esc(t(lang, memberStatusKey(m.status)))}${modelSuffix}</span>`;
   const diag = m.diagnostics.length > 0 ? `<span class="diagnostic">${esc(m.diagnostics[0])}</span>` : "";
   const openAttr = disabled ? "" : ` title="${esc(t(lang, "open"))}"`;
-  return `<button class="${cls}" data-member-id="${esc(m.id)}"${disabled ? " disabled" : ""}${openAttr}>` + memberIndicator(m) + `<span class="member-text">${nameRow}${sub}${diag}</span></button>`;
+  const body = `<button class="${cls}" data-member-id="${esc(m.id)}"${disabled ? " disabled" : ""}${openAttr}>` + memberIndicator(m) + `<span class="member-text">${nameRow}${sub}${diag}</span></button>`;
+  if (opts.memberSettings !== true || m.role !== "teammate") {
+    return body;
+  }
+  const gear = `<button class="member-gear" data-member-gear="${esc(m.id)}" title="${esc(tms(lang, "settings.open"))}" aria-label="${esc(tms(lang, "settings.open"))}">${iconGear(14)}</button>`;
+  return `<div class="member-card">${body}${gear}</div>`;
 }
-function renderRoster(frame, lang) {
+function renderRoster(frame, lang, options = {}) {
   const members = frame.members;
   const currentId = currentMemberId(frame);
   const countHtml = members.length > 1 ? `<span class="count">${members.length}</span>` : "";
@@ -6079,7 +6410,8 @@ function renderRoster(frame, lang) {
       // Tag 恒随当前会话；高亮/描边才受 members>1 限制（上游 TeamAction 同口径）。
       isCurrent: m.id === currentId,
       highlightCurrent: m.id === currentId && members.length > 1,
-      disabled: isMemberDisabled(m, currentId)
+      disabled: isMemberDisabled(m, currentId),
+      ...options.memberSettings === true ? { memberSettings: true } : {}
     })
   ).join("");
   return `<section class="roster-section"><h3>${esc(t(lang, "roster"))}${countHtml}</h3><div class="roster">${cards}</div></section>`;
@@ -6133,7 +6465,7 @@ function renderNotices(opts) {
   }
   return out.join("");
 }
-function renderPanelBody(frame, lang, runtime) {
+function renderPanelBody(frame, lang, runtime, options = {}) {
   const noTeam = frame.team === null;
   const notices = renderNotices({
     lang,
@@ -6145,7 +6477,7 @@ function renderPanelBody(frame, lang, runtime) {
   if (noTeam && runtime?.loading !== true) {
     return notices;
   }
-  return notices + renderRoster(frame, lang) + renderTasks(frame, lang);
+  return notices + renderRoster(frame, lang, options) + renderTasks(frame, lang);
 }
 
 // src/ui-core/widget.ts

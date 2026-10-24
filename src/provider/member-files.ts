@@ -12,6 +12,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import type { MemberModelSelection } from "./model-selection.js";
 
 export interface OriginRecord {
   teamId: string;
@@ -33,6 +34,10 @@ export interface OriginRecord {
   initialUserMessageAccepted: boolean;
   /** spawn 请求的 model（缺省 = CLI 默认；成员行 model 由 transcript 实查优先）。 */
   model?: string;
+  /** 生效的结构化模型选择（继承/显式；展示/审计用，非生效机制）。 */
+  modelSelection?: MemberModelSelection;
+  /** 选择来源：explicit = spawn/对话显式指定；inherited = 继承自 Lead。 */
+  modelSource?: "inherited" | "explicit";
   /** 会话隔离形态（stage-6）：child = 宿主原生隐藏子会话；legacy = 旧顶层 interactive（回滚用）。 */
   sessionIsolation?: "child" | "legacy";
   /** 隐藏子会话的物理 parent（anchor 会话 id；仅 sessionIsolation=child 时存在）。 */
@@ -86,6 +91,8 @@ export interface MemberPaths {
   runDir: string;
   currentFile: string;
   drainMarkerFile: string;
+  /** mid-life 模型修改的待应用标记（下一轮拉起前应用；成功即删）。 */
+  modelPendingFile: string;
 }
 
 export function memberPaths(teamDir: string, memberId: string): MemberPaths {
@@ -99,6 +106,7 @@ export function memberPaths(teamDir: string, memberId: string): MemberPaths {
     runDir,
     currentFile: path.join(runDir, "current.json"),
     drainMarkerFile: path.join(runDir, "drain-requested.json"),
+    modelPendingFile: path.join(memberDir, "model-pending.json"),
   };
 }
 

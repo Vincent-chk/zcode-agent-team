@@ -11,6 +11,7 @@ import { requireMembership } from "./projection.js";
 import type { TeamStore, ReconciliationSource, TargetInspector } from "./ports.js";
 import { errorMessage } from "./ports.js";
 import type { TeammateProvider } from "../provider/teammate-provider.js";
+import type { MemberModelSelection } from "../provider/model-selection.js";
 import type { LifecyclePort } from "./lifecycle.js";
 
 /** §5.1 名字规则。 */
@@ -26,6 +27,10 @@ export interface SpawnArgs {
   prompt: string;
   context?: "fresh" | "fork";
   model?: string;
+  /** stage-8：结构化模型选择（backend 已按目录/Lead 继承解析）。 */
+  modelSelection?: MemberModelSelection;
+  /** stage-8：思考强度覆盖（provider 合并进选择）。 */
+  thoughtLevel?: string;
   signal?: AbortSignal;
 }
 
@@ -45,6 +50,8 @@ export interface MemberRow {
 export interface MemberPresentation {
   statusOf(memberId: string): "running" | "inactive";
   modelOf(memberId: string): string | undefined;
+  /** Lead 会话模型实查（可选；真 provider 实现，缺省回落 deps.leadModel）。 */
+  leadModelOf?(): string | undefined;
 }
 
 export interface RosterDeps {
@@ -163,6 +170,8 @@ export class TeamRoster {
           firstPrompt: args.prompt, // 对齐轮：0.2.1 初始任务不含身份前缀
           context,
           model: args.model,
+          ...(args.modelSelection !== undefined ? { modelSelection: args.modelSelection } : {}),
+          ...(args.thoughtLevel !== undefined ? { thoughtLevel: args.thoughtLevel } : {}),
           signal,
         });
       } catch (err) {
@@ -318,6 +327,7 @@ export class TeamRoster {
     this.requireMember(callerId);
     const state = this.loadState();
     const presentation = this.deps.presentation;
+    const leadModel = presentation?.leadModelOf?.() ?? this.deps.leadModel;
     const rows: MemberRow[] = [
       {
         target: "lead",
@@ -325,7 +335,7 @@ export class TeamRoster {
         // availability(root)：Lead 调用方视角恒 running；teammate 视角无法观测宿主 Lead 回合，
         // 保守呈 inactive（D19 登记）。此前恒 running 会让 teammate 的 noProgress 捷径失效。
         status: callerId === state.id ? "running" : "inactive",
-        ...(this.deps.leadModel !== undefined ? { model: this.deps.leadModel } : {}),
+        ...(leadModel !== undefined ? { model: leadModel } : {}),
         diagnostics: [],
       },
     ];

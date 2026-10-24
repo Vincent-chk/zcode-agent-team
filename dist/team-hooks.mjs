@@ -5056,7 +5056,8 @@ function memberPaths(teamDir, memberId) {
     stopBudgetFile: path6.join(memberDir, "stop-budget.json"),
     runDir,
     currentFile: path6.join(runDir, "current.json"),
-    drainMarkerFile: path6.join(runDir, "drain-requested.json")
+    drainMarkerFile: path6.join(runDir, "drain-requested.json"),
+    modelPendingFile: path6.join(memberDir, "model-pending.json")
   };
 }
 function writeJsonAtomic(file, value) {

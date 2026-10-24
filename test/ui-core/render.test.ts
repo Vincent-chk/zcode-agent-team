@@ -108,8 +108,7 @@ describe("成员卡渲染（V05/V06）", () => {
     expect(html).toContain('class="member current"');
     expect(html).toContain("当前会话");
     expect(html).toContain("disabled");
-  });
-  it("en 词典：Current chat；模型 hover 后缀", () => {
+  });  it("en 词典：Current chat；模型 hover 后缀", () => {
     const html = renderMember(member({ target: "a", status: "running", model: "gpt-x" }), {
       lang: "en",
       isCurrent: false,
@@ -139,6 +138,48 @@ describe("成员卡渲染（V05/V06）", () => {
     const html = renderMember(member({ target: long }), { lang: "zh", isCurrent: false, disabled: false });
     expect(html).toContain(long);
     expect(html).toContain('class="name"');
+  });
+});
+
+describe("成员设置齿轮（stage-8 D）", () => {
+  const twoMembers = frame({
+    members: [
+      member({ target: "lead", role: "lead", id: TEAM, sessionId: TEAM }),
+      member({ target: "alice", id: "m_alice" }),
+    ],
+  });
+
+  it("默认关：不输出 member-card/齿轮（伴生页/静态卡片结构不变）", () => {
+    const html = renderRoster(twoMembers, "zh");
+    expect(html).not.toContain("member-card");
+    expect(html).not.toContain("data-member-gear");
+    const viaBody = renderPanelBody(twoMembers, "zh");
+    expect(viaBody).not.toContain("data-member-gear");
+  });
+
+  it("开启后：成员按钮外包 div.member-card；仅 teammate 出齿轮（Lead 不放）", () => {
+    const html = renderRoster(twoMembers, "zh", { memberSettings: true });
+    expect(html).toContain('<div class="member-card"><button class="member" data-member-id="m_alice"');
+    expect((html.match(/data-member-gear=/g) ?? []).length).toBe(1);
+    expect(html).toContain('data-member-gear="m_alice"');
+    // Lead 行保持原结构（不包 member-card、无齿轮）
+    expect(html).toContain(`<button class="member current" data-member-id="${TEAM}"`);
+    expect(html).not.toContain(`data-member-gear="${TEAM}"`);
+  });
+
+  it("齿轮在成员按钮之外（不嵌套 button）+ aria/title 文案 + 14px 图标", () => {
+    const html = renderRoster(twoMembers, "en", { memberSettings: true });
+    // 结构：</button><button class="member-gear" ...>（HTML 不允许 button 嵌 button）
+    expect(html).toMatch(/<\/button><button class="member-gear" data-member-gear="m_alice"/);
+    expect(html).toContain('title="Member settings"');
+    expect(html).toContain('aria-label="Member settings"');
+    expect(html).toContain('width="14"');
+    expect(html).toContain('class="member-gear"');
+  });
+
+  it("renderPanelBody 透传选项（第 4 参）", () => {
+    const html = renderPanelBody(twoMembers, "zh", { loading: false }, { memberSettings: true });
+    expect(html).toContain("data-member-gear");
   });
 });
 

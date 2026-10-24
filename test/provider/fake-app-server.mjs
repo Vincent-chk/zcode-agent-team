@@ -3,10 +3,13 @@
 //   → 推 startup/storageState ready 通知；回应 v4/command：
 //       createSession → { status:"accepted", result:{ type:"createSession", sessionId:"sess_fake_anchor" } }
 //       createSelectionSideSession → result.sessionId = FAKE_APP_SERVER_CHILD（缺省 sess_fake_child）
+//       session/setModel → 小 ack（真实宿主返回巨型消息快照；夹具只回 {ok:true}）
+//       session/resume → 最小 {session:{id}}（mid-life 应用链：resume→setModel）
 // 环境变量：
 //   FAKE_APP_SERVER_CHILD      子会话 id
 //   FAKE_APP_SERVER_ANCHOR     anchor 会话 id
-//   FAKE_APP_SERVER_FAIL       非空 = 指定失败的步骤（create / side / ready）
+//   FAKE_APP_SERVER_FAIL       非空 = 指定失败的步骤（create / side / ready / setModel / setModel-once / resume）
+//                              setModel-once = 仅第一次 setModel 失败（测兜底成功路径）
 //   FAKE_APP_SERVER_RECORD     非空 = 把收到的请求追加写入该 JSONL（断言用）
 import fs from "node:fs";
 
@@ -14,6 +17,7 @@ const FAIL = process.env.FAKE_APP_SERVER_FAIL ?? "";
 const ANCHOR = process.env.FAKE_APP_SERVER_ANCHOR ?? "sess_fake_anchor";
 const CHILD = process.env.FAKE_APP_SERVER_CHILD ?? "sess_fake_child";
 const RECORD = process.env.FAKE_APP_SERVER_RECORD;
+let setModelCalls = 0;
 
 function write(message) {
   process.stdout.write(`${JSON.stringify(message)}\n`);
@@ -72,6 +76,25 @@ process.stdin.on("data", (chunk) => {
         continue;
       }
       respond({ result: { status: "failed", reasonCode: "proto.invalidPayload", message: `unknown type ${type}` } });
+      continue;
+    }
+    if (request.method === "session/setModel") {
+      setModelCalls += 1;
+      const failThis = FAIL === "setModel" || (FAIL === "setModel-once" && setModelCalls === 1);
+      if (failThis) {
+        respond({ error: { code: -32004, message: "fake setModel failure" } });
+      } else {
+        respond({ result: { ok: true } });
+      }
+      continue;
+    }
+    if (request.method === "session/resume") {
+      if (FAIL === "resume") {
+        respond({ error: { code: -32004, message: "fake resume failure" } });
+      } else {
+        // 真实宿主返回 messages/projection/... 巨型快照；夹具只回最小形状（生产代码不落日志）。
+        respond({ result: { session: { id: request.params?.sessionId } } });
+      }
       continue;
     }
     respond({ error: { code: -32601, message: `method not found: ${String(request.method)}` } });

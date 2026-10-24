@@ -7,6 +7,7 @@ import { DatabaseSync } from "node:sqlite";
 import { ResumePerTurnProvider } from "../../src/provider/resume-provider.js";
 import type { SessionBreederLike } from "../../src/provider/resume-provider.js";
 import type { ZcodeBin } from "../../src/provider/zcode-bin.js";
+import type { ModelCatalog } from "../../src/provider/model-catalog.js";
 import type { TeamLimits } from "../../src/domain/config.js";
 import type { ContentBlock } from "../../src/domain/events.js";
 
@@ -55,11 +56,75 @@ export function createTestDb(dbPath: string): void {
     CREATE INDEX message_session_sequence_idx ON message (session_id, sequence, time_created, id);
     CREATE INDEX part_session_idx ON part (session_id);
     CREATE INDEX part_message_sequence_idx ON part (message_id, sequence, time_created, id);
+    CREATE TABLE session_entry (
+      id TEXT PRIMARY KEY, session_id TEXT NOT NULL, type TEXT NOT NULL,
+      time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL, data TEXT NOT NULL
+    );
+    CREATE TABLE model_usage (
+      id TEXT PRIMARY KEY, session_id TEXT NOT NULL, provider_id TEXT NOT NULL,
+      model_id TEXT NOT NULL, variant TEXT, status TEXT NOT NULL, started_at INTEGER NOT NULL
+    );
   `);
   db.close();
 }
 
-export function buildProviderKit(opts: { teamId?: string; zcode?: ZcodeBin; drainPolicy?: "keep" | "kill"; sessionIsolation?: "child" | "legacy"; breeder?: SessionBreederLike } = {}): ProviderKit {
+/** 直插模型选择条目（setModel 落库形态；id 缺省按宿主 canonical 规则 `<sessionId>:runtime-model-selection`）。 */
+export function insertSessionEntry(
+  dbPath: string,
+  args: { sessionId: string; data: unknown; type?: string; id?: string; timeCreated?: number },
+): void {
+  const db = new DatabaseSync(dbPath);
+  try {
+    const type = args.type ?? "runtime/model_selection";
+    const ts = args.timeCreated ?? Date.now();
+    db.prepare(
+      "INSERT INTO session_entry (id, session_id, type, time_created, time_updated, data) VALUES (?,?,?,?,?,?)",
+    ).run(
+      args.id ?? `${args.sessionId}:${type.replaceAll("/", "-")}`,
+      args.sessionId,
+      type,
+      ts,
+      ts,
+      JSON.stringify(args.data),
+    );
+  } finally {
+    db.close();
+  }
+}
+
+/** 直插一次模型调用记录（继承兜底探针用；started_at 越大越新）。 */
+export function insertModelUsage(
+  dbPath: string,
+  args: { sessionId: string; providerId: string; modelId: string; variant?: string | null; startedAt?: number },
+): void {
+  const db = new DatabaseSync(dbPath);
+  try {
+    const startedAt = args.startedAt ?? Date.now();
+    db.prepare(
+      "INSERT INTO model_usage (id, session_id, provider_id, model_id, variant, status, started_at) VALUES (?,?,?,?,?,?,?)",
+    ).run(
+      `usage-${args.sessionId}-${startedAt}`,
+      args.sessionId,
+      args.providerId,
+      args.modelId,
+      args.variant ?? null,
+      "completed",
+      startedAt,
+    );
+  } finally {
+    db.close();
+  }
+}
+
+export function buildProviderKit(opts: {
+  teamId?: string;
+  zcode?: ZcodeBin;
+  drainPolicy?: "keep" | "kill";
+  sessionIsolation?: "child" | "legacy";
+  breeder?: SessionBreederLike;
+  /** 模型目录注入（档位缺省链；缺省 = 读宿主真实目录——测试里 providerId 不在宿主目录 → 缺省 max）。 */
+  modelCatalog?: () => ModelCatalog;
+} = {}): ProviderKit {
   const root = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "at-s4-"));
   const dataRoot = path.join(root, "data");
   const cwd = path.join(root, "ws");
@@ -78,6 +143,7 @@ export function buildProviderKit(opts: { teamId?: string; zcode?: ZcodeBin; drai
     // 既有夹具走 fake-zcode（不支持 app-server）→ 默认 legacy；隔离路径由专门用例注入 breeder。
     sessionIsolation: opts.sessionIsolation ?? "legacy",
     ...(opts.breeder !== undefined ? { breeder: opts.breeder } : {}),
+    ...(opts.modelCatalog !== undefined ? { modelCatalog: opts.modelCatalog } : {}),
     ...(opts.drainPolicy !== undefined ? { drainPolicy: opts.drainPolicy } : {}),
     firstTurnTimeoutMs: 8_000,
     deliverConfirmMs: 4_000,

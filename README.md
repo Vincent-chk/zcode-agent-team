@@ -70,6 +70,22 @@ Lead 的动作链：创建队友 → 在共享任务板建任务并指定 owner 
 
 模型会把这些话术映射到对应工具（`spawn_teammate` / `send_message` / `list_agents` / `team_task_list` …），你不需要记工具名。
 
+### 2.1 指定模型与思考强度（可选）
+
+队友**默认继承 Lead 的模型与思考强度**，不用专门设置。需要区分时：
+
+```text
+创建一个叫 reviewer 的队友，用 deepseek-flash、思考强度 high，检查 README 前三段的错别字。
+```
+
+```text
+把 reviewer 换成 GLM-5.3，思考强度 max。
+```
+
+- 模型写法：`providerId$modelId`（全称最稳）或裸 `modelId`；同名模型存在于多个 Provider 时优先取 Lead 当前 Provider，仍有歧义会列出候选。
+- 生效时机：运行中的成员**下一轮**生效；空闲成员立即生效。
+- 可用模型清单：面板成员卡右上角**齿轮** → 模型设置弹窗，或 MCP 资源 `team://models`（不包含任何 API Key / Base URL）。
+
 ### 3. `/team` 看状态
 
 会话里随时输入 `/team`：首行输出「成员 N · 共享任务 T」，随后逐行列出成员与任务（与面板词典同源同文案），并按运行环境附上面板/命令入口。刷新语义：桌面 MCP Apps 面板自动实时（订阅推送，无需手动刷新）；CLI 每次重跑 `/team` 即最新。
@@ -90,21 +106,22 @@ Lead 的动作链：创建队友 → 在共享任务板建任务并指定 owner 
 3. `reviewer` 完成后向 Lead 汇报，Lead（orchestrator 下先独立复核）汇总给你；
 4. `reviewer` 的会话是隐藏子会话，不会和 Lead 平级出现在左侧任务栏。
 
-## 工具速查（模型可见 9 个；`interrupt:false` 时 8 个）
+## 工具速查（模型可见 10 个；`interrupt:false` 时 9 个）
 
 | 工具 | 谁用 | 作用 |
 |---|---|---|
-| `spawn_teammate` | Lead | 创建一个有名字的持久队友（`context: fresh\|fork`；orchestrator 模式下 Lead 会主动组队） |
+| `spawn_teammate` | Lead | 创建一个有名字的持久队友（`context: fresh\|fork`；可选 `model` / `thoughtLevel`，缺省继承 Lead 模型；orchestrator 模式下 Lead 会主动组队） |
 | `send_message` | 全体 | 给另一个成员发消息：运行中在最近回合边界送达；空闲则拉起/恢复一轮 |
 | `list_agents` | 全体 | 列出 Lead 与全部队友的 target 与可用状态（`inactive` = 当前无回合，不代表任务失败） |
-| `interrupt_agent` | Lead | 中断一个队友当前回合，保留其待处理收件箱（**配置关闭时此工具不注册 → 8 个**） |
+| `interrupt_agent` | Lead | 中断一个队友当前回合，保留其待处理收件箱（**配置关闭时此工具不注册 → 9 个**） |
+| `member_set_model` | Lead | 修改一个队友的模型 / 思考强度（`providerId$modelId` 或裸 modelId；运行中下一轮生效，空闲立即生效） |
 | `wait_agent` | Lead | 等待下一次成员/消息/任务变化（不会唤醒空闲成员；超时返回 noProgress） |
 | `team_task_create` | 全体 | 在共享任务板创建一条未分配任务（可带 `blocked_by` / `write_scopes`） |
 | `team_task_list` | 全体 | 列出任务：状态、owner、revision、阻塞、写作用域告警（可分页/过滤） |
 | `team_task_get` | 全体 | 读取单条任务的最新完整内容（改动前必读） |
 | `team_task_update` | 全体 | 用 `expected_revision` 做 CAS 的任务动作：claim / release / edit / set_dependencies / complete / reopen / reassign / delete |
 
-另有一个 app 专用回环工具 `team_panel_call`（面板心跳/刷新/详情，模型不可见）；诊断探针 `team_ping` 仅在 `TEAM_DEBUG_TOOLS=1` 时暴露。
+另有一个 app 专用回环工具 `team_panel_call`（面板心跳/刷新/详情/**模型目录与成员模型设置**，模型不可见）；诊断探针 `team_ping` 仅在 `TEAM_DEBUG_TOOLS=1` 时暴露。模型清单一类只读数据也可经 MCP 资源 `team://models` 读取（白名单投影，**不含 apiKey/baseURL**）。
 
 ## 配置（userConfig）
 
@@ -116,7 +133,7 @@ Lead 的动作链：创建队友 → 在共享任务板建任务并指定 owner 
 | `maxTasks` | 256 | 任务板任务数量上限 |
 | `maxMessageBytes` | 65536 | 成员间单条消息的最大字节数 |
 | `disposalTimeoutMs` | 5000 | 团队处置（结算与回收）的超时时间 |
-| `interrupt` | true | 关闭后模型只拿到 8 个工具（`interrupt_agent` 不注册） |
+| `interrupt` | true | 关闭后模型只拿到 9 个工具（`interrupt_agent` 不注册） |
 | `leadMode` | orchestrator | `orchestrator`：Lead 自主组队、分配、独立验收；`collaborator`：等你指示再建队 |
 
 ## CLI 用法
@@ -237,7 +254,7 @@ zcode plugins list --json        # 看 version / rootPath / dataPath / diagnosti
 | D19 | hook 读取 daemon 落盘的配置；首次 daemon 启动前 hook 使用默认值（如 `interrupt=true`） |
 | D20 | 空闲 Lead 的唤醒是灰度功能：默认不拉起新回合，消息持久待命；`TEAM_WAKE_LEAD=1` 才启用 |
 | D21 | 静态卡片无活性探测：成员状态按 phase 保守映射（active→inactive、lead 恒 inactive）；实时面板/伴生面板才显示 running |
-| D22 | 诊断工具 `team_ping` 默认不在模型工具列表（模型面 9 个，`interrupt:false` 时 8 个）；`TEAM_DEBUG_TOOLS=1` 才暴露 |
+| D22 | 诊断工具 `team_ping` 默认不在模型工具列表（模型面 10 个，`interrupt:false` 时 9 个）；`TEAM_DEBUG_TOOLS=1` 才暴露 |
 | D23 | 历史事件名/旧 checkpoint 自动兼容：旧 `team/message` 归一为 `team/message/queued`，旧 delivered 结构归一为字符串数组；历史团队数据可读 |
 | D24 | 策略文本在 SessionStart（startup/resume）注入；Lead 极长会话中途可能因上下文压缩丢失，可重新加载 skill 或开新任务 |
 | D25 | 插件只写宿主任务索引的两个白名单点（会话隔离 anchor 墓碑、`sidebar-audit --apply`）；`db.sqlite` 一律只读 |
