@@ -2,15 +2,15 @@
 // V16 口径：无 DSH 参照 → 宿主风格；判据 = 几何不破版 + 风格一致（不做像素保真）。
 // 只读边界（F13）：零发送/中断控件；「复制会话 id」恒有；「在桌面打开」引导按 H15b
 // 结论（未证实前不呈现——当前不呈现）。
-// 〔视图修订 2026-10-25〕detail 双模式：头部「简洁/详细」分段按钮（data-detail-mode，
-// active = 当前模式）；summary 计数显示「n 条 · 共 sourceTotal 条转录」。toolGroup 条目
-// 渲染为一行动作汇总（前端按 tools 数组现算名称聚合），点击展开逐条工具行（复用
+// 〔视图修订 2026-10-25·二次〕视图仅保留简洁形态（按轮摘要：用户指令 + toolGroup +
+// 每轮结论），无模式切换；计数恒显示「n 条 · 共 sourceTotal 条转录」。toolGroup 条目
+// 渲染为一行动作汇总（前端按 tools 数组现算名称聚合），点击就地展开逐条工具行（复用
 // tool-row/tool-detail 结构 → 既有折叠绑定自动覆盖）。
 
 import { td, type Lang } from "./dict.js";
 import { esc } from "./render.js";
 import { iconArrowLeft, iconChevron } from "./icons.js";
-import type { DetailItem, DetailMode, DetailResult, DetailToolEntry } from "../panel/detail.js";
+import type { DetailItem, DetailResult, DetailToolEntry } from "../panel/detail.js";
 
 /** 二级视图状态（面板与伴生页同构）。 */
 export type DetailViewState =
@@ -83,17 +83,7 @@ export function renderDetailItem(item: DetailItem, lang: Lang): string {
   );
 }
 
-/** 模式解析：调用方（面板状态）优先，其次后端回显，最后缺省 summary。 */
-function modeOf(st: Exclude<DetailViewState, { kind: "closed" }>, opts: { mode?: DetailMode }): DetailMode {
-  if (opts.mode !== undefined) return opts.mode;
-  return st.kind === "ready" ? st.detail.mode : "summary";
-}
-
-export function renderDetailBody(
-  st: Exclude<DetailViewState, { kind: "closed" }>,
-  lang: Lang,
-  opts: { mode?: DetailMode } = {},
-): string {
+export function renderDetailBody(st: Exclude<DetailViewState, { kind: "closed" }>, lang: Lang): string {
   if (st.kind === "loading") {
     return `<div class="detail-state"><span class="dot ongoing"></span>${esc(td(lang, "detail.loading"))}</div>`;
   }
@@ -108,12 +98,7 @@ export function renderDetailBody(
     );
   }
   const d = st.detail;
-  const mode = modeOf(st, opts);
-  const countText =
-    mode === "summary"
-      ? td(lang, "detail.countSummary", { n: d.total, sourceTotal: d.sourceTotal })
-      : td(lang, "detail.count", { n: d.total });
-  const count = `<span class="msg-time">${esc(countText)}</span>`;
+  const count = `<span class="msg-time">${esc(td(lang, "detail.countSummary", { n: d.total, sourceTotal: d.sourceTotal }))}</span>`;
   if (d.page.items.length === 0) {
     return `<div class="detail-state">${esc(td(lang, "detail.empty"))}</div>`;
   }
@@ -124,28 +109,14 @@ export function renderDetailBody(
   return pager + d.page.items.map((item) => renderDetailItem(item, lang)).join("");
 }
 
-/** 视图模式分段按钮（当前模式 active + aria-pressed）。 */
-function renderModeSwitch(mode: DetailMode, lang: Lang): string {
-  const button = (target: DetailMode, key: "detail.modeSummary" | "detail.modeFull"): string => {
-    const active = mode === target;
-    return (
-      `<button class="detail-action detail-mode-btn${active ? " active" : ""}" data-detail-mode="${target}" aria-pressed="${active ? "true" : "false"}">` +
-      `${esc(td(lang, key))}</button>`
-    );
-  };
-  return `<span class="detail-modes">${button("summary", "detail.modeSummary")}${button("full", "detail.modeFull")}</span>`;
-}
-
 export function renderDetailView(
   st: DetailViewState,
   lang: Lang,
-  opts: { wake?: boolean; mode?: DetailMode } = {},
+  opts: { wake?: boolean } = {},
 ): string {
   if (st.kind === "closed") return "";
-  const mode = modeOf(st, opts);
   const actions: string[] = [];
   if (st.kind === "ready") {
-    actions.push(renderModeSwitch(mode, lang));
     actions.push(`<button class="detail-action" data-detail-refresh>${esc(td(lang, "detail.refresh"))}</button>`);
     actions.push(
       `<button class="detail-action" data-detail-copy title="${esc(st.detail.sessionId)}">${esc(td(lang, "detail.copySessionId"))}</button>`,
@@ -161,6 +132,6 @@ export function renderDetailView(
     `<span class="detail-title">${esc(st.name)}</span>` +
     `<span class="detail-actions">${actions.join("")}</span>` +
     `</div>` +
-    `<div class="detail-list" data-detail-list>${renderDetailBody(st, lang, { mode })}</div>`
+    `<div class="detail-list" data-detail-list>${renderDetailBody(st, lang)}</div>`
   );
 }

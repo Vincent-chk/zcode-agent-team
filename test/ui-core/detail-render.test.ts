@@ -18,7 +18,6 @@ function detail(items: DetailItem[], partial: Partial<DetailResult> = {}): Detai
   return {
     sessionId: "sess_child",
     memberId: "m_alice",
-    mode: "summary",
     page: { items },
     total: items.length,
     sourceTotal: items.length,
@@ -190,28 +189,11 @@ describe("renderDetailBody（三态 + 分页）", () => {
     expect(html).toContain("1 条");
   });
 
-  it("summary 计数文案 →「n 条 · 共 sourceTotal 条转录」", () => {
+  it("摘要计数文案 → 恒为「n 条 · 共 sourceTotal 条转录」（视图只有简洁形态）", () => {
     const d = detail([toolGroup()], { total: 3, sourceTotal: 132 });
     const html = renderDetailBody({ kind: "ready", memberId: "m", name: "alice", detail: d }, "zh");
     expect(html).toContain("3 条 · 共 132 条转录");
     expect(html).not.toMatch(/undefined/);
-  });
-
-  it("full 计数文案 → 保持「n 条」（无 sourceTotal 段）", () => {
-    const d = detail([item({ seq: 1 })], { mode: "full", total: 20, sourceTotal: 132 });
-    const html = renderDetailBody({ kind: "ready", memberId: "m", name: "alice", detail: d }, "zh");
-    expect(html).toContain("20 条");
-    expect(html).not.toContain("转录");
-  });
-
-  it("调用方 opts.mode 优先于后端回显（切换后立即按新模式渲染计数）", () => {
-    const d = detail([item({ seq: 1 })], { mode: "full", total: 20, sourceTotal: 132 });
-    const html = renderDetailBody(
-      { kind: "ready", memberId: "m", name: "alice", detail: d },
-      "zh",
-      { mode: "summary" },
-    );
-    expect(html).toContain("20 条 · 共 132 条转录");
   });
 });
 
@@ -235,58 +217,37 @@ describe("renderDetailView（二级视图头部 + 只读边界）", () => {
     expect(noWake).not.toContain("data-detail-wake"); // 伴生页无模型通道 → 不注入
   });
 
-  it("模式分段按钮：两枚 data-detail-mode + 当前模式 active/aria-pressed", () => {
+  it("头部无模式切换按钮（二次修订：视图只有简洁形态）", () => {
     const st: DetailViewState = { kind: "ready", memberId: "m", name: "alice", detail: detail([item({ seq: 1 })]) };
-    const summaryHtml = renderDetailView(st, "zh", { mode: "summary" });
-    expect(summaryHtml).toContain('data-detail-mode="summary"');
-    expect(summaryHtml).toContain('data-detail-mode="full"');
-    expect(summaryHtml).toContain('class="detail-action detail-mode-btn active" data-detail-mode="summary" aria-pressed="true"');
-    expect(summaryHtml).toContain('class="detail-action detail-mode-btn" data-detail-mode="full" aria-pressed="false"');
-    expect(summaryHtml).toContain("简洁");
-    expect(summaryHtml).toContain("详细");
-
-    const fullHtml = renderDetailView(st, "zh", { mode: "full" });
-    expect(fullHtml).toContain('class="detail-action detail-mode-btn" data-detail-mode="summary" aria-pressed="false"');
-    expect(fullHtml).toContain('class="detail-action detail-mode-btn active" data-detail-mode="full" aria-pressed="true"');
+    const html = renderDetailView(st, "zh", { wake: true });
+    expect(html).not.toContain("data-detail-mode");
+    expect(html).not.toContain("简洁");
+    expect(html).not.toContain("详细");
   });
 
-  it("模式缺省取后端回显（detail.mode）", () => {
-    const st: DetailViewState = {
-      kind: "ready",
-      memberId: "m",
-      name: "alice",
-      detail: detail([item({ seq: 1 })], { mode: "full" }),
-    };
-    const html = renderDetailView(st, "zh");
-    expect(html).toContain('class="detail-action detail-mode-btn active" data-detail-mode="full" aria-pressed="true"');
-  });
-
-  it("只读边界（F13）：toolGroup + 模式按钮不引入发送/中断控件（DOM 扫描）", () => {
+  it("只读边界（F13）：toolGroup 渲染不引入发送/中断控件（DOM 扫描）", () => {
     const st: DetailViewState = {
       kind: "ready",
       memberId: "m",
       name: "alice",
       detail: detail([item({ seq: 1 }), toolGroup(), item({ seq: 3, role: "assistant", text: "结论" })]),
     };
-    const html = renderDetailView(st, "zh", { wake: true, mode: "summary" });
+    const html = renderDetailView(st, "zh", { wake: true });
     expect(html).not.toContain("<textarea");
     expect(html).not.toContain("<input");
     expect(html).not.toMatch(/data-detail-(send|interrupt|kill|stop)/);
-    // 允许的控件：返回/刷新/复制/唤醒/更早/模式切换/工具折叠/动作组展开
-    expect(html).toContain('data-detail-mode="summary"');
+    // 允许的控件：返回/刷新/复制/唤醒/更早/工具折叠/动作组展开
     expect(html).toContain("tool-group-head");
   });
 
-  it("en 词典路径：模式/动作组/摘要计数文案", () => {
+  it("en 词典路径：动作组/摘要计数文案", () => {
     const st: DetailViewState = {
       kind: "ready",
       memberId: "m",
       name: "alice",
       detail: detail([toolGroup()], { total: 3, sourceTotal: 12 }),
     };
-    const html = renderDetailView(st, "en", { mode: "summary" });
-    expect(html).toContain("Concise");
-    expect(html).toContain("Detailed");
+    const html = renderDetailView(st, "en");
     expect(html).toContain("3 actions · Bash×2 · Read×1");
     expect(html).toContain("3 items · of 12 transcript items");
   });

@@ -1,7 +1,7 @@
 // 夹具页生成（visual-regress.mjs 第一步；esbuild bundle 后以 node 运行）：
 // 8 组状态夹具 × {light,dark} × {zh,en} × {panel,card} → test/visual/.work/<fixture>-<theme>-<lang>-<carrier>.html；
-// T5.7 detail 夹具（成员转录快照：全量 full + 简洁 summary + 空态）× {light,dark} × {zh,en}
-// → detail-*.html（V16 版面断言；2026-10-25 视图修订新增 detail-summary，76 → 80 页）；
+// T5.7 detail 夹具（成员会话摘要：单轮 / 两轮富变体 / 空态）× {light,dark} × {zh,en}
+// → detail-*.html（V16 版面断言；2026-10-25 二次修订：视图仅简洁形态，仍为 80 页）；
 // stage-8 D 成员设置弹窗（open 态）× {light,dark} × {zh,en} → settings-*.html（panel-only）。
 // panel 载体 = 面板同源结构（COMPONENT_CSS + PANEL_CSS，无 App 连接——静态注入帧）；
 // card 载体 = renderWidgetFragment 产物包 standalone 壳（::visualize 沙箱等价）。
@@ -54,7 +54,7 @@ for (const [fixture, frame] of Object.entries(FIXTURES)) {
   }
 }
 
-// T5.7 detail 夹具（+2 组成员转录快照：全量 full / 简洁 summary；V16 版面 = 几何不破版 + 风格宿主一致）
+// T5.7 detail 夹具（+2 组成员会话快照：单轮摘要 / 两轮富变体；V16 版面 = 几何不破版 + 风格宿主一致）
 const detailFixtures: Record<string, { detail: DetailResult; name: string }> = {
   detail: { detail: FIXTURE_DETAIL as unknown as DetailResult, name: "alice" },
   "detail-empty": { detail: FIXTURE_DETAIL_EMPTY as unknown as DetailResult, name: "newbie" },

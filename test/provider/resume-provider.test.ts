@@ -21,7 +21,16 @@ let kit: ProviderKit | null = null;
 const restoreFns: Array<() => void> = [];
 
 beforeEach(() => {
-  kit = buildProviderKit();
+  // 0.3.2：继承链按目录分类过滤——注入含假 provider 的目录，否则本机真实目录会把
+  // usage-prov/entry-prov 滤掉（leadModelSelectionOf 链语义测试将失真）。
+  kit = buildProviderKit({
+    modelCatalog: () => ({
+      providers: [
+        { providerId: "entry-prov", name: "entry", kind: "test", enabled: true, models: [{ id: "entry-model" }] },
+        { providerId: "usage-prov", name: "usage", kind: "test", enabled: true, models: [{ id: "usage-model" }] },
+      ],
+    }),
+  });
 });
 
 afterEach(async () => {

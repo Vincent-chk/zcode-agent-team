@@ -110,17 +110,15 @@ describe("DETAIL_DICT（T5.7 新增文案；不进 F08 逐字面，但 zh/en 键
     expect(td("en", "detail.count", { n: 42 })).toBe("42 items");
     expect(td("zh", "detail.failed", { message: "x" })).toBe("会话读取失败：x");
   });
-  it("〔视图修订 2026-10-25〕模式/动作组/摘要计数文案", () => {
-    expect(td("zh", "detail.modeSummary")).toBe("简洁");
-    expect(td("en", "detail.modeSummary")).toBe("Concise");
-    expect(td("zh", "detail.modeFull")).toBe("详细");
-    expect(td("en", "detail.modeFull")).toBe("Detailed");
+  it("〔视图修订 2026-10-25·二次〕动作组/摘要计数文案（无模式键——视图只有简洁形态）", () => {
     expect(td("zh", "detail.toolGroup", { n: 7, list: "Bash×7" })).toBe("7 个动作 · Bash×7");
     expect(td("en", "detail.toolGroup", { n: 2, list: "Bash×2" })).toBe("2 actions · Bash×2");
     expect(td("zh", "detail.countSummary", { n: 3, sourceTotal: 132 })).toBe("3 条 · 共 132 条转录");
     expect(td("en", "detail.countSummary", { n: 3, sourceTotal: 132 })).toBe(
       "3 items · of 132 transcript items",
     );
+    expect("detail.modeSummary" in DETAIL_DICT.zh).toBe(false);
+    expect("detail.modeFull" in DETAIL_DICT.en).toBe(false);
   });
 });
 

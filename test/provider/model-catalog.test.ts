@@ -4,11 +4,14 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { MemberModelSelection } from "../../src/provider/model-selection.js";
+import type { ModelCatalog } from "../../src/provider/model-catalog.js";
 import {
   DEFAULT_REASONING_LEVEL,
   applyReasoningDefault,
   createModelCatalogReader,
   defaultReasoningLevel,
+  catalogSupports,
   enabledProvidersOffering,
   findCatalogModel,
   findCatalogProvider,
@@ -408,6 +411,49 @@ describe("容错分支（漂移形态不炸、不污染输出）", () => {
     expect(reader().providers).toEqual([]);
     expect(reader.lastError()).toContain("provider registry unavailable");
     expect(errors.some((e) => e.includes("model catalog unavailable"))).toBe(true);
+  });
+});
+
+describe("catalogSupports · 继承分类唯一判据", () => {
+  const supported = (catalog: ModelCatalog, selection: { providerId: string; modelId: string }) =>
+    catalogSupports(catalog, { ...selection, reasoningLevel: "max" });
+  const catalog: ModelCatalog = {
+    providers: [
+      {
+        providerId: "p-on",
+        name: "On",
+        kind: "k",
+        enabled: true,
+        models: [
+          { id: "m-on", enabled: true },
+          { id: "m-off-model", enabled: false },
+        ],
+      },
+      {
+        providerId: "p-off",
+        name: "Off",
+        kind: "k",
+        enabled: false,
+        disabledReason: "oauth_provider_inactive",
+        models: [{ id: "m-x" }],
+      },
+    ],
+  };
+
+  it("启用 provider + 启用模型 → true", () => {
+    expect(supported(catalog, { providerId: "p-on", modelId: "m-on" })).toBe(true);
+  });
+  it("provider 不在目录 → false（官方套餐/陈旧自有 provider）", () => {
+    expect(supported(catalog, { providerId: "account:plan", modelId: "GLM-5.3" })).toBe(false);
+    expect(supported(catalog, { providerId: "builtin:bigmodel", modelId: "GLM-5.3" })).toBe(false);
+    expect(supported(catalog, { providerId: "deleted-uuid", modelId: "m-on" })).toBe(false);
+  });
+  it("模型不在该 provider 下 / 被停用 → false", () => {
+    expect(supported(catalog, { providerId: "p-on", modelId: "nope" })).toBe(false);
+    expect(supported(catalog, { providerId: "p-on", modelId: "m-off-model" })).toBe(false);
+  });
+  it("provider 被停用 → false（即使模型存在）", () => {
+    expect(supported(catalog, { providerId: "p-off", modelId: "m-x" })).toBe(false);
   });
 });
 

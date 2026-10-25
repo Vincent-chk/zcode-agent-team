@@ -85,6 +85,7 @@ Lead 的动作链：创建队友 → 在共享任务板建任务并指定 owner 
 - 模型写法：`providerId$modelId`（全称最稳）或裸 `modelId`；同名模型存在于多个 Provider 时优先取 Lead 当前 Provider，仍有歧义会列出候选。
 - 生效时机：运行中的成员**下一轮**生效；空闲成员立即生效。
 - 可用模型清单：面板成员卡右上角**齿轮** → 模型设置弹窗，或 MCP 资源 `team://models`（不包含任何 API Key / Base URL）。
+- **继承边界（0.3.2）**：默认继承只覆盖**你自配的第三方模型**（模型目录 = Provider 注册表）。Lead 若正在用官方 coding plan 套餐（`account:*` / `builtin:*` Provider），成员无法继承该套餐模型，会回退宿主缺省，并在成员行给出原因；此时请在 spawn 时显式指定一个自配模型。
 
 ### 3. `/team` 看状态
 
@@ -121,7 +122,7 @@ Lead 的动作链：创建队友 → 在共享任务板建任务并指定 owner 
 | `team_task_get` | 全体 | 读取单条任务的最新完整内容（改动前必读） |
 | `team_task_update` | 全体 | 用 `expected_revision` 做 CAS 的任务动作：claim / release / edit / set_dependencies / complete / reopen / reassign / delete |
 
-另有一个 app 专用回环工具 `team_panel_call`（面板心跳/刷新/详情（**简洁/详细双模式**，默认简洁）/模型目录与成员模型设置，模型不可见）；诊断探针 `team_ping` 仅在 `TEAM_DEBUG_TOOLS=1` 时暴露。模型清单一类只读数据也可经 MCP 资源 `team://models` 读取（白名单投影，**不含 apiKey/baseURL**）。
+另有一个 app 专用回环工具 `team_panel_call`（面板心跳/刷新/详情（**按轮摘要**）/模型目录与成员模型设置，模型不可见）；诊断探针 `team_ping` 仅在 `TEAM_DEBUG_TOOLS=1` 时暴露。模型清单一类只读数据也可经 MCP 资源 `team://models` 读取（白名单投影，**不含 apiKey/baseURL**）。
 
 ## 配置（userConfig）
 
@@ -145,7 +146,7 @@ Lead 的动作链：创建队友 → 在共享任务板建任务并指定 owner 
 # 直接读盘重放（与 /team 同源）
 node <插件目录>/dist/team-ctl.mjs state <teamDir>            # 文本摘要
 node <插件目录>/dist/team-ctl.mjs state <teamDir> --json     # 机器可读
-node <插件目录>/dist/team-ctl.mjs transcript <teamDir> <member> [--mode summary|full]   # 成员会话流（缺省简洁）
+node <插件目录>/dist/team-ctl.mjs transcript <teamDir> <member>   # 成员会话摘要（按轮）
 node <插件目录>/dist/team-ctl.mjs widget <teamDir> --standalone --out /tmp/team.html --theme dark --lang zh
 node <插件目录>/dist/team-ctl.mjs tail <teamDir>             # 跟随事件日志
 ```

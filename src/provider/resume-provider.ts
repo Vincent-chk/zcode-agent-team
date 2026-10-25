@@ -44,7 +44,12 @@ import { resolveZcodeBin, type ZcodeBin } from "./zcode-bin.js";
 import { AppServerSessionBreeder, isolationModeFromEnv, type IsolationMode } from "./session-breeder.js";
 import type { MemberModelSelection } from "./model-selection.js";
 import { parseModelSelection } from "./model-selection.js";
-import { applyReasoningDefault, readModelCatalog, type ModelCatalog } from "./model-catalog.js";
+import {
+  applyReasoningDefault,
+  catalogSupports,
+  readModelCatalog,
+  type ModelCatalog,
+} from "./model-catalog.js";
 import { spawnDetached, pidAlive, killProcessGroup } from "./procgroup.js";
 import { readSessionRegistry, upsertSessionEntry } from "../mcp/identity.js";
 
@@ -371,14 +376,25 @@ export class ResumePerTurnProvider implements TeammateProvider {
         ? buildForkFirstPrompt(this.reader, this.opts.teamId, args.firstPrompt).prompt
         : args.firstPrompt; // D2：fresh 首轮 = 任务原文逐字（无身份前缀块）
 
-    // 模型选择（Round B/E-1）：显式 > 继承链 [session_entry 条目, model_usage 兜底]；仅 child 隔离
-    // 模式可应用（legacy 顶层会话没有培育器 setModel 的作用点：不应用也不记录，避免 origin 谎报）。
-    // 显式指定不设兜底——用户意图优先，失败仅容忍（落 CLI 缺省）。
+    // 模型选择：显式 > 继承候选（0.3.2：已按目录过滤，只含注册表内启用的自有模型）；
+    // 仅 child 隔离模式可应用。显式指定不设兜底——用户意图优先，失败仅容忍（走「尝试后失败」）。
     const explicitSelection = args.modelSelection;
     const inheritedSelections =
       this.sessionIsolation === "child" && explicitSelection === undefined
         ? this.lookupLeadModelSelections()
         : [];
+    // 分类跳过（0.3.2）：child 模式、无显式、Lead 有模型但候选全被目录过滤
+    // （官方套餐 account:*/builtin:* 或已删除的自有 provider）→ 不向 breeder 传任何选择
+    // （零 setModel 尝试），直接走宿主缺省；可见性仍写 model-failed（见下方分类诊断）。
+    const rawLeadSelections =
+      this.sessionIsolation === "child" && explicitSelection === undefined
+        ? this.rawLeadModelSelections()
+        : [];
+    const classifiedSkip =
+      this.sessionIsolation === "child" &&
+      explicitSelection === undefined &&
+      rawLeadSelections.length > 0 &&
+      inheritedSelections.length === 0;
     const primarySelection =
       this.sessionIsolation !== "child"
         ? undefined
@@ -408,16 +424,30 @@ export class ResumePerTurnProvider implements TeammateProvider {
       bred = await this.breeder.createChild({
         teamId: this.opts.teamId,
         workspacePath: this.cwd,
-        ...(appliedSelection !== undefined ? { modelSelection: appliedSelection } : {}),
-        ...(appliedFallback !== undefined ? { modelFallback: appliedFallback } : {}),
+        // 分类跳过：两个模型参数都缺省（createChild 不发 setModel）。
+        ...(!classifiedSkip && appliedSelection !== undefined
+          ? { modelSelection: appliedSelection }
+          : {}),
+        ...(!classifiedSkip && appliedFallback !== undefined
+          ? { modelFallback: appliedFallback }
+          : {}),
       });
     }
     // 培育器可能从会话库解析出 Lead 的真实目录；轮次/探针必须使用同一目录。
     const spawnCwd = bred?.workspacePath ?? this.cwd;
 
-    // GitHub #6：spawn 时模型没生效也要可见。继承降级（Lead 条目/usage 都不可用）写固定说明；
-    // 显式指定失败同样落记录（用户意图未被满足，不能静默）。origin 仍只记实际生效者。
-    if (bred !== null && appliedSelection !== undefined) {
+    // GitHub #6 / 0.3.2：模型没生效必须可见，分两类（显式通道行为不变）：
+    //  · 分类跳过：零尝试，文案区分「官方套餐」与「目录外」；
+    //  · 尝试后失败：沿用旧文案（E-1 兜底失败 / 显式被服务端拒）。
+    // origin 始终只记实际生效者（bred.appliedModel），跳过/失败都不写 modelSelection。
+    if (classifiedSkip) {
+      this.writeModelFailure(
+        paths,
+        rawLeadSelections[0]!,
+        this.classifiedSkipReason(rawLeadSelections[0]!),
+        { fullSentence: true },
+      );
+    } else if (bred !== null && appliedSelection !== undefined) {
       if (bred.appliedModel !== undefined) {
         clearModelFailed(paths);
       } else {
@@ -1074,10 +1104,34 @@ export class ResumePerTurnProvider implements TeammateProvider {
   }
 
   /**
-   * Lead 继承链（至多两档，按序）：`session_entry` 权威条目 → `model_usage` 最近调用。
-   * 去重：两档三元组完全相同则只留一个（避免对同一目标重试一次必败的 setModel）。
+   * Lead 继承候选（至多两档，按序）：`session_entry` 权威条目 → `model_usage` 最近调用。
+   * 0.3.2 分类优先：只保留**目录支持**（用户自配/注册表内且启用）的选择——官方套餐
+   * （`account:` / `builtin:` 前缀）与已删除的自有 provider 不进候选（零 setModel 尝试）。
+   * 空目录守卫：目录不可用时不过滤（旧行为：照旧尝试，宿主终审），避免目录读不到时误跳过。
+   * 去重：两档三元组完全相同则只留一个。
    */
   private lookupLeadModelSelections(): MemberModelSelection[] {
+    const catalog = this.modelCatalog();
+    const catalogAvailable = catalog.providers.length > 0;
+    const candidates = [
+      this.reader.latestModelSelection(this.opts.teamId),
+      this.reader.latestModelUsage(this.opts.teamId),
+    ];
+    const out: MemberModelSelection[] = [];
+    for (const selection of candidates) {
+      if (selection === undefined) continue;
+      if (catalogAvailable && !catalogSupports(catalog, selection)) continue;
+      if (out.some((existing) => sameModelSelection(existing, selection))) continue;
+      out.push(selection);
+    }
+    return out;
+  }
+
+  /**
+   * Lead 的**原始**模型选择（未过滤）：用于分类跳过诊断——继承候选为空时判断 Lead 是否
+   * 「有模型但全被目录过滤」（vs「本来就无模型」），决定是否写 model-failed 及文案。
+   */
+  private rawLeadModelSelections(): MemberModelSelection[] {
     const candidates = [
       this.reader.latestModelSelection(this.opts.teamId),
       this.reader.latestModelUsage(this.opts.teamId),
@@ -1145,15 +1199,19 @@ export class ResumePerTurnProvider implements TeammateProvider {
     clearModelFailed(paths);
   }
 
-  /** 记录一次**终态**模型设置失败（供成员行诊断/面板弹窗；不排队、不重试）。 */
+  /**
+   * 记录一次**终态**模型设置失败（供成员行诊断/面板弹窗；不排队、不重试）。
+   * 分类跳过的长建议是单句（句号在末尾），不能被「首句截断」切半 → 跳过类文案只做长度截断。
+   */
   private writeModelFailure(
     paths: MemberPaths,
     selection: MemberModelSelection,
     reason: string,
+    options?: { fullSentence?: boolean },
   ): void {
     writeModelFailed(paths, {
       modelSelection: selection,
-      reason: compactReason(reason),
+      reason: options?.fullSentence === true ? truncateReason(reason) : compactReason(reason),
       failedAt: iso(this.now()),
     });
     this.log({
@@ -1165,6 +1223,21 @@ export class ResumePerTurnProvider implements TeammateProvider {
       reason: compactReason(reason),
     });
   }
+
+  /**
+   * 0.3.2 分类跳过文案：官方套餐（account:* / builtin:* 前缀）给可操作建议；
+   * 其他目录外模型（已删除的自有 provider/陈旧选择）给简短说明。
+   */
+  private classifiedSkipReason(selection: MemberModelSelection): string {
+    const model = `${selection.providerId}/${selection.modelId}`;
+    const isOfficialPlan =
+      selection.providerId.startsWith("account:") || selection.providerId.startsWith("builtin:");
+    return isOfficialPlan
+      ? `Lead 当前使用官方套餐模型（${model}），成员无法继承，已回退宿主缺省；可在 spawn 时指定自配模型或改用第三方模型`
+      : `Lead 模型 ${model} 不在可用目录，已回退宿主缺省`;
+  }
+
+  /** 仅长度截断（≤80 字符），不按句子切——分类跳过文案本身是一条完整建议。 */
 
   /**
    * 成员行诊断（GitHub #6）：读 model-failed.json → 一条可读诊断。
@@ -1181,7 +1254,8 @@ export class ResumePerTurnProvider implements TeammateProvider {
     if (record === undefined) return [];
     const selection = parseModelSelection(record.modelSelection);
     if (selection === undefined) return [];
-    const reason = compactReason(typeof record.reason === "string" ? record.reason : "");
+    // 落盘 reason 已按渠道截断（尝试失败=首句≤80；分类跳过=整句≤80），这里原样呈现。
+    const reason = typeof record.reason === "string" ? record.reason : "";
     return [`模型设置未生效：${selection.providerId}/${selection.modelId}${reason.length > 0 ? `（${reason}）` : ""}`];
   }
 
@@ -1298,7 +1372,11 @@ function errText(err: unknown): string {
 function compactReason(reason: string): string {
   const firstLine = reason.split(/\n/)[0] ?? "";
   const firstSentence = firstLine.split(/(?<=[。！？.!?])\s*/)[0] ?? firstLine;
-  const text = firstSentence.trim();
+  return truncateReason(firstSentence.trim());
+}
+
+/** 截断 ≤80 字符（空串保持空串）。 */
+function truncateReason(text: string): string {
   if (text.length === 0) return "";
   return text.length > 80 ? `${text.slice(0, 79)}…` : text;
 }

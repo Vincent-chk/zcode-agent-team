@@ -139,6 +139,14 @@ export function findCatalogModel(
   return findCatalogProvider(catalog, providerId)?.models.find((m) => m.id === modelId);
 }
 
+/** 目录是否支持该选择（provider 在注册表、模型存在且双方都启用）。继承分类的唯一判据。 */
+export function catalogSupports(catalog: ModelCatalog, selection: MemberModelSelection): boolean {
+  const provider = findCatalogProvider(catalog, selection.providerId);
+  if (provider === undefined || !provider.enabled) return false;
+  const model = provider.models.find((m) => m.id === selection.modelId);
+  return model !== undefined && model.enabled !== false;
+}
+
 /** 提供该 modelId 的 **enabled** providerId 列表（裸 id 消歧用；disabled 模型不算）。 */
 export function enabledProvidersOffering(catalog: ModelCatalog, modelId: string): string[] {
   return catalog.providers

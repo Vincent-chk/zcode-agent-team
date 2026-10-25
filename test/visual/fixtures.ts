@@ -213,19 +213,18 @@ export const FIXTURE_SETTINGS_FRAME: ViewFrame = frame({
   ],
 });
 
-// ---------------------------------------------------------------- T5.7 detail 夹具（+1 组成员转录快照）
-/** detail 结果夹具（成员转录：framed 徽标 + 工具折叠 + 长文本/中英混排 + 分页）。 */
+// ---------------------------------------------------------------- T5.7 detail 夹具（二次修订：仅简洁形态）
+/** detail 结果夹具（单轮摘要：framed 徽标 + 动作组 + 结论 + 长文本/中英混排 + 分页）。 */
 export const FIXTURE_DETAIL = {
   sessionId: "sess_alice_child",
   memberId: "m_alice",
-  mode: "full" as const,
-  total: 132,
-  sourceTotal: 132,
+  total: 3,
+  sourceTotal: 12,
   page: {
-    nextCursor: 33,
+    nextCursor: 1,
     items: [
       {
-        seq: 33,
+        seq: 1,
         ts: "2026-10-18T03:11:02.000Z",
         role: "user" as const,
         kind: "text" as const,
@@ -233,30 +232,28 @@ export const FIXTURE_DETAIL = {
         framed: { messageId: "msg-77", from: "lead" },
       },
       {
-        seq: 34,
-        ts: "2026-10-18T03:11:09.000Z",
-        role: "assistant" as const,
-        kind: "text" as const,
-        text: "收到，先读 daemon 接线。",
-      },
-      {
-        seq: 35,
-        ts: "2026-10-18T03:11:20.000Z",
-        role: "assistant" as const,
-        kind: "toolCall" as const,
-        tool: { name: "Read", status: "completed" },
-        text: 'input: {"file_path":"/src/daemon.ts"}\noutput: (file content 480 lines)',
-      },
-      {
-        seq: 36,
+        seq: 2,
         ts: "2026-10-18T03:12:41.000Z",
         role: "assistant" as const,
-        kind: "toolCall" as const,
-        tool: { name: "Bash", status: "completed" },
-        text: "input: {\"command\":\"npx vitest run test/panel\"}\noutput: Tests 45 passed (45)",
+        kind: "toolGroup" as const,
+        count: 2,
+        tools: [
+          {
+            ts: "2026-10-18T03:11:20.000Z",
+            name: "Read",
+            status: "completed",
+            text: 'input: {"file_path":"/src/daemon.ts"}\noutput: (file content 480 lines)',
+          },
+          {
+            ts: "2026-10-18T03:12:41.000Z",
+            name: "Bash",
+            status: "completed",
+            text: "input: {\"command\":\"npx vitest run test/panel\"}\noutput: Tests 45 passed (45)",
+          },
+        ],
       },
       {
-        seq: 37,
+        seq: 3,
         ts: "2026-10-18T03:13:05.000Z",
         role: "assistant" as const,
         kind: "text" as const,
@@ -264,13 +261,6 @@ export const FIXTURE_DETAIL = {
           "数据面接线完成：team://view 现在返回真实投影视图帧（MEMBER_VIEW ⊕ id/sessionId + TASK_VIEW），" +
           "500ms 轮询构帧、contentKey 去抖（mailbox-only changes do not push frames——中英混排 long text layout check " +
           "with a very long unbreakable token like Pneumonoultramicroscopicsilicovolcanoconiosis 和中文长串".repeat(2) + "）",
-      },
-      {
-        seq: 38,
-        ts: "2026-10-18T03:13:40.000Z",
-        role: "user" as const,
-        kind: "text" as const,
-        text: "很好，继续 detail 通道。",
       },
     ],
   },
@@ -280,20 +270,18 @@ export const FIXTURE_DETAIL = {
 export const FIXTURE_DETAIL_EMPTY = {
   sessionId: "sess_new_child",
   memberId: "m_new",
-  mode: "summary" as const,
   total: 0,
   sourceTotal: 0,
   page: { items: [] },
 };
 
 // ---------------------------------------------------------------- 视图修订 2026-10-25 · 简洁视图夹具
-/** summary 模式：user（framed 徽标）+ toolGroup（3 个动作，Bash×2 · Read×1）+ assistant 结论。 */
+/** 富变体：两轮 × （user + toolGroup + 结论），首轮带 framed 徽标、次轮多工具分组。 */
 export const FIXTURE_DETAIL_SUMMARY = {
   sessionId: "sess_alice_child",
   memberId: "m_alice",
-  mode: "summary" as const,
-  total: 3,
-  sourceTotal: 12,
+  total: 6,
+  sourceTotal: 24,
   page: {
     items: [
       {
@@ -334,6 +322,41 @@ export const FIXTURE_DETAIL_SUMMARY = {
         text:
           "数据面接线完成：team://view 现在返回真实投影视图帧，detail 通道复用同一合成器；" +
           "本轮 3 个动作全部完成，测试与类型检查均为绿。",
+      },
+      {
+        seq: 4,
+        ts: "2026-10-18T03:14:10.000Z",
+        role: "user" as const,
+        kind: "text" as const,
+        text: "很好，继续 detail 通道。",
+      },
+      {
+        seq: 5,
+        ts: "2026-10-18T03:16:02.000Z",
+        role: "assistant" as const,
+        kind: "toolGroup" as const,
+        count: 2,
+        tools: [
+          {
+            ts: "2026-10-18T03:15:20.000Z",
+            name: "Edit",
+            status: "completed",
+            text: "input: {\"file_path\":\"/src/panel/detail.ts\"}\noutput: updated 1 hunk",
+          },
+          {
+            ts: "2026-10-18T03:16:02.000Z",
+            name: "Bash",
+            status: "completed",
+            text: "input: {\"command\":\"npm run typecheck\"}\noutput: (no output)",
+          },
+        ],
+      },
+      {
+        seq: 6,
+        ts: "2026-10-18T03:16:40.000Z",
+        role: "assistant" as const,
+        kind: "text" as const,
+        text: "detail 通道接完：面板与伴生页同源渲染，动作组可展开，类型检查通过。",
       },
     ],
   },

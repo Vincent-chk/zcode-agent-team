@@ -48,7 +48,7 @@
 - **协调者（瞬时）**：`teams/<id>/coordinator.lock` 独占文件锁选出唯一写者。锁 = owner 文件（O_EXCL，inode+token 永不改写）+ 按 token 分开的心跳文件；心跳 1000ms / 过期 4500ms / 轮询 200ms。协调者死亡 → 心跳过期 → 下一个实例抢占接任（实测 kill -9 → 接任 ≤5s）。非协调者实例经 `coordinator.sock`（NDJSON，0600，路径过长时回退 `/tmp/at-<hash>.sock`）代理写操作。
 - **teammate**：`ResumePerTurnProvider` 每轮 `zcode -p --resume <childSession> --json --mode yolo --surface terminal --disallowed-tools Task`，独立进程组；首轮前经 `session-breeder` 用 app-server 创建宿主原生 `selection_side_chat` 隐藏子会话 + anchor tombstone（会话隔离）。进程退出码 + transcript 即完成信号。
 - **hooks**：三个合法事件（SessionStart startup/resume、Stop、UserPromptSubmit）；读 stdin 事件 → 写 `logs/hooks.jsonl` → 按角色注入策略/收件箱/Stop block；RPC ack 失败静默（回执文件为权威）。
-- **面板**：daemon 内视图服务以 500ms 轮询构帧，`resources/subscribe` 推 `team://view`；面板 25s 心跳 `team_panel_call` 保活 Lead 侧连接；detail 视图按页只读 db.sqlite（缺省简洁按轮摘要，可切详细全量）；`team://models` 按 config.json mtime 缓存返回脱敏模型目录（stage-8）。
+- **面板**：daemon 内视图服务以 500ms 轮询构帧，`resources/subscribe` 推 `team://view`；面板 25s 心跳 `team_panel_call` 保活 Lead 侧连接；detail 视图按页只读 db.sqlite（按轮摘要：用户指令 + 动作组 + 每轮结论）；`team://models` 按 config.json mtime 缓存返回脱敏模型目录（stage-8）。
 
 ## 3. 持久化与一致性
 
@@ -74,7 +74,7 @@ teams/<sessionId>/
 2. **消息**：`send_message` → 目标运行中则 queued（回合边界交付，D2）；空闲则拉起/恢复一轮 → teammate 侧以 `Team message from <name>:` 框架头注入 → 完成回执/transcript 判 delivered（D18）。
 3. **任务**：`team_task_*` → CAS（expected_revision）→ 事件追加 → 投影；orchestrator 模式下 Lead 对 completed 任务独立复核：失败 `reopen`、通过 `edit` 追加验收记录（D27）。
 4. **策略注入**：SessionStart additionalContext 注入策略全文（D7 替换句、D26 编排段按 leadMode 插值）；UserPromptSubmit 仅在有待收消息时注入收件箱段；skill/工具描述为冗余层。hook 进程读不到 userConfig，经 daemon 落盘 `meta/runtime-config.json` 兜底（D19）。
-5. **面板**：视图服务构建帧（身份解析 + 重放 + 活性 + snapshot）→ 订阅推送；无变化不推（contentKey）；detail 只读 db.sqlite + 事件回填框架头；`mode=summary`（缺省）的按轮摘要投影在**合成层**完成（投影与分页前），不改 db 查询；`mode=full` 为原全量流；跨模式 seq/cursor 不通用。
+5. **面板**：视图服务构建帧（身份解析 + 重放 + 活性 + snapshot）→ 订阅推送；无变化不推（contentKey）；detail 只读 db.sqlite + 事件回填框架头；按轮摘要投影在**合成层**完成（投影与分页前），不改 db 查询；全量转录不进视图。
 6. **模型设置（stage-8）**：三条写入通路共用 provider 层同一方法——① spawn 参数（首轮前 `session/setModel`）；② 对话工具 `member_set_model` → 方法表 `member.set_model`；③ 面板 `team_panel_call {action:"setMemberModel"}`。mid-life 修改走「临时 app-server 实例 → `session/resume` → `session/setModel`」；目标运行中或即时失败 → `members/<id>/model-pending.json`，下一轮 `launchTurn` 写轮次记录**之前**兜底应用。生效锚点 = 会话库 `session_entry(type='runtime/model_selection')`（headless `--resume` 每轮恢复）。面板 `{action:"modelOptions"}` 读脱敏目录（`~/.zcode/v2/config.json` 白名单投影，apiKey/baseURL 不出 daemon）。
 
 ## 5. 模块地图

@@ -499,16 +499,6 @@ article.task {
   cursor: pointer;
 }
 .detail-action:hover, .detail-action:focus-visible { color: var(--at-label-primary); border-color: var(--at-border-l3); }
-/* \u3014\u89C6\u56FE\u4FEE\u8BA2 2026-10-25\u3015\u6A21\u5F0F\u5206\u6BB5\u6309\u94AE\uFF1A\u7B80\u6D01/\u8BE6\u7EC6\uFF08active = \u5F53\u524D\u6A21\u5F0F\uFF09 */
-.detail-modes { display: inline-flex; flex: none; border: 0.5px solid var(--at-border-l2); border-radius: 6px; overflow: hidden; }
-.detail-modes .detail-mode-btn { border: none; border-radius: 0; }
-.detail-modes .detail-mode-btn + .detail-mode-btn { border-left: 0.5px solid var(--at-border-l2); }
-.detail-mode-btn.active {
-  background: color-mix(in srgb, var(--at-business) 14%, transparent);
-  color: var(--at-business);
-  font-weight: 500;
-}
-.detail-mode-btn.active:hover, .detail-mode-btn.active:focus-visible { color: var(--at-business); }
 .detail-list { overflow-y: auto; scrollbar-gutter: stable; padding: 8px 9px 16px 14px; flex: auto; min-height: 0; scrollbar-color: var(--at-scrollbar-thumb) transparent; }
 .detail-state { font-size: 12px; color: var(--at-label-tertiary); padding: 16px 4px; display: flex; align-items: center; gap: 6px; }
 .detail-state.error { color: var(--at-error-text); }
@@ -662,8 +652,6 @@ article.task {
       "detail.noSession": "\u4F1A\u8BDD id \u672A\u843D\u5B9A\uFF08\u6210\u5458\u53EF\u80FD\u5C1A\u5728\u51C6\u5907\u4E2D\uFF09",
       "detail.you": "\u6211",
       "detail.count": "{n} \u6761",
-      "detail.modeSummary": "\u7B80\u6D01",
-      "detail.modeFull": "\u8BE6\u7EC6",
       "detail.toolGroup": "{n} \u4E2A\u52A8\u4F5C \xB7 {list}",
       "detail.countSummary": "{n} \u6761 \xB7 \u5171 {sourceTotal} \u6761\u8F6C\u5F55"
     },
@@ -685,8 +673,6 @@ article.task {
       "detail.noSession": "Session id not settled yet (member may still be provisioning)",
       "detail.you": "me",
       "detail.count": "{n} items",
-      "detail.modeSummary": "Concise",
-      "detail.modeFull": "Detailed",
       "detail.toolGroup": "{n} actions \xB7 {list}",
       "detail.countSummary": "{n} items \xB7 of {sourceTotal} transcript items"
     }
@@ -994,11 +980,7 @@ article.task {
     const roleLabel = item.role === "user" ? esc(td(lang2, "detail.you")) : item.role;
     return `<div class="msg ${item.role}"><div class="msg-head"><span class="msg-role">${roleLabel}</span><span class="msg-time">${time}</span>${badge}</div><div class="msg-text">${esc(item.text ?? "")}</div></div>`;
   }
-  function modeOf(st, opts) {
-    if (opts.mode !== void 0) return opts.mode;
-    return st.kind === "ready" ? st.detail.mode : "summary";
-  }
-  function renderDetailBody(st, lang2, opts = {}) {
+  function renderDetailBody(st, lang2) {
     if (st.kind === "loading") {
       return `<div class="detail-state"><span class="dot ongoing"></span>${esc(td(lang2, "detail.loading"))}</div>`;
     }
@@ -1007,28 +989,17 @@ article.task {
       return `<div class="detail-state error"><span class="dot error"></span><span>${esc(text)}</span></div><div class="detail-pager"><button class="detail-action" data-detail-retry>${esc(td(lang2, "detail.refresh"))}</button></div>`;
     }
     const d = st.detail;
-    const mode = modeOf(st, opts);
-    const countText = mode === "summary" ? td(lang2, "detail.countSummary", { n: d.total, sourceTotal: d.sourceTotal }) : td(lang2, "detail.count", { n: d.total });
-    const count = `<span class="msg-time">${esc(countText)}</span>`;
+    const count = `<span class="msg-time">${esc(td(lang2, "detail.countSummary", { n: d.total, sourceTotal: d.sourceTotal }))}</span>`;
     if (d.page.items.length === 0) {
       return `<div class="detail-state">${esc(td(lang2, "detail.empty"))}</div>`;
     }
     const pager = d.page.nextCursor !== void 0 ? `<div class="detail-pager"><button class="detail-action" data-detail-earlier data-cursor="${d.page.nextCursor}">${esc(td(lang2, "detail.earlier"))}</button>${count}</div>` : `<div class="detail-pager">${count}</div>`;
     return pager + d.page.items.map((item) => renderDetailItem(item, lang2)).join("");
   }
-  function renderModeSwitch(mode, lang2) {
-    const button = (target, key) => {
-      const active = mode === target;
-      return `<button class="detail-action detail-mode-btn${active ? " active" : ""}" data-detail-mode="${target}" aria-pressed="${active ? "true" : "false"}">${esc(td(lang2, key))}</button>`;
-    };
-    return `<span class="detail-modes">${button("summary", "detail.modeSummary")}${button("full", "detail.modeFull")}</span>`;
-  }
   function renderDetailView(st, lang2, opts = {}) {
     if (st.kind === "closed") return "";
-    const mode = modeOf(st, opts);
     const actions = [];
     if (st.kind === "ready") {
-      actions.push(renderModeSwitch(mode, lang2));
       actions.push(`<button class="detail-action" data-detail-refresh>${esc(td(lang2, "detail.refresh"))}</button>`);
       actions.push(
         `<button class="detail-action" data-detail-copy title="${esc(st.detail.sessionId)}">${esc(td(lang2, "detail.copySessionId"))}</button>`
@@ -1037,7 +1008,7 @@ article.task {
         actions.push(`<button class="detail-action" data-detail-wake>${esc(td(lang2, "detail.wake"))}</button>`);
       }
     }
-    return `<div class="detail-head"><button class="detail-back" data-detail-back>${iconArrowLeft(14)}${esc(td(lang2, "detail.back"))}</button><span class="detail-title">${esc(st.name)}</span><span class="detail-actions">${actions.join("")}</span></div><div class="detail-list" data-detail-list>${renderDetailBody(st, lang2, { mode })}</div>`;
+    return `<div class="detail-head"><button class="detail-back" data-detail-back>${iconArrowLeft(14)}${esc(td(lang2, "detail.back"))}</button><span class="detail-title">${esc(st.name)}</span><span class="detail-actions">${actions.join("")}</span></div><div class="detail-list" data-detail-list>${renderDetailBody(st, lang2)}</div>`;
   }
 
   // src/ui-core/expand.ts
@@ -1120,7 +1091,6 @@ article.task {
   var lang = langOfLocale(navigator.language);
   var frame = null;
   var detailState = { kind: "closed" };
-  var detailMode = "summary";
   var expandStore = memoryExpandStore();
   var detachExpand = null;
   var pinned = false;
@@ -1164,7 +1134,7 @@ html, body { margin: 0; min-height: 100%; background: var(--at-bg-menu); font-fa
     detailView.hidden = !inDetail;
     panelEl.classList.toggle("compact", frame !== null && isCompact(frame) && !inDetail);
     if (inDetail) {
-      detailView.innerHTML = renderDetailView(detailState, lang, { mode: detailMode });
+      detailView.innerHTML = renderDetailView(detailState, lang);
       bindDetail();
       return;
     }
@@ -1310,7 +1280,7 @@ html, body { margin: 0; min-height: 100%; background: var(--at-bg-menu); font-fa
     if (id === void 0) return;
     void openDetail(id, member.querySelector(".name")?.textContent ?? id);
   });
-  async function openDetail(memberId, name, cursor, mode = detailMode) {
+  async function openDetail(memberId, name, cursor) {
     const seq = detailSequencer.begin();
     const fromList = detailState.kind === "closed";
     detailState = { kind: "loading", memberId, name };
@@ -1320,12 +1290,10 @@ html, body { margin: 0; min-height: 100%; background: var(--at-bg-menu); font-fa
       const body = await apiCall({
         action: "detail",
         target: memberId,
-        mode,
         ...cursor !== void 0 ? { cursor } : {}
       });
       if (!detailSequencer.isCurrent(seq)) return;
       if (body.kind === "detail" && body.detail !== void 0) {
-        detailMode = body.detail.mode;
         detailState = { kind: "ready", memberId, name, detail: body.detail };
       } else {
         detailState = {
@@ -1367,19 +1335,6 @@ html, body { margin: 0; min-height: 100%; background: var(--at-bg-menu); font-fa
         }, 1500);
       }
     });
-    for (const btn of detailView.querySelectorAll("[data-detail-mode]")) {
-      btn.addEventListener("click", () => {
-        const next = btn.dataset.detailMode;
-        if (next !== "summary" && next !== "full") return;
-        if (next === detailMode) return;
-        if (detailState.kind !== "ready" && detailState.kind !== "error") return;
-        const { memberId, name } = detailState;
-        detailMode = next;
-        detailSequencer.begin();
-        detailState = { kind: "loading", memberId, name };
-        void openDetail(memberId, name, void 0, next);
-      });
-    }
     detailView.querySelector("[data-detail-earlier]")?.addEventListener("click", (ev) => {
       const cursor = Number(ev.currentTarget.dataset.cursor);
       if (detailState.kind === "ready" && Number.isFinite(cursor)) {

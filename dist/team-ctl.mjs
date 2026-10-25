@@ -6163,16 +6163,6 @@ article.task {
   cursor: pointer;
 }
 .detail-action:hover, .detail-action:focus-visible { color: var(--at-label-primary); border-color: var(--at-border-l3); }
-/* \u3014\u89C6\u56FE\u4FEE\u8BA2 2026-10-25\u3015\u6A21\u5F0F\u5206\u6BB5\u6309\u94AE\uFF1A\u7B80\u6D01/\u8BE6\u7EC6\uFF08active = \u5F53\u524D\u6A21\u5F0F\uFF09 */
-.detail-modes { display: inline-flex; flex: none; border: 0.5px solid var(--at-border-l2); border-radius: 6px; overflow: hidden; }
-.detail-modes .detail-mode-btn { border: none; border-radius: 0; }
-.detail-modes .detail-mode-btn + .detail-mode-btn { border-left: 0.5px solid var(--at-border-l2); }
-.detail-mode-btn.active {
-  background: color-mix(in srgb, var(--at-business) 14%, transparent);
-  color: var(--at-business);
-  font-weight: 500;
-}
-.detail-mode-btn.active:hover, .detail-mode-btn.active:focus-visible { color: var(--at-business); }
 .detail-list { overflow-y: auto; scrollbar-gutter: stable; padding: 8px 9px 16px 14px; flex: auto; min-height: 0; scrollbar-color: var(--at-scrollbar-thumb) transparent; }
 .detail-state { font-size: 12px; color: var(--at-label-tertiary); padding: 16px 4px; display: flex; align-items: center; gap: 6px; }
 .detail-state.error { color: var(--at-error-text); }

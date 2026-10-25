@@ -22649,6 +22649,12 @@ function findCatalogProvider(catalog, providerId) {
 function findCatalogModel(catalog, providerId, modelId) {
   return findCatalogProvider(catalog, providerId)?.models.find((m) => m.id === modelId);
 }
+function catalogSupports(catalog, selection) {
+  const provider = findCatalogProvider(catalog, selection.providerId);
+  if (provider === void 0 || !provider.enabled) return false;
+  const model = provider.models.find((m) => m.id === selection.modelId);
+  return model !== void 0 && model.enabled !== false;
+}
 function enabledProvidersOffering(catalog, modelId) {
   return catalog.providers.filter((p) => p.enabled && p.models.some((m) => m.id === modelId && m.enabled !== false)).map((p) => p.providerId);
 }
@@ -25384,6 +25390,8 @@ var ResumePerTurnProvider = class {
     const prompt = args.context === "fork" ? buildForkFirstPrompt(this.reader, this.opts.teamId, args.firstPrompt).prompt : args.firstPrompt;
     const explicitSelection = args.modelSelection;
     const inheritedSelections = this.sessionIsolation === "child" && explicitSelection === void 0 ? this.lookupLeadModelSelections() : [];
+    const rawLeadSelections = this.sessionIsolation === "child" && explicitSelection === void 0 ? this.rawLeadModelSelections() : [];
+    const classifiedSkip = this.sessionIsolation === "child" && explicitSelection === void 0 && rawLeadSelections.length > 0 && inheritedSelections.length === 0;
     const primarySelection = this.sessionIsolation !== "child" ? void 0 : explicitSelection ?? inheritedSelections[0];
     const finalSelection = primarySelection !== void 0 && args.thoughtLevel !== void 0 ? { ...primarySelection, reasoningLevel: args.thoughtLevel } : primarySelection;
     const fallbackSelection = explicitSelection !== void 0 ? void 0 : inheritedSelections[1];
@@ -25394,12 +25402,20 @@ var ResumePerTurnProvider = class {
       bred = await this.breeder.createChild({
         teamId: this.opts.teamId,
         workspacePath: this.cwd,
-        ...appliedSelection !== void 0 ? { modelSelection: appliedSelection } : {},
-        ...appliedFallback !== void 0 ? { modelFallback: appliedFallback } : {}
+        // 分类跳过：两个模型参数都缺省（createChild 不发 setModel）。
+        ...!classifiedSkip && appliedSelection !== void 0 ? { modelSelection: appliedSelection } : {},
+        ...!classifiedSkip && appliedFallback !== void 0 ? { modelFallback: appliedFallback } : {}
       });
     }
     const spawnCwd = bred?.workspacePath ?? this.cwd;
-    if (bred !== null && appliedSelection !== void 0) {
+    if (classifiedSkip) {
+      this.writeModelFailure(
+        paths,
+        rawLeadSelections[0],
+        this.classifiedSkipReason(rawLeadSelections[0]),
+        { fullSentence: true }
+      );
+    } else if (bred !== null && appliedSelection !== void 0) {
       if (bred.appliedModel !== void 0) {
         clearModelFailed(paths);
       } else {
@@ -25957,10 +25973,33 @@ var ResumePerTurnProvider = class {
     return applyReasoningDefault(this.modelCatalog(), selection);
   }
   /**
-   * Lead 继承链（至多两档，按序）：`session_entry` 权威条目 → `model_usage` 最近调用。
-   * 去重：两档三元组完全相同则只留一个（避免对同一目标重试一次必败的 setModel）。
+   * Lead 继承候选（至多两档，按序）：`session_entry` 权威条目 → `model_usage` 最近调用。
+   * 0.3.2 分类优先：只保留**目录支持**（用户自配/注册表内且启用）的选择——官方套餐
+   * （`account:` / `builtin:` 前缀）与已删除的自有 provider 不进候选（零 setModel 尝试）。
+   * 空目录守卫：目录不可用时不过滤（旧行为：照旧尝试，宿主终审），避免目录读不到时误跳过。
+   * 去重：两档三元组完全相同则只留一个。
    */
   lookupLeadModelSelections() {
+    const catalog = this.modelCatalog();
+    const catalogAvailable = catalog.providers.length > 0;
+    const candidates = [
+      this.reader.latestModelSelection(this.opts.teamId),
+      this.reader.latestModelUsage(this.opts.teamId)
+    ];
+    const out = [];
+    for (const selection of candidates) {
+      if (selection === void 0) continue;
+      if (catalogAvailable && !catalogSupports(catalog, selection)) continue;
+      if (out.some((existing) => sameModelSelection(existing, selection))) continue;
+      out.push(selection);
+    }
+    return out;
+  }
+  /**
+   * Lead 的**原始**模型选择（未过滤）：用于分类跳过诊断——继承候选为空时判断 Lead 是否
+   * 「有模型但全被目录过滤」（vs「本来就无模型」），决定是否写 model-failed 及文案。
+   */
+  rawLeadModelSelections() {
     const candidates = [
       this.reader.latestModelSelection(this.opts.teamId),
       this.reader.latestModelUsage(this.opts.teamId)
@@ -26012,11 +26051,14 @@ var ResumePerTurnProvider = class {
     writeOrigin(paths, { ...readOrigin(paths) ?? origin, modelSelection: selection, modelSource: "explicit" });
     clearModelFailed(paths);
   }
-  /** 记录一次**终态**模型设置失败（供成员行诊断/面板弹窗；不排队、不重试）。 */
-  writeModelFailure(paths, selection, reason) {
+  /**
+   * 记录一次**终态**模型设置失败（供成员行诊断/面板弹窗；不排队、不重试）。
+   * 分类跳过的长建议是单句（句号在末尾），不能被「首句截断」切半 → 跳过类文案只做长度截断。
+   */
+  writeModelFailure(paths, selection, reason, options) {
     writeModelFailed(paths, {
       modelSelection: selection,
-      reason: compactReason(reason),
+      reason: options?.fullSentence === true ? truncateReason(reason) : compactReason(reason),
       failedAt: iso(this.now())
     });
     this.log({
@@ -26028,6 +26070,16 @@ var ResumePerTurnProvider = class {
       reason: compactReason(reason)
     });
   }
+  /**
+   * 0.3.2 分类跳过文案：官方套餐（account:* / builtin:* 前缀）给可操作建议；
+   * 其他目录外模型（已删除的自有 provider/陈旧选择）给简短说明。
+   */
+  classifiedSkipReason(selection) {
+    const model = `${selection.providerId}/${selection.modelId}`;
+    const isOfficialPlan = selection.providerId.startsWith("account:") || selection.providerId.startsWith("builtin:");
+    return isOfficialPlan ? `Lead \u5F53\u524D\u4F7F\u7528\u5B98\u65B9\u5957\u9910\u6A21\u578B\uFF08${model}\uFF09\uFF0C\u6210\u5458\u65E0\u6CD5\u7EE7\u627F\uFF0C\u5DF2\u56DE\u9000\u5BBF\u4E3B\u7F3A\u7701\uFF1B\u53EF\u5728 spawn \u65F6\u6307\u5B9A\u81EA\u914D\u6A21\u578B\u6216\u6539\u7528\u7B2C\u4E09\u65B9\u6A21\u578B` : `Lead \u6A21\u578B ${model} \u4E0D\u5728\u53EF\u7528\u76EE\u5F55\uFF0C\u5DF2\u56DE\u9000\u5BBF\u4E3B\u7F3A\u7701`;
+  }
+  /** 仅长度截断（≤80 字符），不按句子切——分类跳过文案本身是一条完整建议。 */
   /**
    * 成员行诊断（GitHub #6）：读 model-failed.json → 一条可读诊断。
    * 无记录/损坏 → []（损坏不阻断 list_agents；失败信息已尽力而为）。
@@ -26043,7 +26095,7 @@ var ResumePerTurnProvider = class {
     if (record2 === void 0) return [];
     const selection = parseModelSelection(record2.modelSelection);
     if (selection === void 0) return [];
-    const reason = compactReason(typeof record2.reason === "string" ? record2.reason : "");
+    const reason = typeof record2.reason === "string" ? record2.reason : "";
     return [`\u6A21\u578B\u8BBE\u7F6E\u672A\u751F\u6548\uFF1A${selection.providerId}/${selection.modelId}${reason.length > 0 ? `\uFF08${reason}\uFF09` : ""}`];
   }
   /** 下一轮拉起前应用 pending（成功删标记并同步 origin；失败保留标记，不阻塞轮次）。 */
@@ -26135,7 +26187,9 @@ function errText2(err) {
 function compactReason(reason) {
   const firstLine = reason.split(/\n/)[0] ?? "";
   const firstSentence = firstLine.split(/(?<=[。！？.!?])\s*/)[0] ?? firstLine;
-  const text = firstSentence.trim();
+  return truncateReason(firstSentence.trim());
+}
+function truncateReason(text) {
   if (text.length === 0) return "";
   return text.length > 80 ? `${text.slice(0, 79)}\u2026` : text;
 }

@@ -35,7 +35,7 @@ allowed-tools: Bash
    - **CLI 细节指引（恒附——桌面与 CLI 都输出）**：headless/TUI 会话可能不暴露运行环境，
      误判会漏掉终端用户必需的入口，因此摘要后一律附：
      `细节：node <team-ctl> state <teamDir>`；
-     `成员会话：node <team-ctl> transcript <teamDir> <member>（缺省简洁；加 --mode full 看全量转录）`；
+     `成员会话：node <team-ctl> transcript <teamDir> <member>（按轮摘要：用户指令 + 动作组 + 每轮结论）`；
      `高保真（可选）：TEAM_COMPANION=1 的 daemon 在场时 node <team-ctl> open-panel；或
       node <team-ctl> widget <teamDir> --standalone --out /tmp/team-panel.html 后浏览器打开`。
    - **`<team-ctl>` 直接执行**：`dist/team-ctl.mjs` 自带自执行入口（`node <dist>/team-ctl.mjs …`

@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.3.2 — 2026-10-25
+
+描述：智能体团队：在会话中创建并协调多个 teammate 子会话、共享任务板与成员消息。
+
+- **第三方模型继承精化（分类优先绕过官方套餐）**：
+  - spawn 默认继承只覆盖**模型目录（Provider 注册表）内**的自配第三方模型；Lead 使用官方 coding plan 套餐（`account:*` / `builtin:*` Provider）时**零 setModel 尝试**直接回退宿主缺省，不再产生必败 RPC 与失败日志噪音。
+  - 继承链按目录过滤 `session_entry` → `model_usage`（空目录守卫：目录不可读时不过滤，照旧由宿主终审）；新导出 `catalogSupports(catalog, selection)` 作为唯一分类判据。
+  - 跳过仍写 `model-failed.json`（防可见性回归），诊断区分两态：官方套餐 →「Lead 当前使用官方套餐模型（provider/model），成员无法继承，已回退宿主缺省；可在 spawn 时指定自配模型或改用第三方模型」；其他目录外模型 →「Lead 模型 provider/model 不在可用目录，已回退宿主缺省」。
+  - 显式指定通道与「尝试后失败」路径一字未动（无契约/工具面变更，backend/面板零改动）；origin 仍只记实际生效者。
+  - README §2.1 与使用手册补继承边界声明。
+- **取消「简洁/详细」双模式**：成员会话查看视图固定为按轮摘要一种形态。
+  - 每轮显示**用户指令 + 动作组 + 每轮结论**：动作组（`toolGroup`）一行汇总本轮全部工具，点击就地展开逐条工具（名称/状态/载荷）；本轮最后一条非空 assistant 文本作为该轮结论。
+  - **全量转录不进视图**：需要原始记录时走 `team-ctl`/事件日志/宿主会话库。
+  - 计数显示「n 条 · 共 sourceTotal 条转录」（`sourceTotal` = 投影前原始条数）。
+  - **mode 参数与切换按钮全部移除**：`team_panel_call` 的 detail 请求/响应均无 `mode`，面板与伴生页无模式切换按钮；CLI 删 `--mode`（`team-ctl transcript <teamDir> <member>` 即摘要形态）。
+  - 契约写实保留：`items.kind` 为 `"text"|"toolCall"|"toolGroup"`；`kind:"toolResult"` 从未独立实现，工具结果并入 `toolCall` 载荷。
+  - README / 使用手册 / 架构说明 / 运维手册 / 测试手册 / 命令文档 / 追溯矩阵同步改写为单一摘要口径。
+- 测试 875 → **878**（本机 env 净化实测两轮稳定，75 文件；分类五态 + `catalogSupports` 新增）。
+- 视觉基线 **80 页不变**（无 UI 变更）。
+- 模型可见工具面与成员/任务行为不变（仍 10 工具，`interrupt:false` 时 9）。
+
 ## 0.3.1 — 2026-10-25
 
 描述：智能体团队：在会话中创建并协调多个 teammate 子会话、共享任务板与成员消息。
