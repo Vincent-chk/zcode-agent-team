@@ -13,7 +13,7 @@ import { dataDir, ensureDir, appendJsonl, ts, readRuntimeConfig, readHostLeadMod
 import { buildSessionStartContext, IDENTITY_LEAD_TEXT, identityTeammateText } from "./mcp/policy.js";
 import { validateLeadMode } from "./domain/config.js";
 import { readSessionRegistry, upsertSessionEntry, safeSessionKey } from "./mcp/identity.js";
-import { teamPaths } from "./coord/paths.js";
+import { teamPaths, assertPathInside } from "./coord/paths.js";
 import { callCoordinator } from "./coord/rpc.js";
 import {
   resolveHookRole,
@@ -109,10 +109,27 @@ function out(obj: unknown): Promise<void> {
 /** best-effort socket：协调者在场时加速（回执折叠 delivered 事件 / 恢复对账）；缺位静默（回执文件为权威）。 */
 async function ackCoordinator(method: string, params: Record<string, unknown>): Promise<void> {
   if (rawSessionId === null) return;
-  const { teamDir } = teamPaths(DATA, role.teamId);
+  const teamDir = safeTeamDir(role.teamId);
+  if (teamDir === null) return;
   await callCoordinator(teamDir, role.teamId, method, params, { timeoutMs: 2_000, connectTimeoutMs: 500 }).catch(
     () => undefined,
   );
+}
+
+/**
+ * 入口白名单（Mimosa L3 路径穿越口径，stage-2 政策）：hook 输入的 teamId 只接受
+ * `[A-Za-z0-9._-]` 且非裸 `.`/`..`；非法返回 null（hook 全程 best-effort，跳过即可）。
+ * 校验后再经 teamPaths（内含 assertPathInside 二重防线）取 teamDir。
+ */
+function safeTeamDir(teamId: string): string | null {
+  if (!/^[A-Za-z0-9._-]+$/.test(teamId) || teamId === "." || teamId === "..") return null;
+  const { teamDir } = teamPaths(DATA, teamId);
+  try {
+    assertPathInside(path.join(DATA, "teams"), teamDir);
+  } catch {
+    return null;
+  }
+  return teamDir;
 }
 
 /** ack 是加速器：最多等 500ms，不阻塞 hook 退出（回执文件为权威）。 */
@@ -167,11 +184,13 @@ if (event === "sessionstart") {
   // Lead 收件箱附加段（resume 冷拉起 = 无上限交付点）+ 回执
   let pending: Awaited<ReturnType<typeof pendingForLead>> = [];
   if (role.role === "lead" && rawSessionId !== null) {
-    const { teamDir } = teamPaths(DATA, role.teamId);
-    recordLeadTurnEvent(teamDir, "start");
-    pending = await pendingForLead(teamDir, role.teamId);
-    if (pending.length > 0) {
-      context += `\n${buildInboxContext(pending.map((m) => m.text))}`;
+    const teamDir = safeTeamDir(role.teamId);
+    if (teamDir !== null) {
+      recordLeadTurnEvent(teamDir, "start");
+      pending = await pendingForLead(teamDir, role.teamId);
+      if (pending.length > 0) {
+        context += `\n${buildInboxContext(pending.map((m) => m.text))}`;
+      }
     }
   }
   await out({
@@ -191,42 +210,46 @@ if (event === "sessionstart") {
   }
 } else if (event === "userpromptsubmit") {
   if (role.role === "lead" && rawSessionId !== null) {
-    const { teamDir } = teamPaths(DATA, role.teamId);
-    recordLeadTurnEvent(teamDir, "start");
-    const pending = await pendingForLead(teamDir, role.teamId);
-    if (pending.length > 0) {
-      await out({
-        hookSpecificOutput: {
-          hookEventName: "UserPromptSubmit",
-          additionalContext: buildInboxContext(pending.map((m) => m.text)),
-        },
-      });
-      writeReceipts(DATA, role.teamId, pending.map((m) => m.messageId), "userpromptsubmit");
-      await boundedAck("mailbox.ack", { session_id: rawSessionId, messageIds: pending.map((m) => m.messageId) });
+    const teamDir = safeTeamDir(role.teamId);
+    if (teamDir !== null) {
+      recordLeadTurnEvent(teamDir, "start");
+      const pending = await pendingForLead(teamDir, role.teamId);
+      if (pending.length > 0) {
+        await out({
+          hookSpecificOutput: {
+            hookEventName: "UserPromptSubmit",
+            additionalContext: buildInboxContext(pending.map((m) => m.text)),
+          },
+        });
+        writeReceipts(DATA, role.teamId, pending.map((m) => m.messageId), "userpromptsubmit");
+        await boundedAck("mailbox.ack", { session_id: rawSessionId, messageIds: pending.map((m) => m.messageId) });
+      }
     }
   }
   // teammate：进程即边界（pending 由协调者在轮次边界合并投递）；lead 无 pending → 不干预
 } else if (event === "stop") {
   if (role.role === "lead" && rawSessionId !== null) {
-    const { teamDir } = teamPaths(DATA, role.teamId);
-    recordLeadTurnEvent(teamDir, "stop");
-    const pending = await pendingForLead(teamDir, role.teamId);
-    if (pending.length > 0) {
-      const runKey = runKeyFor(input.stop_hook_active);
-      const budgetPaths = memberPaths(teamDir, role.teamId);
-      const state = readStopBudget(budgetPaths);
-      if (budgetAllows(state, runKey)) {
-        writeStopBudget(budgetPaths, nextBudget(state, runKey));
-        await out({
-          decision: "block",
-          reason: buildStopReason(pending.map((m) => m.text)),
-        });
-        writeReceipts(DATA, role.teamId, pending.map((m) => m.messageId), "stop");
-        await boundedAck("mailbox.ack", { session_id: rawSessionId, messageIds: pending.map((m) => m.messageId) });
+    const teamDir = safeTeamDir(role.teamId);
+    if (teamDir !== null) {
+      recordLeadTurnEvent(teamDir, "stop");
+      const pending = await pendingForLead(teamDir, role.teamId);
+      if (pending.length > 0) {
+        const runKey = runKeyFor(input.stop_hook_active);
+        const budgetPaths = memberPaths(teamDir, role.teamId);
+        const state = readStopBudget(budgetPaths);
+        if (budgetAllows(state, runKey)) {
+          writeStopBudget(budgetPaths, nextBudget(state, runKey));
+          await out({
+            decision: "block",
+            reason: buildStopReason(pending.map((m) => m.text)),
+          });
+          writeReceipts(DATA, role.teamId, pending.map((m) => m.messageId), "stop");
+          await boundedAck("mailbox.ack", { session_id: rawSessionId, messageIds: pending.map((m) => m.messageId) });
+        }
+        // 预算耗尽（≥3 次/run）→ 不 block，消息滞留 pending 至下轮 SessionStart/UserPromptSubmit
       }
-      // 预算耗尽（≥3 次/run）→ 不 block，消息滞留 pending 至下轮 SessionStart/UserPromptSubmit
+      // 无 pending → 放行（不干预回合结束；处置轻量检查由 daemon 侧承担）
     }
-    // 无 pending → 放行（不干预回合结束；处置轻量检查由 daemon 侧承担）
   }
   // teammate 的 Stop：轮次进程退出即边界，协调者纳管（不注入）
 }

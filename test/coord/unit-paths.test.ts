@@ -1,6 +1,6 @@
 // paths / identity 单元（safeTeamId、布局、writerId 解析、bootId 稳定性）。
 import { describe, expect, it } from "vitest";
-import { teamPaths, safeTeamId, ensureTeamDir, MAX_SOCKET_PATH } from "../../src/coord/paths.js";
+import { teamPaths, safeTeamId, ensureTeamDir, assertPathInside, MAX_SOCKET_PATH } from "../../src/coord/paths.js";
 import { bootId, parseWriterId, writerId } from "../../src/coord/identity.js";
 import fs from "node:fs";
 import os from "node:os";
@@ -13,6 +13,21 @@ describe("paths", () => {
     expect(safeTeamId("a\\b")).toBe("a~5cb");
     expect(safeTeamId("../p")).toBe("..~2fp");
     expect(safeTeamId("../p")).not.toContain("/");
+  });
+
+  it("safeTeamId：裸 '.'/'..' 段整体转义（path.join 折叠防护，Mimosa L3 口径）", () => {
+    expect(safeTeamId(".")).toBe("~2e");
+    expect(safeTeamId("..")).toBe("~2e2e");
+    // 落点仍在 teams 根之下
+    expect(teamPaths("/data", ".").teamDir).toBe("/data/teams/~2e");
+    expect(teamPaths("/data", "..").teamDir).toBe("/data/teams/~2e2e");
+  });
+
+  it("assertPathInside：base 自身/子路径通过；越界抛错", () => {
+    expect(() => assertPathInside("/data/teams", "/data/teams")).not.toThrow();
+    expect(() => assertPathInside("/data/teams", "/data/teams/a/b")).not.toThrow();
+    expect(() => assertPathInside("/data/teams", "/data/other")).toThrow(/escapes containment/);
+    expect(() => assertPathInside("/data/teams", "/data/teams-evil")).toThrow(/escapes containment/);
   });
 
   it("teamPaths 布局字段齐全；ensureTeamDir 建目录", () => {

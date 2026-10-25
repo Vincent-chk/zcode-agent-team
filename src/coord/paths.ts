@@ -51,9 +51,23 @@ export function ensureTeamDir(paths: TeamPaths): string {
   return paths.teamDir;
 }
 
-/** teamId（会话 id）→ 文件名安全形式：非 [A-Za-z0-9._-] 字符转 `~xx` 十六进制转义。 */
+/** teamId（会话 id）→ 文件名安全形式：非 [A-Za-z0-9._-] 字符转 `~xx` 十六进制转义；裸 "."/".." 段整体转义。 */
 export function safeTeamId(teamId: string): string {
-  return teamId.replace(/[^A-Za-z0-9._-]/g, (c) => "~" + c.codePointAt(0)!.toString(16));
+  const escaped = teamId.replace(/[^A-Za-z0-9._-]/g, (c) => "~" + c.codePointAt(0)!.toString(16));
+  // path.join 会把裸 "."/".." 折叠出 teams 根的同级/上级目录——按既有十六进制方案整体转义
+  // （正常会话 id 形如 sess_/session_ 前缀，不受影响；Mimosa L3 路径穿越口径，stage-2 政策）。
+  if (escaped === ".") return "~2e";
+  if (escaped === "..") return "~2e2e";
+  return escaped;
+}
+
+/** 包含校验（Mimosa L3 口径，stage-2 政策 under()/assertInside 同源）：解析后必须仍在 base 之下。 */
+export function assertPathInside(base: string, target: string): void {
+  const resolvedBase = path.resolve(base);
+  const resolvedTarget = path.resolve(target);
+  if (resolvedTarget !== resolvedBase && !resolvedTarget.startsWith(resolvedBase + path.sep)) {
+    throw new Error(`path escapes containment: ${target} (base: ${base})`);
+  }
 }
 
 export interface SocketResolution {
