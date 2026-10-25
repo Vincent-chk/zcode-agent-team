@@ -195,6 +195,11 @@ Lead 模型解析为**三源按时间戳取最新**：① 真实用户提交消�
 
 **失败绝不静默**：解析不出 / 官方套餐 / 目录外 / setModel 被拒 → 创建时抛错（不落成员）、续跑时阻止该轮启动，并以可读原因报告用户；不再有「回退宿主缺省冒充继承成功」的降级路径。同步有变化才发 `session/setModel`（生效锚点 = 会话库条目，headless `--resume` 每轮恢复）；运行中成员本轮不打断，下一轮开始时同步；急需切换用 `interrupt_agent` 结束当前轮再续跑。`origin.json` 只记实际生效的选择（`modelSource` 恒 `inherited`）。
 
+**0.4.1 修复轮**（跟随机制可靠性，无契约/工具面变更）：
+- **一致性判断以宿主实际状态为准**：轮前比对源 = 成员会话 `session_entry` → `main_turn usage` 实查，`origin.modelSelection` 只是辅助记录（不凭 origin 相同放行）；实际状态无法确认时重新应用 Lead 选择；确认一致时顺带修复落后的 origin；仅档位变化同样识别同步；首轮 createChild 已定模则 launchTurn 跳过（零冗余 setModel）。
+- **创建前预检**：provider `preflightMemberModel()` 在 roster 写入 provisioning 事件**之前**执行——不可继承时不增加成员、不占名、不建隐藏子会话，修正 Lead 模型后原名可重用；供给阶段仍复检（漂移防御）。
+- **失败可见 + 重试有节制**：解析失败与应用失败统一落 `model-failed.json`（`kind`/`attempts`/`nextAttemptAt`/`leadSignature`/`messageIds`）。确定性拒绝（套餐/目录外/明确不支持）暂停相同选择的自动重试；临时故障（timeout/spawn/ENOENT/app-server 未就绪）按 5s/15s/30s 退避、最多自动重试 3 次；**Lead 换模或用户再发新消息即解锁**。拦截 = `ModelSyncSuppressedError` → deliver 按 `queued` 滞留（消息保留、不误标 delivered、不重复 setModel）。失败记录变化经 `bind(onModelFailureChanged)` → `roster.notifyStatusChanged` 立即刷新成员展示；成功同步或宿主实际状态确认一致即清除旧失败记录与诊断。
+
 宿主输入框切模型不刷新会话选模条目仍是 issue #7 限制，但 0.4.0 的三源判定以提交快照弥补：你切换后提交一条新消息，成员下一轮即跟上。
 
 来源：[model-catalog](../src/provider/model-catalog.ts)、[model-selection](../src/provider/model-selection.ts)、[model-inheritance](../src/provider/model-inheritance.ts)、[resume-provider](../src/provider/resume-provider.ts)、[session-breeder](../src/provider/session-breeder.ts)、[transcript](../src/provider/transcript.ts)。

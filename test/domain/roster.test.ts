@@ -47,6 +47,30 @@ describe("Roster · 名字校验与预留（F08）", () => {
 });
 
 describe("Roster · spawn 全流程顺序（F09）", () => {
+  it("模型预检失败（0.4.1）→ 登记前拒绝：零成员、名字未占用、零供给调用；修正后原名可建", async () => {
+    const { runtime, store, provider } = buildKit();
+    provider.programWith({
+      preflightError: Object.assign(new Error("Lead 当前使用官方套餐模型（account:x/GLM-5.3），成员无法继承"), {
+        name: "ModelInheritanceError",
+      }),
+    });
+    await expect(
+      runtime.roster.spawnTeammate(LEAD, { name: "blocked", description: "d", prompt: "p" }),
+    ).rejects.toThrow(/官方套餐模型/);
+    // 不增加成员数量、不占用成员名、不触发供给（零隐藏子会话的域层等价口径）
+    expect(store.state().members).toHaveLength(0);
+    expect(provider.startCalls).toBe(0);
+    // 并发重名校验/成员数量上限保持有效：修正 Lead 模型（清除预检错误）后，原名可成功创建
+    provider.programWith({});
+    const { member } = await runtime.roster.spawnTeammate(LEAD, {
+      name: "blocked",
+      description: "d",
+      prompt: "p",
+    });
+    expect(member).toMatchObject({ target: "blocked", status: "running" });
+    expect(store.state().members).toHaveLength(1);
+  });
+
   it("顺序：provisioning 落盘（seq1）→ startContinuable → active 落盘（seq2）；返回成员行", async () => {
     const { runtime, store, provider } = buildKit();
     const events: string[] = [];

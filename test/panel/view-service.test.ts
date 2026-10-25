@@ -329,3 +329,137 @@ describe("分支补强（failure 终态/快照异常/loadState/无事件+快照�
     expect(state.messages).toHaveLength(1);
   });
 });
+
+describe("team_panel_call · 错误面与参数分支（0.4.1 覆盖率补齐）", () => {
+  it("detail 空串 target → TEAM_INVALID_ARGUMENT（length===0 分支）", async () => {
+    const r = (await handlePanelCall(panelDeps(), { action: "detail", target: "" }, leadMeta)) as Extract<PanelCallResult, { kind: "error" }>;
+    expect(r.code).toBe("TEAM_INVALID_ARGUMENT");
+  });
+
+  it("detail 非 TeamError 异常 → code:'' + warn（不贴假 code）", async () => {
+    const warnings: string[] = [];
+    let counter = 0;
+    const brokenView = {
+      buildFrame: () => {
+        throw new Error("view exploded");
+      },
+    } as unknown as PanelViewService;
+    const r = (await handlePanelCall(
+      { view: brokenView, dataRoot, bootTimeMs: BOOT, bumpCounter: () => (counter += 1), warn: (m) => warnings.push(m), now: () => "fixed-ts" },
+      { action: "refresh" },
+      leadMeta,
+    )) as Extract<PanelCallResult, { kind: "error" }>;
+    expect(r.kind).toBe("error");
+    expect(r.code).toBe("");
+    expect(r.message).toBe("view exploded");
+    expect(warnings.join("|")).toContain("panel call failed: view exploded");
+  });
+
+  it("heartbeat 注入 now → 固定 ts；label 非字符串 → null", async () => {
+    let counter = 0;
+    const r = (await handlePanelCall(
+      { view: service, dataRoot, bootTimeMs: BOOT, bumpCounter: () => (counter += 1), now: () => "fixed-ts" },
+      { label: 42 },
+      leadMeta,
+    )) as Extract<PanelCallResult, { kind: "heartbeat" }>;
+    expect(r.ts).toBe("fixed-ts");
+    expect(r.label).toBeNull();
+  });
+
+  it("detail 目标成员会话未落定 → reason=session-not-settled（SessionNotSettledError 分支）", async () => {
+    await spawn("nosession");
+    // MockProvider 不落 origin.json → resolveMemberSession undefined → SessionNotSettledError
+    const r = (await handlePanelCall(panelDeps(), { action: "detail", target: "nosession" }, leadMeta)) as Extract<PanelCallResult, { kind: "error" }>;
+    expect(r.kind).toBe("error");
+    expect(r.code).toBe("TEAM_MEMBER_NOT_FOUND");
+    expect(r.reason).toBe("session-not-settled");
+  });
+
+  it("detail cursor/limit 数值参数透传（分页分支）；limit 非法 → TEAM_INVALID_ARGUMENT", async () => {
+    db.prepare("INSERT INTO session (id, directory, task_type, time_created) VALUES (?,?,?,?) ON CONFLICT(id) DO NOTHING").run(LEAD, "/ws", "interactive", Date.now());
+    for (let i = 0; i < 5; i += 1) {
+      db.prepare("INSERT INTO message (id, session_id, time_created, time_updated, data, sequence) VALUES (?,?,?,?,?,?)").run(
+        `mm${i}`, LEAD, Date.now(), Date.now(),
+        JSON.stringify({ role: "user", semantics: { origin: "real_user" } }), i,
+      );
+      db.prepare("INSERT INTO part (id, message_id, session_id, time_created, time_updated, data, sequence) VALUES (?,?,?,?,?,?,?)").run(
+        `pp${i}`, `mm${i}`, LEAD, Date.now(), Date.now(), JSON.stringify({ type: "text", text: `t${i}` }), 0,
+      );
+    }
+    const r = (await handlePanelCall(panelDeps(), { action: "detail", target: "lead", cursor: 4, limit: 2 }, leadMeta)) as Extract<PanelCallResult, { kind: "detail" }>;
+    expect(r.kind).toBe("detail");
+    // seq = 1 起时间序（t0..t4 → seq 1..5）；cursor=4 → seq<4 的最近 limit=2 条 = seq2,3 = t1,t2
+    expect(r.detail.page.items.map((i) => i.text)).toEqual(["t1", "t2"]);
+    expect(r.detail.page.nextCursor).toBe(2);
+    // 非数值 limit/cursor → panel-call 层直接丢弃（不透传给 normalizeLimit）→ 缺省分页成功
+    const dropped = (await handlePanelCall(panelDeps(), { action: "detail", target: "lead", limit: "x", cursor: null }, leadMeta)) as Extract<PanelCallResult, { kind: "detail" }>;
+    expect(dropped.kind).toBe("detail");
+    expect(dropped.detail.page.items).toHaveLength(5); // 缺省 limit=100 → 全量
+  });
+
+  it("detail 调用者非成员（无身份 meta）→ TEAM_NOT_MEMBER（fail-closed，requireMembership 分支）", async () => {
+    await spawn("alice");
+    const r = (await handlePanelCall(panelDeps(), { action: "detail", target: "alice" }, undefined)) as Extract<PanelCallResult, { kind: "error" }>;
+    expect(r.kind).toBe("error");
+    expect(r.code).toBe("TEAM_NOT_MEMBER");
+  });
+
+  it("detail 团队 failure 终态 → C5 fail-closed：TEAM_NOT_MEMBER（loader 抛 failure 文本分支）", async () => {
+    // 造 failure 终态盘面：非法事件序列（成员未 provisioning 直接 active）
+    const teamDir = path.join(dataRoot, "teams", LEAD);
+    fs.mkdirSync(teamDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(teamDir, "events.jsonl"),
+      [
+        JSON.stringify({ seq: 1, ts: new Date().toISOString(), writer: "seed:1", event: { type: "team/member", version: 2, teamId: LEAD, member: { id: "m1", name: "w", description: "d", provider: "spawn", context: "fresh", phase: "active" } } }),
+      ].join("\n") + "\n",
+    );
+    let counter = 0;
+    const r = (await handlePanelCall(
+      { view: service, dataRoot, bootTimeMs: BOOT, reader: new TranscriptReader({ dbPath }), bumpCounter: () => (counter += 1) },
+      { action: "detail", target: "lead" },
+      leadMeta,
+    )) as Extract<PanelCallResult, { kind: "error" }>;
+    expect(r.kind).toBe("error");
+    expect(r.code).toBe("TEAM_NOT_MEMBER"); // C5：failure 终态 → 成员域调用一律 TEAM_NOT_MEMBER
+  });
+
+  it("detail 无注入 reader → 缺省 TranscriptReader 构造分支（teamId 目标，空库语义 items=[]）", async () => {
+    let counter = 0;
+    const deps = {
+      view: service,
+      dataRoot,
+      bootTimeMs: BOOT,
+      bumpCounter: () => (counter += 1),
+      // reader 缺省 → buildDetailCall 走 `?? new TranscriptReader()` 分支
+    } as Parameters<typeof handlePanelCall>[0];
+    const env = process.env.TEAM_DB_PATH;
+    process.env.TEAM_DB_PATH = dbPath; // 缺省 reader 指向夹具库（只读）
+    try {
+      const r = (await handlePanelCall(deps, { action: "detail", target: "lead" }, leadMeta)) as Extract<PanelCallResult, { kind: "detail" }>;
+      expect(r.kind).toBe("detail");
+      expect(r.detail.page.items).toEqual([]);
+    } finally {
+      if (env === undefined) delete process.env.TEAM_DB_PATH;
+      else process.env.TEAM_DB_PATH = env;
+    }
+  });
+
+  it("非 Error throw → String(err) 分支（code:'' + warn）", async () => {
+    const warnings: string[] = [];
+    let counter = 0;
+    const brokenView = {
+      buildFrame: () => {
+        throw "plain string failure"; // 非 Error 抛出（防御分支）
+      },
+    } as unknown as PanelViewService;
+    const r = (await handlePanelCall(
+      { view: brokenView, dataRoot, bootTimeMs: BOOT, bumpCounter: () => (counter += 1), warn: (m) => warnings.push(m) },
+      { action: "refresh" },
+      leadMeta,
+    )) as Extract<PanelCallResult, { kind: "error" }>;
+    expect(r.code).toBe("");
+    expect(r.message).toBe("plain string failure");
+    expect(warnings.join("|")).toContain("plain string failure");
+  });
+});

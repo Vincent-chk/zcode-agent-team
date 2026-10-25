@@ -51,6 +51,8 @@ export interface MockProviderProgram {
   leadModel?: string;
   /** 成员诊断桩（diagnosticsOf 返回值；成员卡可见性测试）。 */
   memberDiagnostics?: Record<string, string[]>;
+  /** spawn 预检失败注入（0.4.1：roster 在登记前调用 preflightMemberModel → 抛此错误）。 */
+  preflightError?: unknown;
 }
 
 export class MockProvider implements TeammateProvider, ReconciliationSource, TargetInspector {
@@ -265,6 +267,11 @@ export class MockProvider implements TeammateProvider, ReconciliationSource, Tar
   /** 成员附加诊断桩（MemberPresentation.diagnosticsOf；缺省空）。 */
   diagnosticsOf(memberId: string): string[] {
     return this.program.memberDiagnostics?.[memberId] ?? [];
+  }
+
+  /** spawn 预检桩（0.4.1 ModelPreflight；programWith({preflightError}) 注入失败）。 */
+  preflightMemberModel(): void {
+    if (this.program.preflightError !== undefined) throw this.program.preflightError;
   }
 
   newId(): string {

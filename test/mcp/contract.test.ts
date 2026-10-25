@@ -183,6 +183,32 @@ describe("F02/F03 · spawn_teammate 契约", () => {
     expect(JSON.stringify(body)).not.toContain("_meta");
     expect(JSON.stringify(body)).not.toContain("surface");
   });
+
+  it("模型预检失败（0.4.1）→ 全链路透出错误；成员未登记（list_agents 不含）；名字未占用", async () => {
+    rig.provider.programWith({
+      preflightError: Object.assign(
+        new Error(
+          "Lead 当前使用官方套餐模型（account:x/GLM-5.3），成员无法继承（CLI 进程拿不到订阅套餐凭据）。请在 ZCode 中切换到自配的第三方模型后重试。",
+        ),
+        { name: "ModelInheritanceError" },
+      ),
+    });
+    const result = await call(rig, "spawn_teammate", { name: "blocked", description: "d", prompt: "p" });
+    // 非 TeamError → 不贴假 code；message 原样透出（用户可读的可操作建议）
+    const error = errJson(result);
+    expect(error.code).toBeUndefined();
+    expect(error.message).toContain("官方套餐模型");
+    expect(error.message).toContain("请在 ZCode 中切换到自配的第三方模型");
+    // 成员未登记：list_agents 只有 Lead 伪行
+    const listed = await call(rig, "list_agents", {});
+    const rows = okJson(listed) as Array<{ target: string }>;
+    expect(rows.map((r) => r.target)).toEqual(["lead"]);
+    // 名字未占用：修正后原名可建
+    rig.provider.programWith({});
+    const retry = await call(rig, "spawn_teammate", { name: "blocked", description: "d", prompt: "p" });
+    const body = okJson(retry) as { member: { target: string } };
+    expect(body.member.target).toBe("blocked");
+  });
 });
 
 describe("F02 · list_agents 契约（MEMBER_VIEW[] + Lead 伪行）", () => {

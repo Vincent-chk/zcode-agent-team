@@ -84,13 +84,29 @@ export interface StopBudget {
 }
 
 /**
- * 模型设置终态失败记录（GitHub #6）：设置被宿主拒绝且不再重试时落盘，供成员行诊断
- * （list_agents / 面板成员卡）与面板弹窗展示。成功应用即删（不留陈旧告警）。
+ * 模型继承失败记录（GitHub #6 可见性 + 0.4.1 重试控制）：解析失败或宿主应用失败时落盘，
+ * 供成员行诊断（list_agents / 面板成员卡）展示，并作为自动重试的抑制闸（不重建 pending
+ * 队列——重试控制所需的全部信息都在本记录里）。成功同步/宿主实际状态确认一致即删。
  */
 export interface ModelFailedRecord {
-  modelSelection: MemberModelSelection;
+  /** 失败指向的选择（官方套餐/目录外/应用被拒时有；三源全空解析不出 → 缺省）。 */
+  modelSelection?: MemberModelSelection;
   reason: string;
   failedAt: string;
+  /**
+   * 失败类别（0.4.1）：deterministic = 确定性拒绝（官方套餐/目录外/宿主明确不支持）——
+   * 相同选择暂停自动重试；transient = 临时故障（超时/进程/app-server 未就绪）——按退避重试。
+   * 旧记录（0.4.0）无本字段 → 读取方按 deterministic 处理（保守：不自动重试）。
+   */
+  kind?: "deterministic" | "transient";
+  /** 同一 Lead 选择下已实际尝试的次数（首次失败 = 1；transient 达上限后停止自动尝试）。 */
+  attempts?: number;
+  /** 下次允许自动重试的时刻（epoch ms；transient 退避闸，缺省 = 不再自动尝试）。 */
+  nextAttemptAt?: number;
+  /** 失败时的 Lead 选择指纹（providerId$modelId$level；Lead 换模 → 指纹不同 → 解锁重试）。 */
+  leadSignature?: string;
+  /** 触发失败的待投递消息 id（用户再次明确发送**新**消息 = 显式意图 → 解锁重试）。 */
+  messageIds?: string[];
 }
 
 export interface MemberPaths {

@@ -233,6 +233,27 @@ describe("callTeam（进程内）", () => {
     expect(none.output).toContain("coordinator is unavailable");
     expect(() => JSON.parse(none.audit)).not.toThrow();
   });
+
+  it("TeamError → [code] message 摘要 + audit.code；非 TeamError → 首行摘要（call.ts 错误分类分支）", async () => {
+    // 缺 session_id → 方法表 TEAM_INVALID_ARGUMENT（TeamError 透传路径）
+    const team = await callTeam(teamDir, "member.claim", "{}");
+    expect(team.ok).toBe(false);
+    expect(team.output).toContain("[TEAM_INVALID_ARGUMENT]");
+    expect(team.output).toContain('param "session_id" is required');
+    expect(JSON.parse(team.audit)).toMatchObject({ ok: false, code: "TEAM_INVALID_ARGUMENT" });
+
+    // 未注册方法 → RPC 层普通 Error（非 TeamError、非缺位消息）→ 首行摘要，audit 无 code
+    const unknown = await callTeam(teamDir, "no.such.method", "{}");
+    expect(unknown.ok).toBe(false);
+    expect(unknown.output).not.toContain("[TEAM_");
+    const audit = JSON.parse(unknown.audit) as { ok: boolean; code?: string };
+    expect(audit.ok).toBe(false);
+    expect(audit.code).toBeUndefined();
+
+    // paramsJson 缺省（undefined）→ {} 路径照常成功
+    const noParams = await callTeam(teamDir, "coordinator.hello", undefined);
+    expect(noParams.ok).toBe(true);
+  });
 });
 
 describe("followEvents（进程内跟随）", () => {
@@ -296,5 +317,41 @@ describe("followEvents（进程内跟随）", () => {
     );
     expect(out).toContain("team/other");
     expect(out).toContain('"x":1');
+  });
+
+  it("summarize 防御分支：task 事件缺 subject/status/revision → 占位符", () => {
+    const out = formatTailLine(
+      { kind: "line", line: { seq: 1, ts: "2026-10-15T00:00:00.000Z", writer: "w:1", event: { type: "team/task", task: { id: "task-1" } } } },
+      paintFor({ isTTY: false }),
+    );
+    expect(out).toContain("task-1");
+    expect(out).toContain("[? r?]"); // status/revision 缺省占位
+  });
+
+  it("followEvents 缺省 fromLines → 历史不回放（start=末尾）；增量空行跳过", async () => {
+    const dir = under(root, "follow2");
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, "events.jsonl");
+    const mk = (seq: number, type: string) =>
+      JSON.stringify({ seq, ts: new Date().toISOString(), writer: "w:1", event: { type } });
+    fs.writeFileSync(file, mk(1, "team/member") + "\n");
+
+    const controller = new AbortController();
+    const seen: string[] = [];
+    const followPromise = followEvents(file, {
+      pollMs: 30,
+      signal: controller.signal,
+      paint: paintFor({ isTTY: false }),
+      onLine: (formatted) => seen.push(formatted),
+    });
+    await new Promise((r) => setTimeout(r, 80));
+    expect(seen).toEqual([]); // 缺省 fromLines：历史行不回放（tail -f 语义）
+    // 增量：空行（连续换行）跳过 + 正常行 emit
+    fs.appendFileSync(file, "\n" + mk(2, "team/task") + "\n");
+    await new Promise((r) => setTimeout(r, 150));
+    controller.abort();
+    await followPromise;
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toContain("team/task");
   });
 });

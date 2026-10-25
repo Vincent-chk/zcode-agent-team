@@ -69,7 +69,8 @@ export function createTestDb(dbPath: string): void {
   db.close();
 }
 
-/** 直插模型选择条目（setModel 落库形态；id 缺省按宿主 canonical 规则 `<sessionId>:runtime-model-selection`）。 */
+/** 直插模型选择条目（setModel 落库形态；id 缺省按宿主 canonical 规则 `<sessionId>:runtime-model-selection`）。
+ *  OR REPLACE = 宿主 UPSERT 单行语义（重复 setModel 刷新同一行；0.4.1 起测试桩需要多次写）。 */
 export function insertSessionEntry(
   dbPath: string,
   args: { sessionId: string; data: unknown; type?: string; id?: string; timeCreated?: number },
@@ -79,7 +80,7 @@ export function insertSessionEntry(
     const type = args.type ?? "runtime/model_selection";
     const ts = args.timeCreated ?? Date.now();
     db.prepare(
-      "INSERT INTO session_entry (id, session_id, type, time_created, time_updated, data) VALUES (?,?,?,?,?,?)",
+      "INSERT OR REPLACE INTO session_entry (id, session_id, type, time_created, time_updated, data) VALUES (?,?,?,?,?,?)",
     ).run(
       args.id ?? `${args.sessionId}:${type.replaceAll("/", "-")}`,
       args.sessionId,
@@ -172,6 +173,8 @@ export function buildProviderKit(opts: {
   breeder?: SessionBreederLike;
   /** 模型目录注入（档位缺省链；缺省 = 读宿主真实目录——测试里 providerId 不在宿主目录 → 缺省 max）。 */
   modelCatalog?: () => ModelCatalog;
+  /** 模型同步临时故障退避序列注入（0.4.1；缺省 5s/15s/30s，测试收紧）。 */
+  modelRetryBackoffMs?: number[];
 } = {}): ProviderKit {
   const root = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "at-s4-"));
   const dataRoot = path.join(root, "data");
@@ -192,6 +195,7 @@ export function buildProviderKit(opts: {
     sessionIsolation: opts.sessionIsolation ?? "legacy",
     ...(opts.breeder !== undefined ? { breeder: opts.breeder } : {}),
     ...(opts.modelCatalog !== undefined ? { modelCatalog: opts.modelCatalog } : {}),
+    ...(opts.modelRetryBackoffMs !== undefined ? { modelRetryBackoffMs: opts.modelRetryBackoffMs } : {}),
     ...(opts.drainPolicy !== undefined ? { drainPolicy: opts.drainPolicy } : {}),
     firstTurnTimeoutMs: 8_000,
     deliverConfirmMs: 4_000,

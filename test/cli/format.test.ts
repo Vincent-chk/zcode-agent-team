@@ -106,6 +106,58 @@ describe("team-ctl state 渲染", () => {
     expect(parsed.mailbox.messages).toHaveLength(2);
     expect(parsed.seq).toBe(7);
   });
+
+  it("checkpoint+tail 模式头 + corrupt 红显行", () => {
+    const loaded = fakeLoaded({ fromCheckpoint: true });
+    loaded.corrupt = { line: 12, reason: "bad json" };
+    const out = renderState({ teamId: "sess_ctl", loaded, json: false }, plain);
+    expect(out).toContain("checkpoint+tail");
+    expect(out).toContain("⚠ 日志损坏 fail-closed（行 12）：bad json");
+  });
+
+  it("空 Roster/空邮箱占位 + 任务三态着色 + blockedBy 行 + 未知目标回退 id", () => {
+    const loaded = fakeLoaded();
+    loaded.view.members = [];
+    loaded.state.messages = [
+      { id: "team-message-9", senderId: "sess_ctl", senderName: "lead", targetId: "ghost-id", content: [] },
+    ];
+    loaded.state.delivered = [];
+    loaded.view.tasks = [
+      { id: "task-1", revision: 2, subject: "做的", description: "d", status: "in_progress", ownerName: "worker", ready: true, blockedBy: [], writeScopes: [], writeScopeWarnings: [] },
+      { id: "task-2", revision: 1, subject: "完的", description: "d", status: "completed", ready: true, blockedBy: ["task-1"], writeScopes: [], writeScopeWarnings: [] },
+      { id: "task-3", revision: 1, subject: "等的", description: "d", status: "pending", ready: false, blockedBy: [], writeScopes: [], writeScopeWarnings: [] },
+    ];
+    const out = renderState({ teamId: "sess_ctl", loaded, json: false }, colored);
+    expect(out).toContain("Roster (0)");
+    expect(out).toContain("（空）");
+    expect(out).toContain("Tasks (3)");
+    expect(out).toContain("blockedBy: task-1");
+    expect(out).toContain("—"); // ownerName 缺省占位
+    // 三态着色（ANSI 码在场 = colored paint 路径）
+    expect(out).toContain("\x1b[32m"); // completed = green
+    expect(out).toContain("\x1b[33m"); // in_progress/queued = yellow
+    // 邮箱：未知 targetId 回退显示原始 id
+    expect(out).toContain("lead → ghost-id");
+    // 空消息列表 → 邮箱空闲占位
+    const idle = fakeLoaded();
+    idle.state.messages = [];
+    idle.state.delivered = [];
+    expect(renderState({ teamId: "sess_ctl", loaded: idle, json: false }, plain)).toContain("（邮箱空闲）");
+  });
+
+  it("pad 列宽：超长文本走 `length >= width` 分支（单空格分隔，不截断）", () => {
+    const loaded = fakeLoaded();
+    const longName = "x".repeat(40); // > 16 列宽
+    loaded.view.members = [{ id: "sess_ctl", name: "lead", role: "lead", phase: "active" }, { id: "m9", name: longName, role: "teammate", phase: "active" }];
+    loaded.view.tasks = [
+      { id: "task-very-long-id-beyond-ten", revision: 1, subject: longName, description: "d", status: "pending", ready: true, blockedBy: [], writeScopes: [], writeScopeWarnings: [] },
+    ];
+    const out = renderState({ teamId: "sess_ctl", loaded, json: false }, plain);
+    expect(out).toContain(longName);
+    expect(out).toContain("task-very-long-id-beyond-ten");
+    // 超长名字后仍有分隔空格（pad 的 >= 分支）
+    expect(out).toMatch(new RegExp(`${longName} (teammate|pending)`));
+  });
 });
 
 describe("team-ctl tail 格式化", () => {

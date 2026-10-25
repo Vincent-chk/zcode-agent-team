@@ -1,6 +1,6 @@
 # 架构说明（as-built，2026-10-24；2026-10-25 随 0.4.0 更新）
 
-> 本文描述 **0.1.2 发布基线 + stage-8 模型可配置化开发轮 + 0.4.0 模型收敛**的实际结构（as-built），不是设计稿。规格映射与逐条证据见 `docs/traceability.md`；偏差编号沿用《04-能力映射与差距分析》D1–D27。
+> 本文描述 **0.1.2 发布基线 + stage-8 模型可配置化开发轮 + 0.4.0 模型收敛 + 0.4.1 跟随修复轮**的实际结构（as-built），不是设计稿。规格映射与逐条证据见 `docs/traceability.md`；偏差编号沿用《04-能力映射与差距分析》D1–D27。
 
 ## 1. 一图看清
 
@@ -70,12 +70,13 @@ teams/<sessionId>/
 
 ## 4. 关键数据流
 
-1. **spawn**：Lead 调 `spawn_teammate` → 域层校验名额/命名 → 协调者写 `team/member(provisioning)` → **模型继承解析**（0.4.0 三源取最新：real_user 提交快照 / `session_entry` 选模条目 / `main_turn` 实际调用，见 §4.6；解析不出/官方套餐/目录外 = 抛错，不产生成员）→ 培育隐藏子会话（同实例内 `session/setModel` 落选择；**失败 = 抛 + 回收 anchor，绝不带宿主缺省继续**）→ 孵化首轮（先落 `run/turn-1.json` 再起进程）→ 轮次结束定案 `active/failed`。
+1. **spawn**：Lead 调 `spawn_teammate` → 域层校验名额/命名 → **模型继承预检**（0.4.1：`preflightMemberModel` 在写 provisioning 事件**之前**执行——Lead 模型不可继承时请求直接失败，不增加成员、不占用成员名、不创建隐藏子会话）→ 协调者写 `team/member(provisioning)` → **模型继承解析**（0.4.0 三源取最新：real_user 提交快照 / `session_entry` 选模条目 / `main_turn` 实际调用，见 §4.6；解析不出/官方套餐/目录外 = 抛错，供给阶段复检兜住预检后漂移）→ 培育隐藏子会话（同实例内 `session/setModel` 落选择；**失败 = 抛 + 回收 anchor，绝不带宿主缺省继续**）→ 孵化首轮（先落 `run/turn-1.json` 再起进程；createChild 已定模 → 轮前同步跳过，零冗余 setModel）→ 轮次结束定案 `active/failed`。
 2. **消息**：`send_message` → 目标运行中则 queued（回合边界交付，D2）；空闲则拉起/恢复一轮 → teammate 侧以 `Team message from <name>:` 框架头注入 → 完成回执/transcript 判 delivered（D18）。
 3. **任务**：`team_task_*` → CAS（expected_revision）→ 事件追加 → 投影；orchestrator 模式下 Lead 对 completed 任务独立复核：失败 `reopen`、通过 `edit` 追加验收记录（D27）。
 4. **策略注入**：SessionStart additionalContext 注入策略全文（D7 替换句、D26 编排段按 leadMode 插值）；UserPromptSubmit 仅在有待收消息时注入收件箱段；skill/工具描述为冗余层。hook 进程读不到 userConfig，经 daemon 落盘 `meta/runtime-config.json` 兜底（D19）。
 5. **面板**：视图服务构建帧（身份解析 + 重放 + 活性 + snapshot）→ 订阅推送；无变化不推（contentKey）；detail 只读 db.sqlite + 事件回填框架头；按轮摘要投影在**合成层**完成（投影与分页前），不改 db 查询；全量转录不进视图。
-6. **模型继承（0.4.0：唯一路线 = 跟随 Lead）**：成员没有任何独立模型配置（spawn 参数、对话工具、面板弹窗三通道全部注销）。provider 在**每次孵化轮次前**（`launchTurn` 统一入口，覆盖首轮/续跑/恢复三类触发）解析 Lead 的最新**已确认**选择——三源按时间戳取最新：① real_user 提交消息携带的 `modelSelection` 快照（宿主保存消息时写入；输入框切换在提交瞬间生效，不受宿主 issue #7「条目不刷新」影响）；② `session_entry(runtime/model_selection)`（`/model` 命令刷新，`time_updated` 参与比较）；③ `model_usage` 中 `query_source='main_turn'` 的最近实际调用（严格排除 compact/标题生成/subagent/workflow 等辅助行）。判出后按模型目录分类：官方套餐（`account:`/`builtin:`）或目录外 = 不可继承；三源全空 = 解析不出——**任何一种都是显式错误**（`ModelInheritanceError`：spawn 失败不落成员；续跑则该轮不启动），绝不静默回退宿主缺省冒充继承成功。与成员当前生效选择一致时零 RPC；有变化才走「临时 app-server 实例 → `session/resume` → `session/setModel`」应用并回写 origin（`modelSource` 恒为 `inherited`；不谎报，只记实际生效者）。运行中的成员不打断，下一轮开始时同步；急需切换 = 先 `interrupt` 再发消息。生效锚点 = 会话库 `session_entry`（headless `--resume` 每轮恢复）。档位缺省链保留：继承选择无 reasoningLevel → 目录 defaultVariant → `max`。空目录守卫保留：目录不可读 = 无法分类 → 照旧尝试、宿主 setModel 终审。
+6. **模型继承（0.4.0：唯一路线 = 跟随 Lead；0.4.1：可靠性修复）**：成员没有任何独立模型配置（spawn 参数、对话工具、面板弹窗三通道全部注销）。provider 在**每次孵化轮次前**（`launchTurn` 统一入口，覆盖首轮/续跑/恢复三类触发）解析 Lead 的最新**已确认**选择——三源按时间戳取最新：① real_user 提交消息携带的 `modelSelection` 快照（宿主保存消息时写入；输入框切换在提交瞬间生效，不受宿主 issue #7「条目不刷新」影响）；② `session_entry(runtime/model_selection)`（`/model` 命令刷新，`time_updated` 参与比较）；③ `model_usage` 中 `query_source='main_turn'` 的最近实际调用（严格排除 compact/标题生成/subagent/workflow 等辅助行）。判出后按模型目录分类：官方套餐（`account:`/`builtin:`）或目录外 = 不可继承；三源全空 = 解析不出——**任何一种都是显式错误**（`ModelInheritanceError`：spawn 在登记前预检失败不落成员；续跑则该轮不启动），绝不静默回退宿主缺省冒充继承成功。
+   **一致性判断（0.4.1）**：与成员**宿主实际**选择比对（成员会话 `session_entry` → `main_turn usage` 实查），`origin.modelSelection` 只是辅助记录——setModel 成功后 origin 更新前崩溃的恢复盘面按宿主状态判断，实际状态无法确认时重新应用；确认一致 = 零 RPC 并清除旧失败记录、顺带修复落后的 origin；仅档位变化同样触发同步。**重试控制（0.4.1）**：解析失败与应用失败统一落 `model-failed.json`（`kind`/`attempts`/`nextAttemptAt`/`leadSignature`/`messageIds`）；确定性拒绝暂停相同选择的自动重试，临时故障按 5s/15s/30s 退避最多自动重试 3 次，Lead 换模或新消息即解锁；被闸拦截的后台补投抛 `ModelSyncSuppressedError` → deliver 按 `queued` 滞留（消息保留、不误标 delivered、不重复打宿主）；失败记录变化经 `bind(onModelFailureChanged)` → `roster.notifyStatusChanged` 立即刷新成员展示。有变化才走「临时 app-server 实例 → `session/resume` → `session/setModel`」应用并回写 origin（`modelSource` 恒为 `inherited`；不谎报，只记实际生效者）。运行中的成员不打断，下一轮开始时同步；急需切换 = 先 `interrupt` 再发消息。生效锚点 = 会话库 `session_entry`（headless `--resume` 每轮恢复）。档位缺省链保留：继承选择无 reasoningLevel → 目录 defaultVariant → `max`。空目录守卫保留：目录不可读 = 无法分类 → 照旧尝试、宿主 setModel 终审。
 
 ## 5. 模块地图
 
@@ -83,7 +84,7 @@ teams/<sessionId>/
 |---|---|
 | `src/domain/` | `events` `projection` `invariant` `roster` `taskboard` `task-graph` `mailbox` `activity` `lifecycle` `config` `errors` `validation` `task-view` `runtime` `ports` |
 | `src/coord/` | `journal` `replay` `lock` `lockfile` `rpc` `client` `host` `methods` `paths` `identity` `fscheck` `store-adapter` |
-| `src/provider/` | `resume-provider`（ADR-4 主实现）`session-breeder` `procgroup` `transcript`（db 只读；0.4.0 三源读取）`member-files` `framing` `fork-context` `lead-wake`（D20 灰度）`zcode-bin` `mock-provider` `model-selection`（三元组/解析）`model-catalog`（脱敏目录 + `catalogSupports` 分类判据）`model-inheritance`（0.4.0：继承错误类型） |
+| `src/provider/` | `resume-provider`（ADR-4 主实现；0.4.1 预检/一致性判断/重试闸）`session-breeder` `procgroup` `transcript`（db 只读；0.4.0 三源读取）`member-files`（0.4.1：model-failed 记录扩展重试字段）`framing` `fork-context` `lead-wake`（D20 灰度）`zcode-bin` `mock-provider` `model-selection`（三元组/解析）`model-catalog`（脱敏目录 + `catalogSupports` 分类判据）`model-inheritance`（继承错误类型 + 0.4.1：预检接口/指纹/失败分类） |
 | `src/mcp/` | `tools`（9 工具定义，唯一真源）`handlers` `registry` `identity` `policy` `results` `backend` |
 | `src/hooks*`、`src/hooks/` | hook 入口与纯逻辑（角色解析、pending、Stop 预算、回执） |
 | `src/panel/`、`src/ui-core/` | 面板/伴生页/卡片/详情四载体共用渲染层（tokens/dict/render/detail-render/widget；0.4.0 弹窗/member-settings 注销、`escape` 转义下沉保留） |
@@ -101,7 +102,7 @@ teams/<sessionId>/
 | 宿主回收 SIGINT→SIGKILL（~260ms） | 处置只做轻量落盘；孤儿轮次由冷启动 `adoptOrphans` 定案/纳管（D9/D17） |
 | db.sqlite 不可读/结构变化 | 只影响 transcript/detail 的会话内容回填与模型继承兜底，不阻塞团队域操作 |
 | 模型目录不可读/漂移 | 空目录守卫 = 无法分类 → 继承照旧尝试、宿主 setModel 终审（0.4.0：无 `team://models` 资源，目录仅 provider 内部使用） |
-| Lead 模型不可继承（官方套餐/目录外/解析不出） | 0.4.0：**显式错误**——spawn 抛错不落成员；续跑则阻止该轮启动（绝不带旧模型/宿主缺省悄悄开跑）；成员卡保留一行继承失败诊断 |
+| Lead 模型不可继承（官方套餐/目录外/解析不出） | 0.4.0：**显式错误**——spawn 抛错不落成员（0.4.1：登记前预检，名字不占用）；续跑则阻止该轮启动（绝不带旧模型/宿主缺省悄悄开跑）；成员卡保留一行继承失败诊断。0.4.1：同一失败自动重试受控（确定性拒绝暂停；临时故障 5s/15s/30s 退避≤3 次），Lead 换回可用模型或新消息即恢复交付、旧提示清除 |
 | 面板连接失联 | 订阅自动重建；心跳失败静默；模型面工具不受影响 |
 
 ## 7. 边界与约束

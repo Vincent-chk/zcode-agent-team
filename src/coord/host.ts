@@ -392,6 +392,13 @@ export class TeamCoordinatorHost {
             .pendingFor(state, memberId)
             .map((message) => ({ messageId: message.id, framedJson: JSON.stringify(frameMessage(message)) }));
         },
+        // 0.4.1：模型失败记录变化（后台续跑同步失败/恢复清除）→ 成员展示立即刷新
+        // （Activity 唤醒 + 面板下一帧拿到新诊断；不等下一次轮次边界）。
+        onModelFailureChanged: () => {
+          if (this.mode === "coordinator" && this.runtime !== null && !this.closed) {
+            this.runtime.roster.notifyStatusChanged();
+          }
+        },
       });
       const adopted = this.provider.adoptOrphans();
       this.opts.warn?.(

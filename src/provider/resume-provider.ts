@@ -33,6 +33,7 @@ import {
   readModelFailed,
   writeModelFailed,
   clearModelFailed,
+  type ModelFailedRecord,
   type OriginRecord,
   type TurnRecord,
   type MemberPaths,
@@ -44,7 +45,14 @@ import { resolveZcodeBin, type ZcodeBin } from "./zcode-bin.js";
 import { AppServerSessionBreeder, isolationModeFromEnv, type IsolationMode } from "./session-breeder.js";
 import type { MemberModelSelection } from "./model-selection.js";
 import { parseModelSelection } from "./model-selection.js";
-import { ModelInheritanceError } from "./model-inheritance.js";
+import {
+  ModelInheritanceError,
+  ModelSyncSuppressedError,
+  classifyApplyFailure,
+  classifySelectionFailure,
+  selectionSignature,
+  type ModelPreflight,
+} from "./model-inheritance.js";
 import {
   applyReasoningDefault,
   catalogSupports,
@@ -92,6 +100,11 @@ export interface ResumeProviderOptions {
   modelCatalog?: () => ModelCatalog;
   /** 空闲 Lead 唤醒的最小空闲窗口（缺省 TEAM_WAKE_LEAD_MIN_IDLE_MS ?? 30s）。 */
   leadWakeMinIdleMs?: number;
+  /**
+   * 临时故障的自动重试退避序列（0.4.1；缺省 [5s, 15s, 30s] = 首次失败后最多自动重试 3 次）。
+   * 数组耗尽 → 停止自动尝试（Lead 换模或新消息解锁）。测试注入短序列。
+   */
+  modelRetryBackoffMs?: number[];
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
   log?: (record: Record<string, unknown>) => void;
@@ -131,6 +144,12 @@ export const LEAD_STEER_RESULT = false as const;
 /** host 装配标记：Lead 投递走 hook 通道（steerLead=false + 回执折叠）。 */
 export const LEAD_DELIVERY_VIA_HOOKS = true as const;
 
+/** 临时故障自动重试退避（0.4.1：5s/15s/30s，最多 3 次；耗尽后等 Lead 换模或新消息解锁）。 */
+export const DEFAULT_MODEL_RETRY_BACKOFF_MS: readonly number[] = [5_000, 15_000, 30_000];
+
+export type { ModelPreflight };
+export { providerHasModelPreflight } from "./model-inheritance.js";
+
 export class ResumePerTurnProvider implements TeammateProvider {
   readonly LEAD_DELIVERY_VIA_HOOKS = LEAD_DELIVERY_VIA_HOOKS;
   readonly teamDir: string;
@@ -145,6 +164,7 @@ export class ResumePerTurnProvider implements TeammateProvider {
   private readonly relaunchBackoffMs: number;
   private readonly sessionIsolation: IsolationMode;
   private readonly leadWakeMinIdleMs: number;
+  private readonly modelRetryBackoffMs: readonly number[];
   private readonly breeder: SessionBreederLike;
   private readonly modelCatalog: () => ModelCatalog;
   private readonly now: () => number;
@@ -159,6 +179,8 @@ export class ResumePerTurnProvider implements TeammateProvider {
   private lastLaunchFailureAt = 0;
   private pendingLookup: PendingLookup | null = null;
   private closed = false;
+  /** 失败记录变化监听（0.4.1：host 接线 → roster.notifyStatusChanged 刷新成员展示）。 */
+  private modelFailureListeners = new Set<() => void>();
 
   constructor(private readonly opts: ResumeProviderOptions) {
     this.teamDir = path.join(opts.dataRoot, "teams", safeDir(opts.teamId));
@@ -174,6 +196,10 @@ export class ResumePerTurnProvider implements TeammateProvider {
     this.sessionIsolation = opts.sessionIsolation ?? isolationModeFromEnv();
     this.leadWakeMinIdleMs =
       opts.leadWakeMinIdleMs ?? Number(process.env.TEAM_WAKE_LEAD_MIN_IDLE_MS ?? 30_000);
+    this.modelRetryBackoffMs =
+      opts.modelRetryBackoffMs !== undefined && opts.modelRetryBackoffMs.length > 0
+        ? opts.modelRetryBackoffMs
+        : DEFAULT_MODEL_RETRY_BACKOFF_MS;
     this.breeder =
       opts.breeder ??
       new AppServerSessionBreeder({
@@ -194,10 +220,39 @@ export class ResumePerTurnProvider implements TeammateProvider {
 
   // ---------------------------------------------------------------- 边界与接线
 
-  /** 协调者接线（host.serve）：轮次边界监听 + pending 合并查询（mailbox 派生）。 */
-  bind(hooks: { onBoundary: (event: BoundaryEvent) => void; pendingLookup: PendingLookup }): void {
+  /** 协调者接线（host.serve）：轮次边界监听 + pending 合并查询（mailbox 派生）
+   *  + 模型失败记录变化通知（0.4.1：后台续跑失败 → 成员展示立即刷新）。 */
+  bind(hooks: {
+    onBoundary: (event: BoundaryEvent) => void;
+    pendingLookup: PendingLookup;
+    onModelFailureChanged?: () => void;
+  }): void {
     this.boundaryListeners.add(hooks.onBoundary);
     this.pendingLookup = hooks.pendingLookup;
+    if (hooks.onModelFailureChanged !== undefined) {
+      this.modelFailureListeners.add(hooks.onModelFailureChanged);
+    }
+  }
+
+  private notifyModelFailureChanged(): void {
+    for (const listener of this.modelFailureListeners) {
+      try {
+        listener();
+      } catch (err) {
+        this.log({ ts: iso(this.now()), kind: "model-failure-listener-error", error: errText(err) });
+      }
+    }
+  }
+
+  /**
+   * spawn 前置校验（0.4.1）：Lead 模型不可继承 → 抛错。roster 在**登记成员之前**调用，
+   * 可提前识别的配置错误不产生 provisioning 成员、不占成员名、不建隐藏子会话。
+   * 供给阶段仍复检（resolveLeadInheritance 在 startContinuable 内照跑）——预检后配置可能变化。
+   * legacy 隔离模式无继承语义 → 恒通过。
+   */
+  preflightMemberModel(): void {
+    if (this.sessionIsolation !== "child") return;
+    this.resolveLeadInheritance();
   }
 
   /** 协调者启动纳管：孤儿轮次定案/再收养 + drain 标记处置 + lead 回执折叠（T4.4/触发点②）。 */
@@ -394,11 +449,19 @@ export class ResumePerTurnProvider implements TeammateProvider {
           ...(inheritedSelection !== undefined ? { modelSelection: inheritedSelection } : {}),
         });
       } catch (err) {
-        // 继承模型被宿主拒绝 → 落失败记录（成员卡诊断兜底；主报错已从 spawn 返回值透出），
-        // 原错误继续上抛（roster 失败路径落 failed 成员）。其他培育失败与模型无关，直接上抛。
+        // 继承模型被宿主拒绝 → 统一失败记录路径（成员卡诊断兜底 + 重试控制字段；主报错已从
+        // spawn 返回值透出），原错误继续上抛（roster 失败路径落 failed 成员）。其他培育失败
+        // 与模型无关，直接上抛。
         const message = err instanceof Error ? err.message : String(err);
         if (inheritedSelection !== undefined && /inherited model/.test(message)) {
-          this.writeModelFailure(paths, inheritedSelection, `成员模型无法继承：${message}`);
+          // 记录 reason = 中文包装（「成员模型无法继承：…」；0.4.0 起诊断断言口径）。
+          this.recordModelFailure(
+            paths,
+            args.memberId,
+            new ModelInheritanceError(`成员模型无法继承：${message}`, inheritedSelection),
+            [],
+            classifyApplyFailure(message),
+          );
         }
         throw err;
       }
@@ -445,6 +508,8 @@ export class ResumePerTurnProvider implements TeammateProvider {
       sessionId: bred?.childSessionId ?? null,
       resume: bred !== null,
       cwd: spawnCwd,
+      // createChild 刚把继承选择应用进子会话（0.4.1 验收：首轮不重复应用同一选择）。
+      modelJustApplied: bred?.appliedModel !== undefined,
     });
     this.startWatcher();
 
@@ -591,7 +656,18 @@ export class ResumePerTurnProvider implements TeammateProvider {
       sessionId,
       resume: true,
       cwd: origin.cwd,
+    }).catch((err: unknown) => {
+      // 0.4.1 重试闸拦截（后台 sweep 的重复尝试）：静默滞留（消息保留、不误标 delivered、
+      // 不重复 setModel）；首次失败仍上抛（send_message 调用方看到明确错误）。
+      if (err instanceof ModelSyncSuppressedError) {
+        if (debug) {
+          this.log({ ts: iso(this.now()), kind: "deliver-deferred", memberId: args.memberId, reason: "model-sync-suppressed" });
+        }
+        return null;
+      }
+      throw err;
     });
+    if (turn === null) return "queued";
     this.startWatcher();
 
     const deadline = this.now() + this.deliverConfirmMs;
@@ -860,14 +936,22 @@ export class ResumePerTurnProvider implements TeammateProvider {
     sessionId: string | null;
     resume: boolean;
     cwd?: string;
+    /**
+     * createChild 刚成功应用了继承模型（首轮）：跳过轮前同步（验收口径「首轮已由
+     * createChild 正确设置模型 → 不重复应用同一选择」）。仅 startContinuable 传 true。
+     */
+    modelJustApplied?: boolean;
   }): Promise<TurnRecord> {
     const turnId = nextTurnId(args.paths.runDir);
     const stdoutFile = path.join(args.paths.runDir, `${turnId}.out`);
     const turnCwd = args.cwd ?? this.cwd;
-    // 0.4.0 执行前同步（每轮唯一入口，覆盖首轮/续跑/恢复）：Lead 最新已确认选择与成员
-    // 实际生效选择不一致 → 先 setModel 再启动本轮；失败 = 抛错阻止本轮（绝不带着旧模型
+    // 0.4.0 执行前同步（每轮唯一入口，覆盖续跑/恢复）：Lead 最新已确认选择与成员
+    // 宿主实际选择不一致 → 先 setModel 再启动本轮；失败 = 抛错阻止本轮（绝不带着旧模型
     // 或宿主缺省悄悄开跑）。Lead 已切官方套餐同样阻止并报错——「同步失败即明确报告」。
-    await this.syncMemberModel(args.paths, args.memberId, args.sessionId, turnCwd);
+    // 0.4.1：携带本轮消息 id（失败记录做「新消息解锁重试」判定）；首轮由 createChild 定模时跳过。
+    if (args.modelJustApplied !== true) {
+      await this.syncMemberModel(args.paths, args.memberId, args.sessionId, turnCwd, args.messageIds);
+    }
     const scriptArgs = [
       ...this.zcode.argvPrefix,
       "-p",
@@ -1035,6 +1119,7 @@ export class ResumePerTurnProvider implements TeammateProvider {
       throw new ModelInheritanceError(
         `Lead 当前使用官方套餐模型（${model}），成员无法继承（CLI 进程拿不到订阅套餐凭据）。` +
           "请在 ZCode 中切换到自配的第三方模型后重试。",
+        latest,
       );
     }
     const catalog = this.modelCatalog();
@@ -1042,48 +1127,121 @@ export class ResumePerTurnProvider implements TeammateProvider {
       if (!throwOnUnusable) return undefined;
       throw new ModelInheritanceError(
         `Lead 模型 ${model} 不在可用模型目录（Provider 已删除/禁用，或模型不存在），成员无法继承。`,
+        latest,
       );
     }
     return this.withReasoningDefault(latest);
   }
 
   /**
-   * 每轮执行前同步（0.4.0）：Lead 最新已确认选择 ≠ 成员实际生效选择 → setModel 后再启动本轮。
-   * - 无变化：直接返回（零 RPC）。
-   * - 应用失败 / Lead 不可继承：写 model-failed（成员卡诊断兜底）+ 抛 ModelInheritanceError
-   *   阻止本轮 —— 绝不带着旧模型或宿主缺省悄悄开跑。
+   * 每轮执行前同步（0.4.0；0.4.1 修正一致性判断与重试控制）：
+   * Lead 最新已确认选择 ≠ 成员**宿主实际**选择 → setModel 后再启动本轮。
+   * - 一致性判断以宿主会话实际状态为准（session_entry → main_turn usage 实查）；
+   *   origin.modelSelection 只是辅助记录（setModel 成功后 origin 更新前崩溃 → 宿主为准，
+   *   不能因 origin 相同就放行）。实际状态无法确认（首轮前无任何记录）→ 重新应用 Lead
+   *   选择（宁多一次 setModel，不带着未确认的模型开跑）。
+   * - 确认一致 → 清除旧失败记录（验证成功才清；不因 Lead 改了配置就清）+ 零 RPC。
+   * - 应用失败 / Lead 不可继承：写统一失败记录（含类别/尝试次数/退避闸/Lead 指纹/消息 id）
+   *   + 抛 ModelInheritanceError 阻止本轮 —— 绝不带着旧模型或宿主缺省悄悄开跑。
    * - legacy 隔离模式 / 会话未落定（首轮由 createChild 定模）：跳过。
+   *
+   * `trigger`：本轮携带的待投递消息 id（失败记录里做「新消息解锁重试」判定；首轮 = []）。
    */
   private async syncMemberModel(
     paths: MemberPaths,
     memberId: string,
     sessionId: string | null,
     workspacePath: string,
+    triggerMessageIds: readonly string[] = [],
   ): Promise<void> {
     if (this.sessionIsolation !== "child" || sessionId === null) return;
-    const lead = this.resolveLeadInheritance(); // 不可继承 = 抛（launchTurn 调用方看到明确错误）
+    let lead: MemberModelSelection | undefined;
+    try {
+      // 不可继承 = 抛（launchTurn 调用方看到明确错误）；同时落统一失败记录（可见性）。
+      // 重试闸先行：同一目标的解析失败已有记录且未到重试时机 → 静默滞留（后台 sweep
+      // 不再每 2s 重新抛给 mailbox）。
+      lead = this.resolveLeadInheritance();
+    } catch (err) {
+      if (err instanceof ModelInheritanceError) {
+        const selection = err.selection;
+        const gate = this.retryGate(paths, selection, triggerMessageIds);
+        if (!gate.allow) {
+          this.log({
+            ts: iso(this.now()),
+            kind: "model-sync-suppressed",
+            teamId: this.opts.teamId,
+            memberId,
+            reason: gate.reason,
+          });
+          throw new ModelSyncSuppressedError(err.message, selection);
+        }
+        this.recordModelFailure(paths, memberId, err, triggerMessageIds);
+      }
+      throw err;
+    }
     // 档位缺省链已在 resolveLeadInheritance 内应用；此处防御性兜底（undefined 时不动作）
     if (lead === undefined) return;
-    const origin = readOrigin(paths);
-    const current =
-      origin?.modelSelection ??
-      (this.reader.latestModelSelection(sessionId) ??
-        this.reader.latestMainTurnUsage(sessionId)?.selection);
-    if (current !== undefined && sameModelSelection(current, lead)) {
-      return; // 已是 Lead 最新选择：不打扰宿主
+
+    // 0.4.1 一致性判断：宿主实际状态优先（entry = setModel/--resume 的生效锚点；
+    // main_turn usage = 实际调用证据）。origin.modelSelection 只是辅助记录——宿主实际
+    // 选择无法确认时（observed=undefined，如刚恢复），即便 origin 记过同一选择也重新
+    // 应用（宁多一次 setModel，不带着未确认状态放行），故此处不做 origin 短路。
+    const observed =
+      this.reader.latestModelSelection(sessionId) ??
+      this.reader.latestMainTurnUsage(sessionId)?.selection;
+    if (observed !== undefined && sameModelSelection(observed, lead)) {
+      // 宿主实际状态已确认与 Lead 一致 = 验证成功 → 清除旧失败提示（修复4），不打扰宿主。
+      this.clearFailureIfVerified(paths);
+      // origin 落后于宿主实际状态（setModel 成功后、origin 更新前崩溃）→ 修复辅助记录，
+      // 保持展示/审计一致（零 RPC，只是文件写）。
+      const originNow = readOrigin(paths);
+      if (
+        originNow !== undefined &&
+        (originNow.modelSelection === undefined || !sameModelSelection(originNow.modelSelection, lead))
+      ) {
+        writeOrigin(paths, { ...originNow, modelSelection: lead, modelSource: "inherited" });
+      }
+      return;
     }
+    const origin = readOrigin(paths);
+
+    // 0.4.1 重试控制闸：同一 Lead 选择下的既有失败记录，按类别决定是否允许本次自动尝试。
+    // 显式意图（Lead 换模 / 用户再次明确发送**新**消息）不受闸限制。拦截 = 抛
+    // ModelSyncSuppressedError：deliver 捕获后按 "queued" 滞留（消息保留、不误标 delivered、
+    // 不重复 setModel；后台 sweep 的重复尝试不再每 2s 打一次宿主）。首次失败仍是
+    // ModelInheritanceError 原样上抛（send_message 调用方看到明确错误）。
+    const gate = this.retryGate(paths, lead, triggerMessageIds);
+    if (!gate.allow) {
+      this.log({
+        ts: iso(this.now()),
+        kind: "model-sync-suppressed",
+        teamId: this.opts.teamId,
+        memberId,
+        reason: gate.reason,
+      });
+      throw new ModelSyncSuppressedError(
+        `成员 "${memberId}" 与 Lead 模型（${lead.providerId}/${lead.modelId}）不一致，上一次同步失败尚未到重试时机：${gate.reason}`,
+        lead,
+      );
+    }
+
     const result = await this.applySelectionNow(sessionId, workspacePath, lead, memberId);
     if (!result.applied) {
       const reason = result.reason ?? "model was rejected by the host";
-      this.writeModelFailure(paths, lead, `成员模型无法继承：${reason}`);
-      throw new ModelInheritanceError(
+      const err = new ModelInheritanceError(
         `成员 "${memberId}" 无法同步 Lead 模型（${lead.providerId}/${lead.modelId}）：${reason}`,
+        lead,
       );
+      // 记录里存宿主原始拒绝原因（不含成员 id/模型前缀）——诊断面已含 `prov/model`，
+      // reason 留给「为什么被拒」（截断 80 时优先保留宿主文本，而非包装前缀）。
+      this.recordModelFailure(paths, memberId, err, triggerMessageIds, classifyApplyFailure(reason), reason);
+      throw err;
     }
+    // 同步成功后才更新 origin（不谎报；崩溃在两者之间 → 下次以宿主实际状态判断，见上）。
     if (origin !== undefined) {
       writeOrigin(paths, { ...(readOrigin(paths) ?? origin), modelSelection: lead, modelSource: "inherited" });
     }
-    clearModelFailed(paths);
+    this.clearFailureIfVerified(paths);
     this.log({
       ts: iso(this.now()),
       kind: "model-synced",
@@ -1093,6 +1251,139 @@ export class ResumePerTurnProvider implements TeammateProvider {
       modelId: lead.modelId,
       reasoningLevel: lead.reasoningLevel ?? null,
     });
+  }
+
+  /**
+   * 自动重试闸（0.4.1）：读失败记录，判定本次同步尝试是否放行。
+   * - 无记录 / Lead 选择已变（指纹不同）→ 放行（换模 = 重新尝试的显式信号）。
+   * - 新消息解锁：trigger 里有记录 messageIds 之外的**新** id → 放行（用户再次明确发送）。
+   * - deterministic（含 0.4.0 旧记录无 kind）→ 暂停相同选择的自动重试（拒绝）。
+   * - transient → 未到 nextAttemptAt 拒绝；到期且 attempts ≤ 退避序列长度放行；
+   *   序列耗尽 → 停止自动尝试（拒绝）。
+   * `lead` 缺省 = 解析失败（三源全空，无选择指纹）——按记录的 leadSignature 缺省口径同目标。
+   */
+  private retryGate(
+    paths: MemberPaths,
+    lead: MemberModelSelection | undefined,
+    triggerMessageIds: readonly string[],
+  ): { allow: boolean; reason: string; record?: ModelFailedRecord } {
+    let record: ModelFailedRecord | undefined;
+    try {
+      record = readModelFailed(paths);
+    } catch {
+      record = undefined; // 损坏记录不阻塞同步（尝试后会被新记录覆盖）
+    }
+    if (record === undefined) return { allow: true, reason: "" };
+    const signature = lead !== undefined ? selectionSignature(lead) : undefined;
+    if (record.leadSignature !== signature) {
+      return { allow: true, reason: "" }; // Lead 已换选择 → 解锁
+    }
+    const known = new Set(record.messageIds ?? []);
+    const hasNewMessage = triggerMessageIds.some((id) => !known.has(id));
+    if (hasNewMessage) {
+      return { allow: true, reason: "", record }; // 用户再次明确发送 → 解锁（尝试会刷新记录）
+    }
+    const kind = record.kind ?? "deterministic"; // 0.4.0 旧记录 → 保守按确定性处理
+    if (kind === "deterministic") {
+      return {
+        allow: false,
+        reason: `相同选择的同步已被确定性拒绝（${record.reason}），等待 Lead 切换可用模型或新消息后重试`,
+        record,
+      };
+    }
+    const attempts = record.attempts ?? 1;
+    const nextAt = record.nextAttemptAt;
+    if (nextAt !== undefined && this.now() < nextAt) {
+      return {
+        allow: false,
+        reason: `临时故障退避中（第 ${attempts} 次尝试已失败），${Math.ceil((nextAt - this.now()) / 1000)}s 后自动重试`,
+        record,
+      };
+    }
+    if (attempts > this.modelRetryBackoffMs.length) {
+      return {
+        allow: false,
+        reason: `临时故障已连续失败 ${attempts - 1} 次（退避序列耗尽），停止自动重试；等待 Lead 切换模型或新消息`,
+        record,
+      };
+    }
+    return { allow: true, reason: "", record };
+  }
+
+  /**
+   * 统一失败记录路径（0.4.1）：解析失败（throwOnUnusable 抛出的 ModelInheritanceError）与
+   * 宿主应用失败都落到这里——model-failed.json（成员行诊断）+ provider.jsonl + 展示刷新通知。
+   * 记录携带重试控制所需全部字段（类别/次数/退避闸/Lead 指纹/触发消息 id）；不重建 pending 队列。
+   */
+  private recordModelFailure(
+    paths: MemberPaths,
+    memberId: string,
+    err: ModelInheritanceError,
+    triggerMessageIds: readonly string[],
+    kindOverride?: "deterministic" | "transient",
+    reasonOverride?: string,
+  ): void {
+    const now = this.now();
+    let previous: ModelFailedRecord | undefined;
+    try {
+      previous = readModelFailed(paths);
+    } catch {
+      previous = undefined;
+    }
+    const selection = err.selection;
+    const signature = selection !== undefined ? selectionSignature(selection) : undefined;
+    // 同目标判定：有选择 → 指纹相同；无选择（解析失败）→ 前记录也无指纹 = 同一失败目标。
+    const sameTarget =
+      previous !== undefined && (previous.leadSignature ?? undefined) === signature;
+    // 解析失败按消息分类（三源全空 = transient：Lead 一提交即可解；套餐/目录外 = deterministic）；
+    // 应用失败由调用方 kindOverride 传入（classifyApplyFailure）。
+    const kind = kindOverride ?? classifySelectionFailure(err.message);
+    // attempts 只对 transient 累计（= 实际 setModel 尝试次数）；deterministic 没有自动重试，
+    // 重复失败（每次 sweep 重新解析仍抛）不虚增计数。
+    const attempts = sameTarget && kind === "transient" ? (previous?.attempts ?? 1) + 1 : 1;
+    // 退避闸：transient 且还有下一档 → now + backoff[attempts-1]；其余 = 不再自动尝试。
+    const backoff =
+      kind === "transient" ? this.modelRetryBackoffMs[attempts - 1] : undefined;
+    const record: ModelFailedRecord = {
+      ...(selection !== undefined ? { modelSelection: selection } : {}),
+      reason: compactReason(reasonOverride ?? err.message),
+      failedAt: iso(now),
+      kind,
+      attempts,
+      ...(backoff !== undefined ? { nextAttemptAt: now + backoff } : {}),
+      ...(signature !== undefined ? { leadSignature: signature } : {}),
+      // 触发消息 id 并集（同目标累计；新消息解锁判定用）。
+      ...(() => {
+        const merged = new Set([...(sameTarget ? previous?.messageIds ?? [] : []), ...triggerMessageIds]);
+        return merged.size > 0 ? { messageIds: [...merged] } : {};
+      })(),
+    };
+    writeModelFailed(paths, record);
+    this.log({
+      ts: iso(now),
+      kind: "model-sync-failed",
+      teamId: this.opts.teamId,
+      memberId,
+      failureKind: kind,
+      attempts,
+      nextAttemptAt: record.nextAttemptAt ?? null,
+      providerId: selection?.providerId ?? null,
+      modelId: selection?.modelId ?? null,
+      reason: record.reason,
+    });
+    this.notifyModelFailureChanged();
+  }
+
+  /** 验证成功才清除（修复4）：失败记录存在 → 删除 + 展示刷新通知。调用点均已确认一致/应用成功。 */
+  private clearFailureIfVerified(paths: MemberPaths): void {
+    let existed = false;
+    try {
+      existed = readModelFailed(paths) !== undefined;
+    } catch {
+      existed = true; // 损坏记录也清（读不出诊断，留着只会持续抛错）
+    }
+    clearModelFailed(paths);
+    if (existed) this.notifyModelFailureChanged();
   }
 
   /** 应用一次模型选择（每轮同步通道：临时实例 resume → setModel；失败返回原因不抛）。 */
@@ -1126,27 +1417,9 @@ export class ResumePerTurnProvider implements TeammateProvider {
   }
 
   /**
-   * 记录一次模型继承失败（成员卡诊断兜底；主报错已从轮次/spawn 返回值透出）。
-   */
-  private writeModelFailure(paths: MemberPaths, selection: MemberModelSelection, reason: string): void {
-    writeModelFailed(paths, {
-      modelSelection: selection,
-      reason: compactReason(reason),
-      failedAt: iso(this.now()),
-    });
-    this.log({
-      ts: iso(this.now()),
-      kind: "model-set-failed-terminal",
-      teamId: this.opts.teamId,
-      providerId: selection.providerId,
-      modelId: selection.modelId,
-      reason: compactReason(reason),
-    });
-  }
-
-  /**
    * 成员行诊断（GitHub #6 保留面）：读 model-failed.json → 一条可读诊断。
    * 无记录/损坏 → []（损坏不阻断 list_agents；失败信息已尽力而为）。
+   * 0.4.1：记录可无 modelSelection（三源全空解析不出）；transient 附重试进度提示。
    */
   diagnosticsOf(memberId: string): string[] {
     const paths = memberPaths(this.teamDir, memberId);
@@ -1157,11 +1430,17 @@ export class ResumePerTurnProvider implements TeammateProvider {
       return [];
     }
     if (record === undefined) return [];
-    const selection = parseModelSelection(record.modelSelection);
-    if (selection === undefined) return [];
     // 落盘 reason 已截断（首句≤80），这里原样呈现。
     const reason = typeof record.reason === "string" ? record.reason : "";
-    return [`成员模型继承失败：${selection.providerId}/${selection.modelId}${reason.length > 0 ? `（${reason}）` : ""}`];
+    const selection = parseModelSelection(record.modelSelection);
+    const head =
+      selection !== undefined
+        ? `成员模型继承失败：${selection.providerId}/${selection.modelId}${reason.length > 0 ? `（${reason}）` : ""}`
+        : `成员模型继承失败：${reason}`;
+    if ((record.kind ?? "deterministic") === "transient" && (record.attempts ?? 1) > 1) {
+      return [`${head}（临时故障，已自动重试 ${record.attempts! - 1} 次）`];
+    }
+    return [head];
   }
 
   /** daemon 侧补写 teammate 映射（hook 未及写时的兜底；不覆盖已有 teammate 映射）。 */

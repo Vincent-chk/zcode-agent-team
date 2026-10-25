@@ -11,6 +11,7 @@ import { requireMembership } from "./projection.js";
 import type { TeamStore, ReconciliationSource, TargetInspector } from "./ports.js";
 import { errorMessage } from "./ports.js";
 import type { TeammateProvider } from "../provider/teammate-provider.js";
+import { providerHasModelPreflight } from "../provider/model-inheritance.js";
 import type { LifecyclePort } from "./lifecycle.js";
 
 /** §5.1 名字规则。 */
@@ -137,6 +138,14 @@ export class TeamRoster {
     const context: "fresh" | "fork" = args.context ?? "fresh";
     const providerName = requiredText("provider", context === "fork" ? providers.fork : providers.fresh, 200);
     const childId = (this.deps.newId ?? defaultNewId)();
+
+    // 步骤 1b（0.4.1）：模型继承预检——Lead 模型不可继承（官方套餐/目录外/解析不出）在
+    // **登记成员之前**失败：不增加成员数量、不占用成员名、不创建隐藏子会话（修正 Lead
+    // 模型后原名可重用）。供给阶段仍复检（startContinuable 内），处理预检后配置漂移。
+    // 无预检能力的 provider（MockProvider/legacy）跳过。
+    if (providerHasModelPreflight(this.deps.provider)) {
+      this.deps.provider.preflightMemberModel();
+    }
 
     // 步骤 2：事务内重读 + 限额 + provisioning 落盘（store.append = flush 完成）
     await this.deps.store.transact(async () => {

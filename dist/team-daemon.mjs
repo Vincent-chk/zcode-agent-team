@@ -20975,6 +20975,35 @@ function invalidWriteScope(scope) {
   );
 }
 
+// src/provider/model-inheritance.ts
+var ModelInheritanceError = class extends Error {
+  constructor(message, selection) {
+    super(message);
+    this.selection = selection;
+    this.name = "ModelInheritanceError";
+  }
+};
+var ModelSyncSuppressedError = class extends ModelInheritanceError {
+  constructor(message, selection) {
+    super(message, selection);
+    this.name = "ModelSyncSuppressedError";
+  }
+};
+function providerHasModelPreflight(provider) {
+  return typeof provider.preflightMemberModel === "function";
+}
+function selectionSignature(selection) {
+  return `${selection.providerId}$${selection.modelId}$${selection.reasoningLevel ?? ""}`;
+}
+function classifyApplyFailure(reason) {
+  return /timeout|did not become ready|timed out|spawn|exited|ENOENT|EACCES|ECONNREFUSED|EPIPE|socket hang up|client (is )?closed/i.test(
+    reason
+  ) ? "transient" : "deterministic";
+}
+function classifySelectionFailure(message) {
+  return /无法确定 Lead 当前模型/.test(message) ? "transient" : "deterministic";
+}
+
 // src/domain/roster.ts
 var NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 var TeamRoster = class {
@@ -21032,6 +21061,9 @@ var TeamRoster = class {
     const context = args.context ?? "fresh";
     const providerName = requiredText("provider", context === "fork" ? providers.fork : providers.fresh, 200);
     const childId = (this.deps.newId ?? defaultNewId)();
+    if (providerHasModelPreflight(this.deps.provider)) {
+      this.deps.provider.preflightMemberModel();
+    }
     await this.deps.store.transact(async () => {
       const fresh = this.loadState();
       if (fresh.members.some((m) => m.name === name)) {
@@ -22031,6 +22063,10 @@ var MockProvider = class {
   diagnosticsOf(memberId) {
     return this.program.memberDiagnostics?.[memberId] ?? [];
   }
+  /** spawn 预检桩（0.4.1 ModelPreflight；programWith({preflightError}) 注入失败）。 */
+  preflightMemberModel() {
+    if (this.program.preflightError !== void 0) throw this.program.preflightError;
+  }
   newId() {
     return randomUUID2();
   }
@@ -22334,6 +22370,13 @@ var TeamCoordinatorHost = class _TeamCoordinatorHost {
         pendingLookup: (memberId) => {
           const state = store.state();
           return runtime.mailbox.pendingFor(state, memberId).map((message) => ({ messageId: message.id, framedJson: JSON.stringify(frameMessage(message)) }));
+        },
+        // 0.4.1：模型失败记录变化（后台续跑同步失败/恢复清除）→ 成员展示立即刷新
+        // （Activity 唤醒 + 面板下一帧拿到新诊断；不等下一次轮次边界）。
+        onModelFailureChanged: () => {
+          if (this.mode === "coordinator" && this.runtime !== null && !this.closed) {
+            this.runtime.roster.notifyStatusChanged();
+          }
         }
       });
       const adopted = this.provider.adoptOrphans();
@@ -24702,14 +24745,6 @@ function isolationModeFromEnv(env = process.env) {
   return env.TEAM_SESSION_ISOLATION === "legacy" ? "legacy" : "child";
 }
 
-// src/provider/model-inheritance.ts
-var ModelInheritanceError = class extends Error {
-  constructor(message) {
-    super(message);
-    this.name = "ModelInheritanceError";
-  }
-};
-
 // src/provider/model-catalog.ts
 import fs17 from "node:fs";
 import os7 from "node:os";
@@ -24948,6 +24983,7 @@ function nonEmpty(value) {
 
 // src/provider/resume-provider.ts
 var LEAD_DELIVERY_VIA_HOOKS = true;
+var DEFAULT_MODEL_RETRY_BACKOFF_MS = [5e3, 15e3, 3e4];
 var ResumePerTurnProvider = class {
   constructor(opts) {
     this.opts = opts;
@@ -24963,6 +24999,7 @@ var ResumePerTurnProvider = class {
     this.relaunchBackoffMs = opts.relaunchBackoffMs ?? 2e3;
     this.sessionIsolation = opts.sessionIsolation ?? isolationModeFromEnv();
     this.leadWakeMinIdleMs = opts.leadWakeMinIdleMs ?? Number(process.env.TEAM_WAKE_LEAD_MIN_IDLE_MS ?? 3e4);
+    this.modelRetryBackoffMs = opts.modelRetryBackoffMs !== void 0 && opts.modelRetryBackoffMs.length > 0 ? opts.modelRetryBackoffMs : DEFAULT_MODEL_RETRY_BACKOFF_MS;
     this.breeder = opts.breeder ?? new AppServerSessionBreeder({
       zcode: this.zcode,
       ...opts.dbPath !== void 0 ? { dbPath: opts.dbPath } : {},
@@ -24988,6 +25025,7 @@ var ResumePerTurnProvider = class {
   relaunchBackoffMs;
   sessionIsolation;
   leadWakeMinIdleMs;
+  modelRetryBackoffMs;
   breeder;
   modelCatalog;
   now;
@@ -25001,11 +25039,36 @@ var ResumePerTurnProvider = class {
   lastLaunchFailureAt = 0;
   pendingLookup = null;
   closed = false;
+  /** 失败记录变化监听（0.4.1：host 接线 → roster.notifyStatusChanged 刷新成员展示）。 */
+  modelFailureListeners = /* @__PURE__ */ new Set();
   // ---------------------------------------------------------------- 边界与接线
-  /** 协调者接线（host.serve）：轮次边界监听 + pending 合并查询（mailbox 派生）。 */
+  /** 协调者接线（host.serve）：轮次边界监听 + pending 合并查询（mailbox 派生）
+   *  + 模型失败记录变化通知（0.4.1：后台续跑失败 → 成员展示立即刷新）。 */
   bind(hooks) {
     this.boundaryListeners.add(hooks.onBoundary);
     this.pendingLookup = hooks.pendingLookup;
+    if (hooks.onModelFailureChanged !== void 0) {
+      this.modelFailureListeners.add(hooks.onModelFailureChanged);
+    }
+  }
+  notifyModelFailureChanged() {
+    for (const listener of this.modelFailureListeners) {
+      try {
+        listener();
+      } catch (err) {
+        this.log({ ts: iso(this.now()), kind: "model-failure-listener-error", error: errText2(err) });
+      }
+    }
+  }
+  /**
+   * spawn 前置校验（0.4.1）：Lead 模型不可继承 → 抛错。roster 在**登记成员之前**调用，
+   * 可提前识别的配置错误不产生 provisioning 成员、不占成员名、不建隐藏子会话。
+   * 供给阶段仍复检（resolveLeadInheritance 在 startContinuable 内照跑）——预检后配置可能变化。
+   * legacy 隔离模式无继承语义 → 恒通过。
+   */
+  preflightMemberModel() {
+    if (this.sessionIsolation !== "child") return;
+    this.resolveLeadInheritance();
   }
   /** 协调者启动纳管：孤儿轮次定案/再收养 + drain 标记处置 + lead 回执折叠（T4.4/触发点②）。 */
   adoptOrphans() {
@@ -25165,7 +25228,13 @@ var ResumePerTurnProvider = class {
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         if (inheritedSelection !== void 0 && /inherited model/.test(message)) {
-          this.writeModelFailure(paths, inheritedSelection, `\u6210\u5458\u6A21\u578B\u65E0\u6CD5\u7EE7\u627F\uFF1A${message}`);
+          this.recordModelFailure(
+            paths,
+            args.memberId,
+            new ModelInheritanceError(`\u6210\u5458\u6A21\u578B\u65E0\u6CD5\u7EE7\u627F\uFF1A${message}`, inheritedSelection),
+            [],
+            classifyApplyFailure(message)
+          );
         }
         throw err;
       }
@@ -25204,7 +25273,9 @@ var ResumePerTurnProvider = class {
       promptText: prompt,
       sessionId: bred?.childSessionId ?? null,
       resume: bred !== null,
-      cwd: spawnCwd
+      cwd: spawnCwd,
+      // createChild 刚把继承选择应用进子会话（0.4.1 验收：首轮不重复应用同一选择）。
+      modelJustApplied: bred?.appliedModel !== void 0
     });
     this.startWatcher();
     try {
@@ -25328,7 +25399,16 @@ var ResumePerTurnProvider = class {
       sessionId,
       resume: true,
       cwd: origin.cwd
+    }).catch((err) => {
+      if (err instanceof ModelSyncSuppressedError) {
+        if (debug) {
+          this.log({ ts: iso(this.now()), kind: "deliver-deferred", memberId: args.memberId, reason: "model-sync-suppressed" });
+        }
+        return null;
+      }
+      throw err;
     });
+    if (turn === null) return "queued";
     this.startWatcher();
     const deadline = this.now() + this.deliverConfirmMs;
     for (; ; ) {
@@ -25551,7 +25631,9 @@ var ResumePerTurnProvider = class {
     const turnId = nextTurnId(args.paths.runDir);
     const stdoutFile = path17.join(args.paths.runDir, `${turnId}.out`);
     const turnCwd = args.cwd ?? this.cwd;
-    await this.syncMemberModel(args.paths, args.memberId, args.sessionId, turnCwd);
+    if (args.modelJustApplied !== true) {
+      await this.syncMemberModel(args.paths, args.memberId, args.sessionId, turnCwd, args.messageIds);
+    }
     const scriptArgs = [
       ...this.zcode.argvPrefix,
       "-p",
@@ -25708,46 +25790,96 @@ var ResumePerTurnProvider = class {
     if (isOfficialPlan) {
       if (!throwOnUnusable) return void 0;
       throw new ModelInheritanceError(
-        `Lead \u5F53\u524D\u4F7F\u7528\u5B98\u65B9\u5957\u9910\u6A21\u578B\uFF08${model}\uFF09\uFF0C\u6210\u5458\u65E0\u6CD5\u7EE7\u627F\uFF08CLI \u8FDB\u7A0B\u62FF\u4E0D\u5230\u8BA2\u9605\u5957\u9910\u51ED\u636E\uFF09\u3002\u8BF7\u5728 ZCode \u4E2D\u5207\u6362\u5230\u81EA\u914D\u7684\u7B2C\u4E09\u65B9\u6A21\u578B\u540E\u91CD\u8BD5\u3002`
+        `Lead \u5F53\u524D\u4F7F\u7528\u5B98\u65B9\u5957\u9910\u6A21\u578B\uFF08${model}\uFF09\uFF0C\u6210\u5458\u65E0\u6CD5\u7EE7\u627F\uFF08CLI \u8FDB\u7A0B\u62FF\u4E0D\u5230\u8BA2\u9605\u5957\u9910\u51ED\u636E\uFF09\u3002\u8BF7\u5728 ZCode \u4E2D\u5207\u6362\u5230\u81EA\u914D\u7684\u7B2C\u4E09\u65B9\u6A21\u578B\u540E\u91CD\u8BD5\u3002`,
+        latest
       );
     }
     const catalog = this.modelCatalog();
     if (catalog.providers.length > 0 && !catalogSupports(catalog, latest)) {
       if (!throwOnUnusable) return void 0;
       throw new ModelInheritanceError(
-        `Lead \u6A21\u578B ${model} \u4E0D\u5728\u53EF\u7528\u6A21\u578B\u76EE\u5F55\uFF08Provider \u5DF2\u5220\u9664/\u7981\u7528\uFF0C\u6216\u6A21\u578B\u4E0D\u5B58\u5728\uFF09\uFF0C\u6210\u5458\u65E0\u6CD5\u7EE7\u627F\u3002`
+        `Lead \u6A21\u578B ${model} \u4E0D\u5728\u53EF\u7528\u6A21\u578B\u76EE\u5F55\uFF08Provider \u5DF2\u5220\u9664/\u7981\u7528\uFF0C\u6216\u6A21\u578B\u4E0D\u5B58\u5728\uFF09\uFF0C\u6210\u5458\u65E0\u6CD5\u7EE7\u627F\u3002`,
+        latest
       );
     }
     return this.withReasoningDefault(latest);
   }
   /**
-   * 每轮执行前同步（0.4.0）：Lead 最新已确认选择 ≠ 成员实际生效选择 → setModel 后再启动本轮。
-   * - 无变化：直接返回（零 RPC）。
-   * - 应用失败 / Lead 不可继承：写 model-failed（成员卡诊断兜底）+ 抛 ModelInheritanceError
-   *   阻止本轮 —— 绝不带着旧模型或宿主缺省悄悄开跑。
+   * 每轮执行前同步（0.4.0；0.4.1 修正一致性判断与重试控制）：
+   * Lead 最新已确认选择 ≠ 成员**宿主实际**选择 → setModel 后再启动本轮。
+   * - 一致性判断以宿主会话实际状态为准（session_entry → main_turn usage 实查）；
+   *   origin.modelSelection 只是辅助记录（setModel 成功后 origin 更新前崩溃 → 宿主为准，
+   *   不能因 origin 相同就放行）。实际状态无法确认（首轮前无任何记录）→ 重新应用 Lead
+   *   选择（宁多一次 setModel，不带着未确认的模型开跑）。
+   * - 确认一致 → 清除旧失败记录（验证成功才清；不因 Lead 改了配置就清）+ 零 RPC。
+   * - 应用失败 / Lead 不可继承：写统一失败记录（含类别/尝试次数/退避闸/Lead 指纹/消息 id）
+   *   + 抛 ModelInheritanceError 阻止本轮 —— 绝不带着旧模型或宿主缺省悄悄开跑。
    * - legacy 隔离模式 / 会话未落定（首轮由 createChild 定模）：跳过。
+   *
+   * `trigger`：本轮携带的待投递消息 id（失败记录里做「新消息解锁重试」判定；首轮 = []）。
    */
-  async syncMemberModel(paths, memberId, sessionId, workspacePath) {
+  async syncMemberModel(paths, memberId, sessionId, workspacePath, triggerMessageIds = []) {
     if (this.sessionIsolation !== "child" || sessionId === null) return;
-    const lead = this.resolveLeadInheritance();
+    let lead;
+    try {
+      lead = this.resolveLeadInheritance();
+    } catch (err) {
+      if (err instanceof ModelInheritanceError) {
+        const selection = err.selection;
+        const gate2 = this.retryGate(paths, selection, triggerMessageIds);
+        if (!gate2.allow) {
+          this.log({
+            ts: iso(this.now()),
+            kind: "model-sync-suppressed",
+            teamId: this.opts.teamId,
+            memberId,
+            reason: gate2.reason
+          });
+          throw new ModelSyncSuppressedError(err.message, selection);
+        }
+        this.recordModelFailure(paths, memberId, err, triggerMessageIds);
+      }
+      throw err;
+    }
     if (lead === void 0) return;
-    const origin = readOrigin(paths);
-    const current = origin?.modelSelection ?? (this.reader.latestModelSelection(sessionId) ?? this.reader.latestMainTurnUsage(sessionId)?.selection);
-    if (current !== void 0 && sameModelSelection(current, lead)) {
+    const observed = this.reader.latestModelSelection(sessionId) ?? this.reader.latestMainTurnUsage(sessionId)?.selection;
+    if (observed !== void 0 && sameModelSelection(observed, lead)) {
+      this.clearFailureIfVerified(paths);
+      const originNow = readOrigin(paths);
+      if (originNow !== void 0 && (originNow.modelSelection === void 0 || !sameModelSelection(originNow.modelSelection, lead))) {
+        writeOrigin(paths, { ...originNow, modelSelection: lead, modelSource: "inherited" });
+      }
       return;
+    }
+    const origin = readOrigin(paths);
+    const gate = this.retryGate(paths, lead, triggerMessageIds);
+    if (!gate.allow) {
+      this.log({
+        ts: iso(this.now()),
+        kind: "model-sync-suppressed",
+        teamId: this.opts.teamId,
+        memberId,
+        reason: gate.reason
+      });
+      throw new ModelSyncSuppressedError(
+        `\u6210\u5458 "${memberId}" \u4E0E Lead \u6A21\u578B\uFF08${lead.providerId}/${lead.modelId}\uFF09\u4E0D\u4E00\u81F4\uFF0C\u4E0A\u4E00\u6B21\u540C\u6B65\u5931\u8D25\u5C1A\u672A\u5230\u91CD\u8BD5\u65F6\u673A\uFF1A${gate.reason}`,
+        lead
+      );
     }
     const result = await this.applySelectionNow(sessionId, workspacePath, lead, memberId);
     if (!result.applied) {
       const reason = result.reason ?? "model was rejected by the host";
-      this.writeModelFailure(paths, lead, `\u6210\u5458\u6A21\u578B\u65E0\u6CD5\u7EE7\u627F\uFF1A${reason}`);
-      throw new ModelInheritanceError(
-        `\u6210\u5458 "${memberId}" \u65E0\u6CD5\u540C\u6B65 Lead \u6A21\u578B\uFF08${lead.providerId}/${lead.modelId}\uFF09\uFF1A${reason}`
+      const err = new ModelInheritanceError(
+        `\u6210\u5458 "${memberId}" \u65E0\u6CD5\u540C\u6B65 Lead \u6A21\u578B\uFF08${lead.providerId}/${lead.modelId}\uFF09\uFF1A${reason}`,
+        lead
       );
+      this.recordModelFailure(paths, memberId, err, triggerMessageIds, classifyApplyFailure(reason), reason);
+      throw err;
     }
     if (origin !== void 0) {
       writeOrigin(paths, { ...readOrigin(paths) ?? origin, modelSelection: lead, modelSource: "inherited" });
     }
-    clearModelFailed(paths);
+    this.clearFailureIfVerified(paths);
     this.log({
       ts: iso(this.now()),
       kind: "model-synced",
@@ -25757,6 +25889,117 @@ var ResumePerTurnProvider = class {
       modelId: lead.modelId,
       reasoningLevel: lead.reasoningLevel ?? null
     });
+  }
+  /**
+   * 自动重试闸（0.4.1）：读失败记录，判定本次同步尝试是否放行。
+   * - 无记录 / Lead 选择已变（指纹不同）→ 放行（换模 = 重新尝试的显式信号）。
+   * - 新消息解锁：trigger 里有记录 messageIds 之外的**新** id → 放行（用户再次明确发送）。
+   * - deterministic（含 0.4.0 旧记录无 kind）→ 暂停相同选择的自动重试（拒绝）。
+   * - transient → 未到 nextAttemptAt 拒绝；到期且 attempts ≤ 退避序列长度放行；
+   *   序列耗尽 → 停止自动尝试（拒绝）。
+   * `lead` 缺省 = 解析失败（三源全空，无选择指纹）——按记录的 leadSignature 缺省口径同目标。
+   */
+  retryGate(paths, lead, triggerMessageIds) {
+    let record2;
+    try {
+      record2 = readModelFailed(paths);
+    } catch {
+      record2 = void 0;
+    }
+    if (record2 === void 0) return { allow: true, reason: "" };
+    const signature = lead !== void 0 ? selectionSignature(lead) : void 0;
+    if (record2.leadSignature !== signature) {
+      return { allow: true, reason: "" };
+    }
+    const known = new Set(record2.messageIds ?? []);
+    const hasNewMessage = triggerMessageIds.some((id) => !known.has(id));
+    if (hasNewMessage) {
+      return { allow: true, reason: "", record: record2 };
+    }
+    const kind = record2.kind ?? "deterministic";
+    if (kind === "deterministic") {
+      return {
+        allow: false,
+        reason: `\u76F8\u540C\u9009\u62E9\u7684\u540C\u6B65\u5DF2\u88AB\u786E\u5B9A\u6027\u62D2\u7EDD\uFF08${record2.reason}\uFF09\uFF0C\u7B49\u5F85 Lead \u5207\u6362\u53EF\u7528\u6A21\u578B\u6216\u65B0\u6D88\u606F\u540E\u91CD\u8BD5`,
+        record: record2
+      };
+    }
+    const attempts = record2.attempts ?? 1;
+    const nextAt = record2.nextAttemptAt;
+    if (nextAt !== void 0 && this.now() < nextAt) {
+      return {
+        allow: false,
+        reason: `\u4E34\u65F6\u6545\u969C\u9000\u907F\u4E2D\uFF08\u7B2C ${attempts} \u6B21\u5C1D\u8BD5\u5DF2\u5931\u8D25\uFF09\uFF0C${Math.ceil((nextAt - this.now()) / 1e3)}s \u540E\u81EA\u52A8\u91CD\u8BD5`,
+        record: record2
+      };
+    }
+    if (attempts > this.modelRetryBackoffMs.length) {
+      return {
+        allow: false,
+        reason: `\u4E34\u65F6\u6545\u969C\u5DF2\u8FDE\u7EED\u5931\u8D25 ${attempts - 1} \u6B21\uFF08\u9000\u907F\u5E8F\u5217\u8017\u5C3D\uFF09\uFF0C\u505C\u6B62\u81EA\u52A8\u91CD\u8BD5\uFF1B\u7B49\u5F85 Lead \u5207\u6362\u6A21\u578B\u6216\u65B0\u6D88\u606F`,
+        record: record2
+      };
+    }
+    return { allow: true, reason: "", record: record2 };
+  }
+  /**
+   * 统一失败记录路径（0.4.1）：解析失败（throwOnUnusable 抛出的 ModelInheritanceError）与
+   * 宿主应用失败都落到这里——model-failed.json（成员行诊断）+ provider.jsonl + 展示刷新通知。
+   * 记录携带重试控制所需全部字段（类别/次数/退避闸/Lead 指纹/触发消息 id）；不重建 pending 队列。
+   */
+  recordModelFailure(paths, memberId, err, triggerMessageIds, kindOverride, reasonOverride) {
+    const now2 = this.now();
+    let previous;
+    try {
+      previous = readModelFailed(paths);
+    } catch {
+      previous = void 0;
+    }
+    const selection = err.selection;
+    const signature = selection !== void 0 ? selectionSignature(selection) : void 0;
+    const sameTarget = previous !== void 0 && (previous.leadSignature ?? void 0) === signature;
+    const kind = kindOverride ?? classifySelectionFailure(err.message);
+    const attempts = sameTarget && kind === "transient" ? (previous?.attempts ?? 1) + 1 : 1;
+    const backoff = kind === "transient" ? this.modelRetryBackoffMs[attempts - 1] : void 0;
+    const record2 = {
+      ...selection !== void 0 ? { modelSelection: selection } : {},
+      reason: compactReason(reasonOverride ?? err.message),
+      failedAt: iso(now2),
+      kind,
+      attempts,
+      ...backoff !== void 0 ? { nextAttemptAt: now2 + backoff } : {},
+      ...signature !== void 0 ? { leadSignature: signature } : {},
+      // 触发消息 id 并集（同目标累计；新消息解锁判定用）。
+      ...(() => {
+        const merged = /* @__PURE__ */ new Set([...sameTarget ? previous?.messageIds ?? [] : [], ...triggerMessageIds]);
+        return merged.size > 0 ? { messageIds: [...merged] } : {};
+      })()
+    };
+    writeModelFailed(paths, record2);
+    this.log({
+      ts: iso(now2),
+      kind: "model-sync-failed",
+      teamId: this.opts.teamId,
+      memberId,
+      failureKind: kind,
+      attempts,
+      nextAttemptAt: record2.nextAttemptAt ?? null,
+      providerId: selection?.providerId ?? null,
+      modelId: selection?.modelId ?? null,
+      reason: record2.reason
+    });
+    this.notifyModelFailureChanged();
+  }
+  /** 验证成功才清除（修复4）：失败记录存在 → 删除 + 展示刷新通知。调用点均已确认一致/应用成功。 */
+  clearFailureIfVerified(paths) {
+    let existed = false;
+    try {
+      existed = readModelFailed(paths) !== void 0;
+    } catch {
+      existed = true;
+    }
+    clearModelFailed(paths);
+    if (existed) this.notifyModelFailureChanged();
   }
   /** 应用一次模型选择（每轮同步通道：临时实例 resume → setModel；失败返回原因不抛）。 */
   async applySelectionNow(sessionId, workspacePath, selection, memberId) {
@@ -25783,26 +26026,9 @@ var ResumePerTurnProvider = class {
     }
   }
   /**
-   * 记录一次模型继承失败（成员卡诊断兜底；主报错已从轮次/spawn 返回值透出）。
-   */
-  writeModelFailure(paths, selection, reason) {
-    writeModelFailed(paths, {
-      modelSelection: selection,
-      reason: compactReason(reason),
-      failedAt: iso(this.now())
-    });
-    this.log({
-      ts: iso(this.now()),
-      kind: "model-set-failed-terminal",
-      teamId: this.opts.teamId,
-      providerId: selection.providerId,
-      modelId: selection.modelId,
-      reason: compactReason(reason)
-    });
-  }
-  /**
    * 成员行诊断（GitHub #6 保留面）：读 model-failed.json → 一条可读诊断。
    * 无记录/损坏 → []（损坏不阻断 list_agents；失败信息已尽力而为）。
+   * 0.4.1：记录可无 modelSelection（三源全空解析不出）；transient 附重试进度提示。
    */
   diagnosticsOf(memberId) {
     const paths = memberPaths(this.teamDir, memberId);
@@ -25813,10 +26039,13 @@ var ResumePerTurnProvider = class {
       return [];
     }
     if (record2 === void 0) return [];
-    const selection = parseModelSelection(record2.modelSelection);
-    if (selection === void 0) return [];
     const reason = typeof record2.reason === "string" ? record2.reason : "";
-    return [`\u6210\u5458\u6A21\u578B\u7EE7\u627F\u5931\u8D25\uFF1A${selection.providerId}/${selection.modelId}${reason.length > 0 ? `\uFF08${reason}\uFF09` : ""}`];
+    const selection = parseModelSelection(record2.modelSelection);
+    const head = selection !== void 0 ? `\u6210\u5458\u6A21\u578B\u7EE7\u627F\u5931\u8D25\uFF1A${selection.providerId}/${selection.modelId}${reason.length > 0 ? `\uFF08${reason}\uFF09` : ""}` : `\u6210\u5458\u6A21\u578B\u7EE7\u627F\u5931\u8D25\uFF1A${reason}`;
+    if ((record2.kind ?? "deterministic") === "transient" && (record2.attempts ?? 1) > 1) {
+      return [`${head}\uFF08\u4E34\u65F6\u6545\u969C\uFF0C\u5DF2\u81EA\u52A8\u91CD\u8BD5 ${record2.attempts - 1} \u6B21\uFF09`];
+    }
+    return [head];
   }
   /** daemon 侧补写 teammate 映射（hook 未及写时的兜底；不覆盖已有 teammate 映射）。 */
   writeTeammateMapping(sessionId, origin) {
