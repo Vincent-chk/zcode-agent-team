@@ -1,6 +1,7 @@
 // 夹具页生成（visual-regress.mjs 第一步；esbuild bundle 后以 node 运行）：
 // 8 组状态夹具 × {light,dark} × {zh,en} × {panel,card} → test/visual/.work/<fixture>-<theme>-<lang>-<carrier>.html；
-// T5.7 detail 夹具（成员转录快照 +1 组）× {light,dark} × {zh,en} → detail-*.html（V16 版面断言）；
+// T5.7 detail 夹具（成员转录快照：全量 full + 简洁 summary + 空态）× {light,dark} × {zh,en}
+// → detail-*.html（V16 版面断言；2026-10-25 视图修订新增 detail-summary，76 → 80 页）；
 // stage-8 D 成员设置弹窗（open 态）× {light,dark} × {zh,en} → settings-*.html（panel-only）。
 // panel 载体 = 面板同源结构（COMPONENT_CSS + PANEL_CSS，无 App 连接——静态注入帧）；
 // card 载体 = renderWidgetFragment 产物包 standalone 壳（::visualize 沙箱等价）。
@@ -20,6 +21,7 @@ import {
   FIXTURES,
   FIXTURE_DETAIL,
   FIXTURE_DETAIL_EMPTY,
+  FIXTURE_DETAIL_SUMMARY,
   FIXTURE_SETTINGS,
   FIXTURE_SETTINGS_FRAME,
 } from "../../test/visual/fixtures.js";
@@ -52,10 +54,11 @@ for (const [fixture, frame] of Object.entries(FIXTURES)) {
   }
 }
 
-// T5.7 detail 夹具（+1 组成员转录快照；V16 版面 = 几何不破版 + 风格宿主一致）
+// T5.7 detail 夹具（+2 组成员转录快照：全量 full / 简洁 summary；V16 版面 = 几何不破版 + 风格宿主一致）
 const detailFixtures: Record<string, { detail: DetailResult; name: string }> = {
   detail: { detail: FIXTURE_DETAIL as unknown as DetailResult, name: "alice" },
   "detail-empty": { detail: FIXTURE_DETAIL_EMPTY as unknown as DetailResult, name: "newbie" },
+  "detail-summary": { detail: FIXTURE_DETAIL_SUMMARY as unknown as DetailResult, name: "alice" },
 };
 for (const [fixture, fx] of Object.entries(detailFixtures)) {
   if (!/^[a-z][a-z-]*$/.test(fixture)) throw new Error(`gen-pages: 非法夹具名 ${fixture}`);

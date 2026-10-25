@@ -162,6 +162,10 @@ describe("main 入口（进程内）", () => {
     expect(await main(["transcript", teamDir, "worker", "--limit", "1.5"])).toBe(2);
     expect(c3.err.join("")).toContain("--limit 必须是安全整数");
     c3.restore();
+    const cMode = capture();
+    expect(await main(["transcript", teamDir, "worker", "--mode", "nope"])).toBe(2);
+    expect(cMode.err.join("")).toContain("--mode 仅支持 summary|full");
+    cMode.restore();
     // MockProvider 成员无 origin.json → 会话未落定：TeamError 单行透传（main 错误面）
     const c4 = capture();
     expect(await main(["transcript", teamDir, "worker"])).toBe(1);

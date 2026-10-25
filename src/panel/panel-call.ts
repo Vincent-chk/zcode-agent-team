@@ -25,7 +25,7 @@ import type { TeamToolBackend } from "../mcp/backend.js";
 import type { TeamState } from "../domain/projection.js";
 import type { MemberModelCurrent, ModelSource } from "../ui-core/member-settings.js";
 import { PanelViewService, resolveMemberSession } from "./view-service.js";
-import { buildDetail, renderDetailText, SessionNotSettledError, type DetailResult } from "./detail.js";
+import { buildDetail, renderDetailText, resolveDetailMode, SessionNotSettledError, type DetailResult } from "./detail.js";
 import type { ViewFrame } from "../ui-core/view.js";
 
 export type PanelCallArgs = {
@@ -34,6 +34,8 @@ export type PanelCallArgs = {
   target?: unknown;
   cursor?: unknown;
   limit?: unknown;
+  /** detail 视图模式（summary = 按轮摘要，缺省；full = 全量转录）。 */
+  mode?: unknown;
   /** stage-8 D：成员设置（模型目录/变更）。 */
   memberId?: unknown;
   model?: unknown;
@@ -130,12 +132,15 @@ async function buildDetailCall(
   const reader = deps.reader ?? new TranscriptReader();
   const cursor = typeof args.cursor === "number" ? args.cursor : undefined;
   const limit = typeof args.limit === "number" ? args.limit : undefined;
+  // 契约校验在此收口（非字符串/非枚举 → 逐字 TEAM_INVALID_ARGUMENT），再透传 buildDetail。
+  const mode = resolveDetailMode(args.mode);
   return buildDetail(
     { teamDir: paths.teamDir, teamId: identity.teamId, state: loaded.state, reader },
     {
       target: args.target as string,
       ...(cursor !== undefined ? { cursor } : {}),
       ...(limit !== undefined ? { limit } : {}),
+      mode,
     },
     (memberId) => resolveMemberSession(paths.teamDir, deps.dataRoot, memberId),
   );

@@ -218,7 +218,9 @@ export const FIXTURE_SETTINGS_FRAME: ViewFrame = frame({
 export const FIXTURE_DETAIL = {
   sessionId: "sess_alice_child",
   memberId: "m_alice",
+  mode: "full" as const,
   total: 132,
+  sourceTotal: 132,
   page: {
     nextCursor: 33,
     items: [
@@ -278,6 +280,61 @@ export const FIXTURE_DETAIL = {
 export const FIXTURE_DETAIL_EMPTY = {
   sessionId: "sess_new_child",
   memberId: "m_new",
+  mode: "summary" as const,
   total: 0,
+  sourceTotal: 0,
   page: { items: [] },
+};
+
+// ---------------------------------------------------------------- 视图修订 2026-10-25 · 简洁视图夹具
+/** summary 模式：user（framed 徽标）+ toolGroup（3 个动作，Bash×2 · Read×1）+ assistant 结论。 */
+export const FIXTURE_DETAIL_SUMMARY = {
+  sessionId: "sess_alice_child",
+  memberId: "m_alice",
+  mode: "summary" as const,
+  total: 3,
+  sourceTotal: 12,
+  page: {
+    items: [
+      {
+        seq: 1,
+        ts: "2026-10-18T03:11:02.000Z",
+        role: "user" as const,
+        kind: "text" as const,
+        text: "Team message from lead:\n请推进 stage-5 面板数据面，完成后汇报。",
+        framed: { messageId: "msg-77", from: "lead" },
+      },
+      {
+        seq: 2,
+        ts: "2026-10-18T03:12:41.000Z",
+        role: "assistant" as const,
+        kind: "toolGroup" as const,
+        count: 3,
+        tools: [
+          {
+            ts: "2026-10-18T03:11:20.000Z",
+            name: "Bash",
+            status: "completed",
+            text: "input: {\"command\":\"npx vitest run test/panel\"}\noutput: Tests 45 passed (45)",
+          },
+          {
+            ts: "2026-10-18T03:11:48.000Z",
+            name: "Read",
+            status: "completed",
+            text: "input: {\"file_path\":\"/src/panel/view-service.ts\"}\noutput: (file content 180 lines)",
+          },
+          { ts: "2026-10-18T03:12:41.000Z", name: "Bash", status: "completed" },
+        ],
+      },
+      {
+        seq: 3,
+        ts: "2026-10-18T03:13:05.000Z",
+        role: "assistant" as const,
+        kind: "text" as const,
+        text:
+          "数据面接线完成：team://view 现在返回真实投影视图帧，detail 通道复用同一合成器；" +
+          "本轮 3 个动作全部完成，测试与类型检查均为绿。",
+      },
+    ],
+  },
 };

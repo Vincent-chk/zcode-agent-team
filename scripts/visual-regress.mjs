@@ -202,6 +202,11 @@ for (const file of pages) {
       out.msgCount = document.querySelectorAll(".msg").length;
       out.badgeCount = document.querySelectorAll(".msg-badge").length;
       out.toolRowCount = document.querySelectorAll(".tool-row, .tool-static").length;
+      // 〔视图修订 2026-10-25〕简洁/详细模式切换 + toolGroup 动作组
+      out.modeButtonCount = document.querySelectorAll("[data-detail-mode]").length;
+      out.toolGroupRowCount = document.querySelectorAll(".tool-group").length;
+      const activeMode = q("[data-detail-mode].active");
+      if (activeMode !== null) out.activeDetailMode = activeMode.getAttribute("data-detail-mode");
       const msgText = q(".msg-text");
       if (msgText) { out.msgTextSize = px(msgText, "fontSize"); out.msgTextWrap = cs(msgText, "overflowWrap"); }
       const back = q(".detail-back");
@@ -302,6 +307,16 @@ for (const file of pages) {
       eq("hasCopy(复制会话 id 恒有)", geo.hasCopy, true);
       eq("msgTextSize(12px)", geo.msgTextSize, 12);
       eq("msgTextWrap(长文本不破版)", geo.msgTextWrap, "anywhere");
+      eq("modeButtonCount(full 视图也在场)", geo.modeButtonCount, 2);
+      eq("activeDetailMode(全量夹具=详细)", geo.activeDetailMode, "full");
+    } else if (fixture === "detail-summary") {
+      // 2026-10-25 简洁视图：动作组聚合行 + 默认简洁 + 徽标保留
+      eq("toolGroupRowCount(动作组 1)", geo.toolGroupRowCount, 1);
+      eq("modeButtonCount(简洁/详细 2)", geo.modeButtonCount, 2);
+      eq("activeDetailMode(默认简洁)", geo.activeDetailMode, "summary");
+      eq("badgeCount(framed 徽标 1)", geo.badgeCount, 1);
+      eq("msgCount(user+动作组+结论 3)", geo.msgCount, 3);
+      eq("hasCopy(复制会话 id 恒有)", geo.hasCopy, true);
     } else {
       // detail-empty：ready 但 0 消息 → 「无消息」三态（复制会话 id 恒有，T5.7 口径）
       eq("msgCount(空态 0)", geo.msgCount, 0);

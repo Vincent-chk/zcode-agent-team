@@ -87,6 +87,38 @@ describe("renderTranscript（进程内）", () => {
     expect(JSON.parse(out).page.items).toEqual([]);
   });
 
+  it("mode 透传：缺省 summary 投影 / full 全量（响应回显 mode/sourceTotal）", async () => {
+    let seq = 2;
+    const insertAssistantText = (text: string): void => {
+      const now = Date.now() + seq * 1000;
+      const id = `msg_${crypto.randomUUID()}`;
+      db.prepare("INSERT INTO message (id, session_id, time_created, time_updated, data, sequence) VALUES (?,?,?,?,?,?)").run(
+        id, MEMBER_SESSION, now, now, JSON.stringify({ role: "assistant", semantics: { origin: "model" } }), seq,
+      );
+      db.prepare("INSERT INTO part (id, message_id, session_id, time_created, time_updated, data, sequence) VALUES (?,?,?,?,?,?,?)").run(
+        `part_${crypto.randomUUID()}`, id, MEMBER_SESSION, now, now, JSON.stringify({ type: "text", text }), 0,
+      );
+      seq += 1;
+    };
+    insertAssistantText("中间稿");
+    insertAssistantText("最终稿");
+    const loaded = await load(teamDir, TEAM);
+
+    const summary = JSON.parse(renderTranscript({ teamDir, teamId: TEAM, loaded, member: MEMBER_ID, json: true, dbPath }));
+    expect(summary.mode).toBe("summary");
+    expect(summary.sourceTotal).toBe(3);
+    expect(summary.total).toBe(2); // user + 最后一条非空结论
+    expect(summary.page.items.map((i: { text?: string }) => i.text)).toEqual(["hello unit", "最终稿"]);
+
+    const full = JSON.parse(
+      renderTranscript({ teamDir, teamId: TEAM, loaded, member: MEMBER_ID, json: true, dbPath, mode: "full" }),
+    );
+    expect(full.mode).toBe("full");
+    expect(full.sourceTotal).toBe(3);
+    expect(full.total).toBe(3);
+    expect(full.page.items.map((i: { text?: string }) => i.text)).toEqual(["hello unit", "中间稿", "最终稿"]);
+  });
+
   it("非成员 → TeamError（由 main 单行化，本层原样抛）", async () => {
     const loaded = await load(teamDir, TEAM);
     expect(() => renderTranscript({ teamDir, teamId: TEAM, loaded, member: "ghost", json: false, dbPath })).toThrowError(

@@ -121,7 +121,7 @@ Lead 的动作链：创建队友 → 在共享任务板建任务并指定 owner 
 | `team_task_get` | 全体 | 读取单条任务的最新完整内容（改动前必读） |
 | `team_task_update` | 全体 | 用 `expected_revision` 做 CAS 的任务动作：claim / release / edit / set_dependencies / complete / reopen / reassign / delete |
 
-另有一个 app 专用回环工具 `team_panel_call`（面板心跳/刷新/详情/**模型目录与成员模型设置**，模型不可见）；诊断探针 `team_ping` 仅在 `TEAM_DEBUG_TOOLS=1` 时暴露。模型清单一类只读数据也可经 MCP 资源 `team://models` 读取（白名单投影，**不含 apiKey/baseURL**）。
+另有一个 app 专用回环工具 `team_panel_call`（面板心跳/刷新/详情（**简洁/详细双模式**，默认简洁）/模型目录与成员模型设置，模型不可见）；诊断探针 `team_ping` 仅在 `TEAM_DEBUG_TOOLS=1` 时暴露。模型清单一类只读数据也可经 MCP 资源 `team://models` 读取（白名单投影，**不含 apiKey/baseURL**）。
 
 ## 配置（userConfig）
 
@@ -145,7 +145,7 @@ Lead 的动作链：创建队友 → 在共享任务板建任务并指定 owner 
 # 直接读盘重放（与 /team 同源）
 node <插件目录>/dist/team-ctl.mjs state <teamDir>            # 文本摘要
 node <插件目录>/dist/team-ctl.mjs state <teamDir> --json     # 机器可读
-node <插件目录>/dist/team-ctl.mjs transcript <teamDir> <member>   # 成员会话查看流
+node <插件目录>/dist/team-ctl.mjs transcript <teamDir> <member> [--mode summary|full]   # 成员会话流（缺省简洁）
 node <插件目录>/dist/team-ctl.mjs widget <teamDir> --standalone --out /tmp/team.html --theme dark --lang zh
 node <插件目录>/dist/team-ctl.mjs tail <teamDir>             # 跟随事件日志
 ```

@@ -116,6 +116,10 @@ export const DETAIL_DICT = {
     "detail.noSession": "会话 id 未落定（成员可能尚在准备中）",
     "detail.you": "我",
     "detail.count": "{n} 条",
+    "detail.modeSummary": "简洁",
+    "detail.modeFull": "详细",
+    "detail.toolGroup": "{n} 个动作 · {list}",
+    "detail.countSummary": "{n} 条 · 共 {sourceTotal} 条转录",
   },
   en: {
     "detail.back": "Back",
@@ -135,6 +139,10 @@ export const DETAIL_DICT = {
     "detail.noSession": "Session id not settled yet (member may still be provisioning)",
     "detail.you": "me",
     "detail.count": "{n} items",
+    "detail.modeSummary": "Concise",
+    "detail.modeFull": "Detailed",
+    "detail.toolGroup": "{n} actions · {list}",
+    "detail.countSummary": "{n} items · of {sourceTotal} transcript items",
   },
 } as const;
 

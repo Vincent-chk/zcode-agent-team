@@ -18,7 +18,7 @@ import { isCompact, renderPanelBody } from "../ui-core/render.js";
 import { renderDetailView, type DetailViewState } from "../ui-core/detail-render.js";
 import { attachExpandBehavior, memoryExpandStore, type ExpandStore } from "../ui-core/expand.js";
 import type { ViewFrame } from "../ui-core/view.js";
-import type { DetailResult } from "./detail.js";
+import type { DetailMode, DetailResult } from "./detail.js";
 import { RequestSequencer } from "../ui-core/request-sequencer.js";
 
 // ---------------------------------------------------------------- DSH 交互时序常量（§10.2，F10）
@@ -35,6 +35,8 @@ const token = new URLSearchParams(location.search).get("token") ?? "";
 const lang: Lang = langOfLocale(navigator.language);
 let frame: ViewFrame | null = null;
 let detailState: DetailViewState = { kind: "closed" };
+/** 〔视图修订 2026-10-25〕detail 视图模式（默认简洁；无持久化，面板重开回默认）。 */
+let detailMode: DetailMode = "summary";
 let expandStore: ExpandStore = memoryExpandStore();
 let detachExpand: (() => void) | null = null;
 let pinned = false;
@@ -96,7 +98,7 @@ function render(): void {
   detailView.hidden = !inDetail;
   panelEl.classList.toggle("compact", frame !== null && isCompact(frame) && !inDetail);
   if (inDetail) {
-    detailView.innerHTML = renderDetailView(detailState, lang);
+    detailView.innerHTML = renderDetailView(detailState, lang, { mode: detailMode });
     bindDetail();
     return;
   }
@@ -237,7 +239,12 @@ listView.addEventListener("click", (ev) => {
   void openDetail(id, member.querySelector(".name")?.textContent ?? id);
 });
 
-async function openDetail(memberId: string, name: string, cursor?: number): Promise<void> {
+async function openDetail(
+  memberId: string,
+  name: string,
+  cursor?: number,
+  mode: DetailMode = detailMode,
+): Promise<void> {
   const seq = detailSequencer.begin();
   const fromList = detailState.kind === "closed";
   detailState = { kind: "loading", memberId, name };
@@ -247,10 +254,12 @@ async function openDetail(memberId: string, name: string, cursor?: number): Prom
     const body = (await apiCall({
       action: "detail",
       target: memberId,
+      mode,
       ...(cursor !== undefined ? { cursor } : {}),
     })) as { kind: string; detail?: DetailResult; message?: string; reason?: string };
     if (!detailSequencer.isCurrent(seq)) return;
     if (body.kind === "detail" && body.detail !== undefined) {
+      detailMode = body.detail.mode;
       detailState = { kind: "ready", memberId, name, detail: body.detail };
     } else {
       detailState = {
@@ -292,12 +301,33 @@ function bindDetail(): void {
       setTimeout(() => { if (btn.isConnected) btn.textContent = td(lang, "detail.copySessionId"); }, 1500);
     }
   });
+  // 〔视图修订 2026-10-25〕简洁/详细切换（同面板；本载体无 wake、无持久化）
+  for (const btn of detailView.querySelectorAll<HTMLButtonElement>("[data-detail-mode]")) {
+    btn.addEventListener("click", () => {
+      const next = btn.dataset.detailMode;
+      if (next !== "summary" && next !== "full") return;
+      if (next === detailMode) return;
+      if (detailState.kind !== "ready" && detailState.kind !== "error") return;
+      const { memberId, name } = detailState;
+      detailMode = next;
+      detailSequencer.begin(); // 跨模式 seq 不通用 → 回末页重拉
+      detailState = { kind: "loading", memberId, name };
+      void openDetail(memberId, name, undefined, next);
+    });
+  }
   detailView.querySelector("[data-detail-earlier]")?.addEventListener("click", (ev) => {
     const cursor = Number((ev.currentTarget as HTMLElement).dataset.cursor);
     if (detailState.kind === "ready" && Number.isFinite(cursor)) {
       void openDetail(detailState.memberId, detailState.name, cursor);
     }
   });
+  for (const head of detailView.querySelectorAll<HTMLButtonElement>("button.tool-group-head")) {
+    head.addEventListener("click", () => {
+      const group = head.closest(".tool-group");
+      const open = group?.classList.toggle("open") ?? false;
+      head.setAttribute("aria-expanded", open ? "true" : "false");
+    });
+  }
   for (const row of detailView.querySelectorAll<HTMLButtonElement>("button.tool-row")) {
     row.addEventListener("click", () => {
       const o = row.classList.toggle("open");

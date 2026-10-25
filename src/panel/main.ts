@@ -34,7 +34,7 @@ import {
 } from "../ui-core/member-settings.js";
 import type { ViewFrame } from "../ui-core/view.js";
 import type { ModelCatalog } from "../provider/model-catalog.js";
-import type { DetailResult } from "../panel/detail.js";
+import type { DetailMode, DetailResult } from "../panel/detail.js";
 import { attachExpandBehavior, memoryExpandStore, type ExpandStore } from "../ui-core/expand.js";
 import { RequestSequencer } from "../ui-core/request-sequencer.js";
 
@@ -51,6 +51,8 @@ let lang: Lang = "zh";
 let navError: string | undefined;
 type DetailState = DetailViewState;
 let detailState: DetailState = { kind: "closed" };
+/** 〔视图修订 2026-10-25〕detail 视图模式（默认简洁；切模式 = 回末页 + 重拉）。 */
+let detailMode: DetailMode = "summary";
 /** stage-8 D：成员模型设置弹窗状态（closed 时 DOM 空且 hidden）。 */
 let settingsState: MemberSettingsState = { kind: "closed" };
 let expandStore: ExpandStore = memoryExpandStore();
@@ -236,7 +238,12 @@ function startHeartbeat(): void {
 
 // ---------------------------------------------------------------- detail（T5.7）
 
-async function openDetail(memberId: string, name: string, cursor?: number): Promise<void> {
+async function openDetail(
+  memberId: string,
+  name: string,
+  cursor?: number,
+  mode: DetailMode = detailMode,
+): Promise<void> {
   const seq = detailSequencer.begin();
   const fromList = detailState.kind === "closed";
   detailState = { kind: "loading", memberId, name };
@@ -249,6 +256,7 @@ async function openDetail(memberId: string, name: string, cursor?: number): Prom
       arguments: {
         action: "detail",
         target: memberId,
+        mode,
         ...(cursor !== undefined ? { cursor } : {}),
       },
     });
@@ -258,6 +266,7 @@ async function openDetail(memberId: string, name: string, cursor?: number): Prom
       error?: { code?: string; message?: string; reason?: string };
     };
     if (body.detail !== undefined) {
+      detailMode = body.detail.mode;
       detailState = { kind: "ready", memberId, name, detail: body.detail };
     } else {
       detailState = {
@@ -476,7 +485,7 @@ function render(): void {
   panelEl.classList.toggle("compact", frame !== null && isCompact(frame) && !inDetail);
 
   if (inDetail) {
-    detailView.innerHTML = renderDetailViewHtml(detailState, lang, { wake: true });
+    detailView.innerHTML = renderDetailViewHtml(detailState, lang, { wake: true, mode: detailMode });
     bindDetail();
     return;
   }
@@ -556,12 +565,34 @@ function bindDetail(): void {
       }, 1500);
     }
   });
+  // 〔视图修订 2026-10-25〕简洁/详细切换：模式相同忽略；切模式重置 cursor 回末页。
+  for (const btn of detailView.querySelectorAll<HTMLButtonElement>("[data-detail-mode]")) {
+    btn.addEventListener("click", () => {
+      const next = btn.dataset.detailMode;
+      if (next !== "summary" && next !== "full") return;
+      if (next === detailMode) return;
+      if (detailState.kind !== "ready" && detailState.kind !== "error") return;
+      const { memberId, name } = detailState;
+      detailMode = next;
+      detailSequencer.begin(); // 作废在途响应（跨模式 seq 不通用）
+      detailState = { kind: "loading", memberId, name };
+      void openDetail(memberId, name, undefined, next);
+    });
+  }
   detailView.querySelector("[data-detail-earlier]")?.addEventListener("click", (ev) => {
     const cursor = Number((ev.currentTarget as HTMLElement).dataset.cursor);
     if (detailState.kind === "ready" && Number.isFinite(cursor)) {
       void openDetail(detailState.memberId, detailState.name, cursor);
     }
   });
+  // 动作组头部展开/收起（组内逐条工具行由下方 tool-row 绑定覆盖）
+  for (const head of detailView.querySelectorAll<HTMLButtonElement>("button.tool-group-head")) {
+    head.addEventListener("click", () => {
+      const group = head.closest(".tool-group");
+      const open = group?.classList.toggle("open") ?? false;
+      head.setAttribute("aria-expanded", open ? "true" : "false");
+    });
+  }
   // 工具调用折叠（默认折叠为一行：工具名+状态；点击展开载荷）
   for (const row of detailView.querySelectorAll<HTMLButtonElement>("button.tool-row")) {
     row.addEventListener("click", () => {

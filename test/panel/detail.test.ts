@@ -18,6 +18,7 @@ import {
   framedFor,
   pageDetail,
   normalizeLimit,
+  projectSummary,
   resolveMemberSessionId,
   renderDetailText,
   SessionNotSettledError,
@@ -122,7 +123,7 @@ describe("synthesize：流合成（F13）", () => {
       { type: "tool", tool: "Bash", status: "completed", input: { command: "ls" }, output: "a\nb" },
     ]);
     insertMessage(MEMBER_SESSION, "assistant", "model", [{ type: "reasoning", text: "思考中" } as never]);
-    const result = buildDetail(deps(stateWith([], [])), { target: MEMBER_ID }, () => MEMBER_SESSION);
+    const result = buildDetail(deps(stateWith([], [])), { target: MEMBER_ID, mode: "full" }, () => MEMBER_SESSION);
     const kinds = result.page.items.map((i) => `${i.role}:${i.kind}`);
     expect(kinds).toEqual(["user:text", "assistant:text", "assistant:toolCall"]);
     expect(result.page.items[0].text).toBe("请实现功能 A");
@@ -146,7 +147,7 @@ describe("synthesize：流合成（F13）", () => {
     ]);
     const result = buildDetail(
       deps(stateWith(messages, ["msg-1"])),
-      { target: MEMBER_ID },
+      { target: MEMBER_ID, mode: "full" },
       () => MEMBER_SESSION,
     );
     const item = result.page.items[0];
@@ -162,7 +163,7 @@ describe("synthesize：流合成（F13）", () => {
     insertMessage(MEMBER_SESSION, "user", "real_user", [{ type: "text", text: "Team message from lead:\n同一句话" }]);
     const result = buildDetail(
       deps(stateWith(messages, ["msg-1"])),
-      { target: MEMBER_ID },
+      { target: MEMBER_ID, mode: "full" },
       () => MEMBER_SESSION,
     );
     const framedItems = result.page.items.filter((i) => i.framed !== undefined);
@@ -192,6 +193,178 @@ describe("synthesize：流合成（F13）", () => {
     const result = buildDetail(deps(stateWith([], []), reader), { target: MEMBER_ID }, () => MEMBER_SESSION);
     expect(result.page.items).toEqual([]);
     reader.close();
+  });
+});
+
+describe("summary 投影（〔视图修订 2026-10-25〕缺省 mode）", () => {
+  it("轮切分与每轮三条目顺序：user → toolGroup → 结论", () => {
+    insertMessage(MEMBER_SESSION, "user", "real_user", [{ type: "text", text: "第一轮指令" }]);
+    insertMessage(MEMBER_SESSION, "assistant", "model", [
+      { type: "tool", tool: "Bash", status: "completed", input: { command: "ls" }, output: "a" },
+    ]);
+    insertMessage(MEMBER_SESSION, "assistant", "model", [{ type: "text", text: "结论一" }]);
+    insertMessage(MEMBER_SESSION, "user", "real_user", [{ type: "text", text: "第二轮指令" }]);
+    insertMessage(MEMBER_SESSION, "assistant", "model", [{ type: "text", text: "中间稿" }]);
+    insertMessage(MEMBER_SESSION, "assistant", "model", [{ type: "text", text: "结论二" }]);
+    insertMessage(MEMBER_SESSION, "user", "real_user", [{ type: "text", text: "第三轮指令" }]);
+
+    const result = buildDetail(deps(stateWith([], [])), { target: MEMBER_ID }, () => MEMBER_SESSION);
+
+    expect(result.mode).toBe("summary"); // 缺省
+    expect(result.sourceTotal).toBe(7);
+    expect(result.total).toBe(6);
+    expect(result.page.items.map((i) => `${i.role}:${i.kind}`)).toEqual([
+      "user:text",
+      "assistant:toolGroup",
+      "assistant:text",
+      "user:text",
+      "assistant:text",
+      "user:text",
+    ]);
+    expect(result.page.items.map((i) => i.seq)).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(result.page.items[0].text).toBe("第一轮指令");
+    expect(result.page.items[1].count).toBe(1);
+    expect(result.page.items[1].tools?.[0].name).toBe("Bash");
+    expect(result.page.items[2].text).toBe("结论一");
+    expect(result.page.items[3].text).toBe("第二轮指令");
+    expect(result.page.items[4].text).toBe("结论二"); // 中间稿被丢弃
+    expect(result.page.items[5].text).toBe("第三轮指令");
+  });
+
+  it("toolGroup：聚合计数 + 逐条载荷沿用 toolCall（2000 字符截断）+ 组 ts 取末条", () => {
+    insertMessage(MEMBER_SESSION, "user", "real_user", [{ type: "text", text: "开始" }]);
+    insertMessage(MEMBER_SESSION, "assistant", "model", [
+      { type: "tool", tool: "Read", status: "completed", input: { path: "a.md" }, output: "ok" },
+    ]);
+    insertMessage(MEMBER_SESSION, "assistant", "model", [
+      { type: "tool", tool: "Bash", status: "running", input: { command: "ls" }, output: "x".repeat(2500) },
+    ]);
+    insertMessage(MEMBER_SESSION, "assistant", "model", [{ type: "text", text: "完成" }]);
+
+    const result = buildDetail(deps(stateWith([], [])), { target: MEMBER_ID }, () => MEMBER_SESSION);
+    const group = result.page.items[1];
+    expect(group.kind).toBe("toolGroup");
+    expect(group.role).toBe("assistant");
+    expect(group.count).toBe(2);
+    expect(group.tools).toHaveLength(2);
+    expect(group.tools?.[0]).toMatchObject({ name: "Read", status: "completed" });
+    expect(group.tools?.[0].text).toContain('input: {"path":"a.md"}');
+    expect(group.tools?.[1]).toMatchObject({ name: "Bash", status: "running" });
+    expect(group.tools?.[1].text?.endsWith("\n…(truncated)")).toBe(true);
+    expect(group.tools?.[1].text?.length).toBe(2000 + "\n…(truncated)".length);
+    expect(group.ts).toBe(group.tools?.[1].ts); // 组 ts = 该组最后一个工具的 ts
+  });
+
+  it("framed 徽标保留在摘要 user 条目（原文不改写）", () => {
+    const messages = [
+      { id: "msg-1", senderId: TEAM, senderName: "lead", targetId: MEMBER_ID, content: [{ type: "text" as const, text: "推进" }] },
+    ];
+    insertMessage(MEMBER_SESSION, "user", "real_user", [{ type: "text", text: "Team message from lead:\n推进" }]);
+    insertMessage(MEMBER_SESSION, "assistant", "model", [{ type: "tool", tool: "Read", status: "completed" }]);
+    insertMessage(MEMBER_SESSION, "assistant", "model", [{ type: "text", text: "收到" }]);
+
+    const result = buildDetail(deps(stateWith(messages, ["msg-1"])), { target: MEMBER_ID }, () => MEMBER_SESSION);
+    const first = result.page.items[0];
+    expect(first.kind).toBe("text");
+    expect(first.framed).toEqual({ messageId: "msg-1", from: "lead" });
+    expect(first.text).toBe("Team message from lead:\n推进");
+  });
+
+  it("结论选取：最后非空 / 空白不算 / 运行中取最近 / 无非空则省略", () => {
+    insertMessage(MEMBER_SESSION, "user", "real_user", [{ type: "text", text: "轮一" }]);
+    insertMessage(MEMBER_SESSION, "assistant", "model", [{ type: "text", text: "  \n\t " }]);
+    insertMessage(MEMBER_SESSION, "assistant", "model", [{ type: "text", text: "有效结论" }]);
+    insertMessage(MEMBER_SESSION, "user", "real_user", [{ type: "text", text: "轮二" }]);
+    insertMessage(MEMBER_SESSION, "assistant", "model", [{ type: "tool", tool: "Bash", status: "completed" }]);
+    insertMessage(MEMBER_SESSION, "user", "real_user", [{ type: "text", text: "轮三" }]);
+    insertMessage(MEMBER_SESSION, "assistant", "model", [{ type: "tool", tool: "Read", status: "completed" }]);
+    insertMessage(MEMBER_SESSION, "assistant", "model", [{ type: "text", text: "运行中最近结论" }]);
+
+    const result = buildDetail(deps(stateWith([], [])), { target: MEMBER_ID }, () => MEMBER_SESSION);
+    expect(result.page.items.map((i) => `${i.role}:${i.kind}:${i.text ?? ""}`)).toEqual([
+      "user:text:轮一",
+      "assistant:text:有效结论",
+      "user:text:轮二",
+      "assistant:toolGroup:",
+      "user:text:轮三",
+      "assistant:toolGroup:",
+      "assistant:text:运行中最近结论",
+    ]);
+  });
+
+  it("虚拟轮 0：首个 user 前孤儿条目 → toolGroup + 最后非空 assistant text", () => {
+    insertMessage(MEMBER_SESSION, "assistant", "model", [{ type: "tool", tool: "Bash", status: "completed" }]);
+    insertMessage(MEMBER_SESSION, "assistant", "model", [{ type: "text", text: "旧草稿" }]);
+    insertMessage(MEMBER_SESSION, "assistant", "model", [{ type: "text", text: "预热结论" }]);
+    insertMessage(MEMBER_SESSION, "assistant", "model", [{ type: "tool", tool: "Read", status: "completed" }]);
+    insertMessage(MEMBER_SESSION, "user", "real_user", [{ type: "text", text: "正式指令" }]);
+    insertMessage(MEMBER_SESSION, "assistant", "model", [{ type: "text", text: "正式结论" }]);
+
+    const result = buildDetail(deps(stateWith([], [])), { target: MEMBER_ID }, () => MEMBER_SESSION);
+    expect(result.page.items.map((i) => `${i.role}:${i.kind}`)).toEqual([
+      "assistant:toolGroup",
+      "assistant:text",
+      "user:text",
+      "assistant:text",
+    ]);
+    expect(result.page.items[0].count).toBe(2);
+    expect(result.page.items[0].tools?.map((t) => t.name)).toEqual(["Bash", "Read"]);
+    expect(result.page.items[1].text).toBe("预热结论"); // 旧草稿被丢弃
+  });
+
+  it("summary 与 full 的 total/seq/cursor 差异（sourceTotal 同源）", () => {
+    insertMessage(MEMBER_SESSION, "user", "real_user", [{ type: "text", text: "u1" }]);
+    insertMessage(MEMBER_SESSION, "assistant", "model", [{ type: "tool", tool: "Bash", status: "completed" }]);
+    insertMessage(MEMBER_SESSION, "assistant", "model", [{ type: "text", text: "a1a" }]);
+    insertMessage(MEMBER_SESSION, "assistant", "model", [{ type: "text", text: "a1b" }]);
+    insertMessage(MEMBER_SESSION, "user", "real_user", [{ type: "text", text: "u2" }]);
+    insertMessage(MEMBER_SESSION, "assistant", "model", [{ type: "text", text: "a2" }]);
+
+    const summary = buildDetail(deps(stateWith([], [])), { target: MEMBER_ID, limit: 4 }, () => MEMBER_SESSION);
+    const full = buildDetail(deps(stateWith([], [])), { target: MEMBER_ID, mode: "full", limit: 4 }, () => MEMBER_SESSION);
+
+    expect(summary.mode).toBe("summary");
+    expect(full.mode).toBe("full");
+    expect(summary.sourceTotal).toBe(6);
+    expect(full.sourceTotal).toBe(6);
+    expect(summary.total).toBe(5);
+    expect(full.total).toBe(6);
+    expect(summary.page.items.map((i) => i.seq)).toEqual([2, 3, 4, 5]);
+    expect(summary.page.nextCursor).toBe(2);
+    expect(full.page.items.map((i) => i.seq)).toEqual([3, 4, 5, 6]);
+    expect(full.page.nextCursor).toBe(3);
+  });
+});
+
+describe("mode 校验（契约逐字错误）", () => {
+  it("非法枚举 → TEAM_INVALID_ARGUMENT（消息逐字）", () => {
+    expect(() =>
+      buildDetail(deps(stateWith([], [])), { target: MEMBER_ID, mode: "bogus" as never }, () => MEMBER_SESSION),
+    ).toThrowError(new TeamError("TEAM_INVALID_ARGUMENT", 'param "mode" must be "summary" or "full"'));
+  });
+
+  it("非字符串 → 同口径错误", () => {
+    expect(() =>
+      buildDetail(deps(stateWith([], [])), { target: MEMBER_ID, mode: 1 as never }, () => MEMBER_SESSION),
+    ).toThrowError(new TeamError("TEAM_INVALID_ARGUMENT", 'param "mode" must be "summary" or "full"'));
+  });
+});
+
+describe("投影后分页预算（summary 作用于投影流）", () => {
+  it("投影后 256KiB 裁剪仍生效（total 基于投影后条目）", () => {
+    const raw = Array.from({ length: 60 }, (_, i) => ({
+      ts: new Date(1760000000000 + i).toISOString(),
+      role: "user" as const,
+      kind: "text" as const,
+      text: "x".repeat(8000), // 60×8KiB ≈ 480KiB > 256KiB
+    }));
+    const projected = projectSummary(raw);
+    expect(projected).toHaveLength(60); // user 条目原样保留（每轮一条）
+    const { page, total, truncated } = pageDetail(projected, { limit: 200 });
+    expect(total).toBe(60);
+    expect(truncated).toBe(true);
+    expect(page.items.length).toBeLessThan(60);
+    expect(page.items[page.items.length - 1].text).toBe("x".repeat(8000)); // 保留最近
   });
 });
 
@@ -303,7 +476,7 @@ describe("renderDetailText（team-ctl transcript CLI 对等，F12）", () => {
           ["msg-1"],
         ),
       ),
-      { target: MEMBER_ID },
+      { target: MEMBER_ID, mode: "full" },
       () => MEMBER_SESSION,
     );
     const text = renderDetailText(result, "alice");
@@ -313,5 +486,22 @@ describe("renderDetailText（team-ctl transcript CLI 对等，F12）", () => {
     expect(text).toContain("推进");
     expect(text).toContain("tool Read (completed)");
     expect(text).toContain("已完成");
+    // full 模式 header 保持现状（无 summary 后缀）
+    expect(text).toContain("· 3 items");
+    expect(text).not.toContain("summary of");
+  });
+
+  it("summary：header 计数（summary of sourceTotal）+ toolGroup 聚合行", () => {
+    insertMessage(MEMBER_SESSION, "user", "real_user", [{ type: "text", text: "请实现" }]);
+    insertMessage(MEMBER_SESSION, "assistant", "model", [{ type: "tool", tool: "Bash", status: "completed" }]);
+    insertMessage(MEMBER_SESSION, "assistant", "model", [{ type: "tool", tool: "Bash", status: "completed" }]);
+    insertMessage(MEMBER_SESSION, "assistant", "model", [{ type: "tool", tool: "Read", status: "completed" }]);
+    insertMessage(MEMBER_SESSION, "assistant", "model", [{ type: "text", text: "完成" }]);
+
+    const result = buildDetail(deps(stateWith([], [])), { target: MEMBER_ID }, () => MEMBER_SESSION);
+    const text = renderDetailText(result, "alice");
+    expect(text).toContain("· 3 items (summary of 5)"); // 投影后 3 / 原始 5
+    expect(text).toMatch(/\[\d{2}:\d{2}:\d{2}\] assistant · 3 个动作（Bash×2 · Read×1）/);
+    expect(text).not.toContain("tool Bash (completed)"); // 摘要不逐条渲染动作
   });
 });

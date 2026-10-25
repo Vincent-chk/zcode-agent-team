@@ -348,7 +348,7 @@ const TOOLS = [
   {
     name: "team_panel_call",
     description:
-      "面板回环工具（app 专用）：面板经 callServerTool 调用。label-only = 心跳/计数（H12 保活载体）；action=refresh = 全量视图帧；action=detail + target = 成员会话查看视图（T5.7，cursor/limit 分页）；action=modelOptions（memberId 可选）= 模型目录 + 成员当前生效值；action=setMemberModel（memberId + model/thoughtLevel）= 受控成员模型变更（stage-8）。",
+      "面板回环工具（app 专用）：面板经 callServerTool 调用。label-only = 心跳/计数（H12 保活载体）；action=refresh = 全量视图帧；action=detail + target = 成员会话查看视图（T5.7，cursor/limit 分页）；action=modelOptions（memberId 可选）= 模型目录 + 成员当前生效值；action=setMemberModel（memberId + model/thoughtLevel）= 受控成员模型变更（stage-8）。detail 默认按轮摘要（summary，mode 缺省），full 为审计全量。",
     visibility: ["app"],
     inputSchema: {
       type: "object" as const,
@@ -363,6 +363,11 @@ const TOOLS = [
         target: { type: "string", description: "detail 目标成员 id（或成员名；lead 亦可）" },
         cursor: { type: "number", description: "detail seq 游标（返回 seq < cursor 的最近一页；缺省 = 末页/最近上下文）" },
         limit: { type: "number", description: "detail 页大小（默认 100，上限 200）" },
+        mode: {
+          type: "string",
+          enum: ["summary", "full"],
+          description: "detail 视图模式：summary=按轮次摘要（缺省），full=全量转录",
+        },
         memberId: { type: "string", description: "模型设置目标成员 id（modelOptions/setMemberModel）" },
         model: {
           type: "string",

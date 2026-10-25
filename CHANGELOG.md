@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.3.0 — 2026-10-25
+
+描述：智能体团队：在会话中创建并协调多个 teammate 子会话、共享任务板与成员消息。
+
+- **成员会话查看视图新增「简洁/详细」双模式**（detail 契约〔视图修订 2026-10-25〕）：
+  - 默认**简洁**（`mode:"summary"`）：按轮投影为「用户指令 + 每轮动作组 + 每轮最终结论」；动作组（`toolGroup`）一行汇总，点击就地展开逐条工具（名称/状态/载荷）。
+  - **详细**（`mode:"full"`）：修订前的全量转录流，供审计与排障；行为逐字不变。
+  - `team_panel_call` 的 detail 请求新增 `mode`（缺省 `summary`）；响应回显 `mode` 并新增 `sourceTotal`（投影前原始条数）；`items.kind` 增 `toolGroup`（`count` + `tools[]`）。
+  - **契约写实**：`kind:"toolResult"` 从未独立实现——工具结果并入 `toolCall` 载荷；本次只改文档口径，不新增类型、不改数据源。
+  - **跨模式 `seq`/`cursor` 不通用**：切换模式重置到末页（面板/伴生页）；CLI 每次调用独立。
+  - CLI 对等：`team-ctl transcript <teamDir> <member> --mode summary|full`（缺省 summary，与面板共用同一合成函数）。
+  - 面板与伴生页新增模式切换按钮；README / 使用手册 / 架构说明 / 运维手册 / 命令文档 / 追溯矩阵同步更新。
+- 测试 836 → **864 passed**（`test/panel/detail.test.ts` 16 → 26；`test/ui-core/detail-render.test.ts` 17 → 28）。
+- 视觉基线 76 → **80 页**（新增 detail-summary × light/dark × zh/en 共 4 页）。
+- 模型可见工具面与成员/任务行为不变（仍 10 工具，`interrupt:false` 时 9）。
+- 遗留登记（GitHub issue 跟踪）：详情文本 markdown/代码块排版未实现（当前纯文本）；`toolResult` 契约偏差已写实；U03 盲测仍未执行；模式选择不跨面板重开保持。
+
 ## 0.2.0 — 2026-10-25
 
 描述：智能体团队：在会话中创建并协调多个 teammate 子会话、共享任务板与成员消息。

@@ -5369,6 +5369,13 @@ function extractText(partData) {
 }
 
 // src/panel/detail.ts
+function resolveDetailMode(mode) {
+  if (mode === void 0) return "summary";
+  if (mode !== "summary" && mode !== "full") {
+    throw new TeamError("TEAM_INVALID_ARGUMENT", 'param "mode" must be "summary" or "full"');
+  }
+  return mode;
+}
 var DETAIL_DEFAULT_LIMIT = 100;
 var DETAIL_MAX_LIMIT = 200;
 var DETAIL_PAGE_BYTES = 256 * 1024;
@@ -5450,6 +5457,41 @@ function stringify(v) {
     return String(v);
   }
 }
+function projectSummary(items) {
+  const out = [];
+  let round = { tools: [] };
+  for (const item of items) {
+    if (item.role === "user" && item.kind === "text") {
+      flushRound(out, round);
+      round = { user: item, tools: [] };
+      continue;
+    }
+    if (item.kind === "toolCall") {
+      round.tools.push(item);
+      continue;
+    }
+    if (item.role === "assistant" && item.kind === "text" && (item.text ?? "").trim().length > 0) {
+      round.conclusion = item;
+    }
+  }
+  flushRound(out, round);
+  return out;
+}
+function flushRound(out, round) {
+  if (round.user !== void 0) out.push(round.user);
+  if (round.tools.length > 0) out.push(toolGroupItem(round.tools));
+  if (round.conclusion !== void 0) out.push(round.conclusion);
+}
+function toolGroupItem(tools) {
+  const entries = tools.map((item) => ({
+    ts: item.ts,
+    name: item.tool?.name ?? "unknown",
+    status: item.tool?.status ?? "unknown",
+    ...item.text !== void 0 ? { text: item.text } : {}
+  }));
+  const last = entries[entries.length - 1];
+  return { ts: last.ts, role: "assistant", kind: "toolGroup", count: entries.length, tools: entries };
+}
 function pageDetail(items, opts) {
   const limit = normalizeLimit(opts.limit);
   const total = items.length;
@@ -5478,23 +5520,29 @@ function normalizeLimit(limit) {
   return Math.min(limit, DETAIL_MAX_LIMIT);
 }
 function buildDetail(deps, args, readOriginSession) {
+  const mode = resolveDetailMode(args.mode);
   const { memberId, sessionId } = resolveMemberSessionId(deps, args.target, readOriginSession);
   const stream = synthesizeDetailStream(deps, sessionId, memberId);
-  const { page, total, truncated } = pageDetail(stream.items, {
+  const sourceTotal = stream.items.length;
+  const projected = mode === "summary" ? projectSummary(stream.items) : stream.items;
+  const { page, total, truncated } = pageDetail(projected, {
     ...args.cursor !== void 0 ? { cursor: args.cursor } : {},
     ...args.limit !== void 0 ? { limit: args.limit } : {}
   });
   return {
     sessionId,
     memberId,
+    mode,
     page,
     ...truncated ? { truncated: true } : {},
-    total
+    total,
+    sourceTotal
   };
 }
 function renderDetailText(result, memberName) {
   const lines = [];
-  lines.push(`member ${memberName} (${result.memberId}) \xB7 session ${result.sessionId} \xB7 ${result.total} items`);
+  const count = result.mode === "summary" ? `${result.total} items (summary of ${result.sourceTotal})` : `${result.total} items`;
+  lines.push(`member ${memberName} (${result.memberId}) \xB7 session ${result.sessionId} \xB7 ${count}`);
   for (const item of result.page.items) {
     const time = item.ts.slice(11, 19);
     if (item.kind === "toolCall") {
@@ -5502,6 +5550,13 @@ function renderDetailText(result, memberName) {
       if (item.text !== void 0) {
         for (const l of item.text.split("\n").slice(0, 6)) lines.push(`    ${l.slice(0, 160)}`);
       }
+      continue;
+    }
+    if (item.kind === "toolGroup") {
+      const counts = /* @__PURE__ */ new Map();
+      for (const tool of item.tools ?? []) counts.set(tool.name, (counts.get(tool.name) ?? 0) + 1);
+      const list = [...counts.entries()].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0)).map(([name, n]) => `${name}\xD7${n}`).join(" \xB7 ");
+      lines.push(`[${time}] ${item.role} \xB7 ${item.count ?? item.tools?.length ?? 0} \u4E2A\u52A8\u4F5C\uFF08${list}\uFF09`);
       continue;
     }
     const badge = item.framed !== void 0 ? ` [team \u2190 ${item.framed.from}]` : "";
@@ -6113,6 +6168,16 @@ article.task {
   cursor: pointer;
 }
 .detail-action:hover, .detail-action:focus-visible { color: var(--at-label-primary); border-color: var(--at-border-l3); }
+/* \u3014\u89C6\u56FE\u4FEE\u8BA2 2026-10-25\u3015\u6A21\u5F0F\u5206\u6BB5\u6309\u94AE\uFF1A\u7B80\u6D01/\u8BE6\u7EC6\uFF08active = \u5F53\u524D\u6A21\u5F0F\uFF09 */
+.detail-modes { display: inline-flex; flex: none; border: 0.5px solid var(--at-border-l2); border-radius: 6px; overflow: hidden; }
+.detail-modes .detail-mode-btn { border: none; border-radius: 0; }
+.detail-modes .detail-mode-btn + .detail-mode-btn { border-left: 0.5px solid var(--at-border-l2); }
+.detail-mode-btn.active {
+  background: color-mix(in srgb, var(--at-business) 14%, transparent);
+  color: var(--at-business);
+  font-weight: 500;
+}
+.detail-mode-btn.active:hover, .detail-mode-btn.active:focus-visible { color: var(--at-business); }
 .detail-list { overflow-y: auto; scrollbar-gutter: stable; padding: 8px 9px 16px 14px; flex: auto; min-height: 0; scrollbar-color: var(--at-scrollbar-thumb) transparent; }
 .detail-state { font-size: 12px; color: var(--at-label-tertiary); padding: 16px 4px; display: flex; align-items: center; gap: 6px; }
 .detail-state.error { color: var(--at-error-text); }
@@ -6161,6 +6226,31 @@ article.task {
   margin: 2px 0 0 18px;
 }
 .tool-row.open + .tool-detail { display: block; }
+/* toolGroup\uFF1A\u6309\u8F6E\u52A8\u4F5C\u7EC4\uFF08\u5934\u90E8\u4E00\u884C\u6C47\u603B\uFF1B\u5C55\u5F00\u9010\u6761\u5DE5\u5177\u884C\uFF0C\u7F29\u8FDB\u5BF9\u9F50 tool-detail\uFF09 */
+.tool-group-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  border-top: 0.5px solid var(--at-border-l2);
+  padding: 4px 0;
+  margin-top: 4px;
+  font: inherit;
+  color: var(--at-label-tertiary);
+  cursor: pointer;
+}
+.tool-group-head:hover, .tool-group-head:focus-visible { color: var(--at-label-primary); }
+.tool-group-head .tool-group-label { font-size: 11px; line-height: 20px; color: var(--at-label-secondary); }
+.tool-group-head:hover .tool-group-label,
+.tool-group-head:focus-visible .tool-group-label { color: var(--at-label-primary); }
+.tool-group-head svg { flex: none; transition: transform 0.12s; }
+.tool-group.open .tool-group-head svg { transform: rotate(180deg); }
+.tool-group-items { display: none; margin-left: 18px; }
+.tool-group.open .tool-group-items { display: block; }
+.tool-group-items > :first-child { border-top: none; }
 .detail-pager { display: flex; align-items: center; gap: 8px; padding: 4px 0 8px; }
 .detail-pager .detail-action[disabled] { opacity: 0.45; cursor: default; }
 `;
@@ -6584,7 +6674,8 @@ function renderTranscript(input) {
       {
         target: input.member,
         ...input.cursor !== void 0 ? { cursor: input.cursor } : {},
-        ...input.limit !== void 0 ? { limit: input.limit } : {}
+        ...input.limit !== void 0 ? { limit: input.limit } : {},
+        ...input.mode !== void 0 ? { mode: input.mode } : {}
       },
       (memberId) => resolveMemberSession(input.teamDir, dataRootOf(input.teamDir), memberId)
     );
@@ -6967,7 +7058,7 @@ var USAGE = `team-ctl \u2014 Agent Teams \u8FD0\u7EF4/\u6392\u969C\u5DE5\u5177
   team-ctl inject-event <teamDir> --sample invalid-member --team <id>
                                                       \u6CE8\u5165\u975E\u6CD5 member \u4E8B\u4EF6\u6837\u4F8B\uFF08\u91CD\u653E \u2192 failure \u7EC8\u6001\uFF09
   team-ctl call <teamDir> <method> [params-json]      \u7ECF socket \u8C03\u534F\u8C03\u8005\uFF08\u65E0\u534F\u8C03\u8005 \u2192 \u53EF\u8BFB\u9519\u8BEF\uFF09
-  team-ctl transcript <teamDir> <member> [--json] [--cursor <seq>] [--limit <n>] [--team <id>]
+  team-ctl transcript <teamDir> <member> [--json] [--cursor <seq>] [--limit <n>] [--mode summary|full] [--team <id>]
                                                       \u6210\u5458\u4F1A\u8BDD\u67E5\u770B\u6D41\uFF08T5.7 CLI \u5BF9\u7B49\uFF1B\u4E0E\u9762\u677F detail \u540C\u4E00\u5408\u6210\uFF09
   team-ctl widget <teamDir> [--out <file.html>] [--theme light|dark] [--lang zh|en] [--standalone]
                                                       ::visualize \u5FEB\u7167\u5361\u7247\u7247\u6BB5 / standalone \u9759\u6001\u9875\uFF08T5.3 CLI \u964D\u7EA7\u94FE\uFF09
@@ -7135,6 +7226,11 @@ async function cmdTranscript(rest) {
     process.stderr.write("team-ctl transcript: --limit \u5FC5\u987B\u662F\u5B89\u5168\u6574\u6570\n");
     return 2;
   }
+  const modeFlag = takeFlag(rest, "--mode");
+  if (modeFlag !== void 0 && modeFlag !== "summary" && modeFlag !== "full") {
+    process.stderr.write("team-ctl transcript: --mode \u4EC5\u652F\u6301 summary|full\n");
+    return 2;
+  }
   const out = renderTranscript({
     teamDir,
     teamId,
@@ -7142,7 +7238,8 @@ async function cmdTranscript(rest) {
     member,
     json: rest.includes("--json"),
     ...cursor !== void 0 ? { cursor } : {},
-    ...limit !== void 0 ? { limit } : {}
+    ...limit !== void 0 ? { limit } : {},
+    ...modeFlag !== void 0 ? { mode: modeFlag } : {}
   });
   process.stdout.write(out + "\n");
   return 0;

@@ -6,7 +6,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { LoadedTeam } from "../coord/replay.js";
 import { TranscriptReader } from "../provider/transcript.js";
-import { buildDetail, renderDetailText, type DetailResult } from "../panel/detail.js";
+import { buildDetail, renderDetailText, type DetailMode, type DetailResult } from "../panel/detail.js";
 import { buildStaticFrame, resolveMemberSession } from "../panel/view-service.js";
 import { renderStandalonePage, renderWidgetFragment } from "../ui-core/widget.js";
 import type { Lang } from "../ui-core/dict.js";
@@ -24,6 +24,8 @@ export interface TranscriptInput {
   json: boolean;
   cursor?: number;
   limit?: number;
+  /** detail 视图模式（缺省 summary；与面板 detail 同契约）。 */
+  mode?: DetailMode;
   /** db 探针注入（测试夹具库；缺省 = 生产 db.sqlite）。 */
   dbPath?: string;
 }
@@ -40,6 +42,7 @@ export function renderTranscript(input: TranscriptInput): string {
         target: input.member,
         ...(input.cursor !== undefined ? { cursor: input.cursor } : {}),
         ...(input.limit !== undefined ? { limit: input.limit } : {}),
+        ...(input.mode !== undefined ? { mode: input.mode } : {}),
       },
       (memberId) => resolveMemberSession(input.teamDir, dataRootOf(input.teamDir), memberId),
     );

@@ -19943,7 +19943,10 @@ function ensureTeamDir(paths) {
   return paths.teamDir;
 }
 function safeTeamId(teamId) {
-  return teamId.replace(/[^A-Za-z0-9._-]/g, (c) => "~" + c.codePointAt(0).toString(16));
+  const escaped = teamId.replace(/[^A-Za-z0-9._-]/g, (c) => "~" + c.codePointAt(0).toString(16));
+  if (escaped === ".") return "~2e";
+  if (escaped === "..") return "~2e2e";
+  return escaped;
 }
 function resolveSocketPath(teamDir) {
   const candidate = path5.join(teamDir, "coordinator.sock");
@@ -26275,6 +26278,13 @@ var PanelViewService = class {
 };
 
 // src/panel/detail.ts
+function resolveDetailMode(mode) {
+  if (mode === void 0) return "summary";
+  if (mode !== "summary" && mode !== "full") {
+    throw new TeamError("TEAM_INVALID_ARGUMENT", 'param "mode" must be "summary" or "full"');
+  }
+  return mode;
+}
 var DETAIL_DEFAULT_LIMIT = 100;
 var DETAIL_MAX_LIMIT = 200;
 var DETAIL_PAGE_BYTES = 256 * 1024;
@@ -26356,6 +26366,41 @@ function stringify(v) {
     return String(v);
   }
 }
+function projectSummary(items) {
+  const out = [];
+  let round = { tools: [] };
+  for (const item of items) {
+    if (item.role === "user" && item.kind === "text") {
+      flushRound(out, round);
+      round = { user: item, tools: [] };
+      continue;
+    }
+    if (item.kind === "toolCall") {
+      round.tools.push(item);
+      continue;
+    }
+    if (item.role === "assistant" && item.kind === "text" && (item.text ?? "").trim().length > 0) {
+      round.conclusion = item;
+    }
+  }
+  flushRound(out, round);
+  return out;
+}
+function flushRound(out, round) {
+  if (round.user !== void 0) out.push(round.user);
+  if (round.tools.length > 0) out.push(toolGroupItem(round.tools));
+  if (round.conclusion !== void 0) out.push(round.conclusion);
+}
+function toolGroupItem(tools) {
+  const entries = tools.map((item) => ({
+    ts: item.ts,
+    name: item.tool?.name ?? "unknown",
+    status: item.tool?.status ?? "unknown",
+    ...item.text !== void 0 ? { text: item.text } : {}
+  }));
+  const last = entries[entries.length - 1];
+  return { ts: last.ts, role: "assistant", kind: "toolGroup", count: entries.length, tools: entries };
+}
 function pageDetail(items, opts) {
   const limit = normalizeLimit(opts.limit);
   const total = items.length;
@@ -26384,18 +26429,23 @@ function normalizeLimit(limit) {
   return Math.min(limit, DETAIL_MAX_LIMIT);
 }
 function buildDetail(deps, args, readOriginSession) {
+  const mode = resolveDetailMode(args.mode);
   const { memberId, sessionId } = resolveMemberSessionId(deps, args.target, readOriginSession);
   const stream = synthesizeDetailStream(deps, sessionId, memberId);
-  const { page, total, truncated } = pageDetail(stream.items, {
+  const sourceTotal = stream.items.length;
+  const projected = mode === "summary" ? projectSummary(stream.items) : stream.items;
+  const { page, total, truncated } = pageDetail(projected, {
     ...args.cursor !== void 0 ? { cursor: args.cursor } : {},
     ...args.limit !== void 0 ? { limit: args.limit } : {}
   });
   return {
     sessionId,
     memberId,
+    mode,
     page,
     ...truncated ? { truncated: true } : {},
-    total
+    total,
+    sourceTotal
   };
 }
 
@@ -26449,12 +26499,14 @@ async function buildDetailCall(deps, args, meta) {
   const reader = deps.reader ?? new TranscriptReader();
   const cursor = typeof args.cursor === "number" ? args.cursor : void 0;
   const limit = typeof args.limit === "number" ? args.limit : void 0;
+  const mode = resolveDetailMode(args.mode);
   return buildDetail(
     { teamDir: paths.teamDir, teamId: identity.teamId, state: loaded.state, reader },
     {
       target: args.target,
       ...cursor !== void 0 ? { cursor } : {},
-      ...limit !== void 0 ? { limit } : {}
+      ...limit !== void 0 ? { limit } : {},
+      mode
     },
     (memberId) => resolveMemberSession(paths.teamDir, deps.dataRoot, memberId)
   );
@@ -27026,7 +27078,7 @@ var TOOLS = [
   },
   {
     name: "team_panel_call",
-    description: "\u9762\u677F\u56DE\u73AF\u5DE5\u5177\uFF08app \u4E13\u7528\uFF09\uFF1A\u9762\u677F\u7ECF callServerTool \u8C03\u7528\u3002label-only = \u5FC3\u8DF3/\u8BA1\u6570\uFF08H12 \u4FDD\u6D3B\u8F7D\u4F53\uFF09\uFF1Baction=refresh = \u5168\u91CF\u89C6\u56FE\u5E27\uFF1Baction=detail + target = \u6210\u5458\u4F1A\u8BDD\u67E5\u770B\u89C6\u56FE\uFF08T5.7\uFF0Ccursor/limit \u5206\u9875\uFF09\uFF1Baction=modelOptions\uFF08memberId \u53EF\u9009\uFF09= \u6A21\u578B\u76EE\u5F55 + \u6210\u5458\u5F53\u524D\u751F\u6548\u503C\uFF1Baction=setMemberModel\uFF08memberId + model/thoughtLevel\uFF09= \u53D7\u63A7\u6210\u5458\u6A21\u578B\u53D8\u66F4\uFF08stage-8\uFF09\u3002",
+    description: "\u9762\u677F\u56DE\u73AF\u5DE5\u5177\uFF08app \u4E13\u7528\uFF09\uFF1A\u9762\u677F\u7ECF callServerTool \u8C03\u7528\u3002label-only = \u5FC3\u8DF3/\u8BA1\u6570\uFF08H12 \u4FDD\u6D3B\u8F7D\u4F53\uFF09\uFF1Baction=refresh = \u5168\u91CF\u89C6\u56FE\u5E27\uFF1Baction=detail + target = \u6210\u5458\u4F1A\u8BDD\u67E5\u770B\u89C6\u56FE\uFF08T5.7\uFF0Ccursor/limit \u5206\u9875\uFF09\uFF1Baction=modelOptions\uFF08memberId \u53EF\u9009\uFF09= \u6A21\u578B\u76EE\u5F55 + \u6210\u5458\u5F53\u524D\u751F\u6548\u503C\uFF1Baction=setMemberModel\uFF08memberId + model/thoughtLevel\uFF09= \u53D7\u63A7\u6210\u5458\u6A21\u578B\u53D8\u66F4\uFF08stage-8\uFF09\u3002detail \u9ED8\u8BA4\u6309\u8F6E\u6458\u8981\uFF08summary\uFF0Cmode \u7F3A\u7701\uFF09\uFF0Cfull \u4E3A\u5BA1\u8BA1\u5168\u91CF\u3002",
     visibility: ["app"],
     inputSchema: {
       type: "object",
@@ -27040,6 +27092,11 @@ var TOOLS = [
         target: { type: "string", description: "detail \u76EE\u6807\u6210\u5458 id\uFF08\u6216\u6210\u5458\u540D\uFF1Blead \u4EA6\u53EF\uFF09" },
         cursor: { type: "number", description: "detail seq \u6E38\u6807\uFF08\u8FD4\u56DE seq < cursor \u7684\u6700\u8FD1\u4E00\u9875\uFF1B\u7F3A\u7701 = \u672B\u9875/\u6700\u8FD1\u4E0A\u4E0B\u6587\uFF09" },
         limit: { type: "number", description: "detail \u9875\u5927\u5C0F\uFF08\u9ED8\u8BA4 100\uFF0C\u4E0A\u9650 200\uFF09" },
+        mode: {
+          type: "string",
+          enum: ["summary", "full"],
+          description: "detail \u89C6\u56FE\u6A21\u5F0F\uFF1Asummary=\u6309\u8F6E\u6B21\u6458\u8981\uFF08\u7F3A\u7701\uFF09\uFF0Cfull=\u5168\u91CF\u8F6C\u5F55"
+        },
         memberId: { type: "string", description: "\u6A21\u578B\u8BBE\u7F6E\u76EE\u6807\u6210\u5458 id\uFF08modelOptions/setMemberModel\uFF09" },
         model: {
           type: "string",

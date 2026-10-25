@@ -274,7 +274,17 @@ function teamPaths(dataRoot, teamId) {
   };
 }
 function safeTeamId(teamId) {
-  return teamId.replace(/[^A-Za-z0-9._-]/g, (c) => "~" + c.codePointAt(0).toString(16));
+  const escaped = teamId.replace(/[^A-Za-z0-9._-]/g, (c) => "~" + c.codePointAt(0).toString(16));
+  if (escaped === ".") return "~2e";
+  if (escaped === "..") return "~2e2e";
+  return escaped;
+}
+function assertPathInside(base, target) {
+  const resolvedBase = path3.resolve(base);
+  const resolvedTarget = path3.resolve(target);
+  if (resolvedTarget !== resolvedBase && !resolvedTarget.startsWith(resolvedBase + path3.sep)) {
+    throw new Error(`path escapes containment: ${target} (base: ${base})`);
+  }
 }
 function resolveSocketPath(teamDir) {
   const candidate = path3.join(teamDir, "coordinator.sock");
@@ -5322,10 +5332,21 @@ function out(obj) {
 }
 async function ackCoordinator(method, params) {
   if (rawSessionId === null) return;
-  const { teamDir } = teamPaths(DATA, role.teamId);
+  const teamDir = safeTeamDir(role.teamId);
+  if (teamDir === null) return;
   await callCoordinator(teamDir, role.teamId, method, params, { timeoutMs: 2e3, connectTimeoutMs: 500 }).catch(
     () => void 0
   );
+}
+function safeTeamDir(teamId) {
+  if (!/^[A-Za-z0-9._-]+$/.test(teamId) || teamId === "." || teamId === "..") return null;
+  const { teamDir } = teamPaths(DATA, teamId);
+  try {
+    assertPathInside(path10.join(DATA, "teams"), teamDir);
+  } catch {
+    return null;
+  }
+  return teamDir;
 }
 async function boundedAck(method, params) {
   await Promise.race([
@@ -5359,12 +5380,14 @@ if (event === "sessionstart") {
   let context = buildSessionStartContext(identityText, interrupt, role.role === "lead" ? leadMode : void 0);
   let pending = [];
   if (role.role === "lead" && rawSessionId !== null) {
-    const { teamDir } = teamPaths(DATA, role.teamId);
-    recordLeadTurnEvent(teamDir, "start");
-    pending = await pendingForLead(teamDir, role.teamId);
-    if (pending.length > 0) {
-      context += `
+    const teamDir = safeTeamDir(role.teamId);
+    if (teamDir !== null) {
+      recordLeadTurnEvent(teamDir, "start");
+      pending = await pendingForLead(teamDir, role.teamId);
+      if (pending.length > 0) {
+        context += `
 ${buildInboxContext(pending.map((m) => m.text))}`;
+      }
     }
   }
   await out({
@@ -5382,37 +5405,41 @@ ${buildInboxContext(pending.map((m) => m.text))}`;
   }
 } else if (event === "userpromptsubmit") {
   if (role.role === "lead" && rawSessionId !== null) {
-    const { teamDir } = teamPaths(DATA, role.teamId);
-    recordLeadTurnEvent(teamDir, "start");
-    const pending = await pendingForLead(teamDir, role.teamId);
-    if (pending.length > 0) {
-      await out({
-        hookSpecificOutput: {
-          hookEventName: "UserPromptSubmit",
-          additionalContext: buildInboxContext(pending.map((m) => m.text))
-        }
-      });
-      writeReceipts(DATA, role.teamId, pending.map((m) => m.messageId), "userpromptsubmit");
-      await boundedAck("mailbox.ack", { session_id: rawSessionId, messageIds: pending.map((m) => m.messageId) });
+    const teamDir = safeTeamDir(role.teamId);
+    if (teamDir !== null) {
+      recordLeadTurnEvent(teamDir, "start");
+      const pending = await pendingForLead(teamDir, role.teamId);
+      if (pending.length > 0) {
+        await out({
+          hookSpecificOutput: {
+            hookEventName: "UserPromptSubmit",
+            additionalContext: buildInboxContext(pending.map((m) => m.text))
+          }
+        });
+        writeReceipts(DATA, role.teamId, pending.map((m) => m.messageId), "userpromptsubmit");
+        await boundedAck("mailbox.ack", { session_id: rawSessionId, messageIds: pending.map((m) => m.messageId) });
+      }
     }
   }
 } else if (event === "stop") {
   if (role.role === "lead" && rawSessionId !== null) {
-    const { teamDir } = teamPaths(DATA, role.teamId);
-    recordLeadTurnEvent(teamDir, "stop");
-    const pending = await pendingForLead(teamDir, role.teamId);
-    if (pending.length > 0) {
-      const runKey = runKeyFor(input.stop_hook_active);
-      const budgetPaths = memberPaths(teamDir, role.teamId);
-      const state = readStopBudget(budgetPaths);
-      if (budgetAllows(state, runKey)) {
-        writeStopBudget(budgetPaths, nextBudget(state, runKey));
-        await out({
-          decision: "block",
-          reason: buildStopReason(pending.map((m) => m.text))
-        });
-        writeReceipts(DATA, role.teamId, pending.map((m) => m.messageId), "stop");
-        await boundedAck("mailbox.ack", { session_id: rawSessionId, messageIds: pending.map((m) => m.messageId) });
+    const teamDir = safeTeamDir(role.teamId);
+    if (teamDir !== null) {
+      recordLeadTurnEvent(teamDir, "stop");
+      const pending = await pendingForLead(teamDir, role.teamId);
+      if (pending.length > 0) {
+        const runKey = runKeyFor(input.stop_hook_active);
+        const budgetPaths = memberPaths(teamDir, role.teamId);
+        const state = readStopBudget(budgetPaths);
+        if (budgetAllows(state, runKey)) {
+          writeStopBudget(budgetPaths, nextBudget(state, runKey));
+          await out({
+            decision: "block",
+            reason: buildStopReason(pending.map((m) => m.text))
+          });
+          writeReceipts(DATA, role.teamId, pending.map((m) => m.messageId), "stop");
+          await boundedAck("mailbox.ack", { session_id: rawSessionId, messageIds: pending.map((m) => m.messageId) });
+        }
       }
     }
   }

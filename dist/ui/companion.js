@@ -488,6 +488,16 @@ article.task {
   cursor: pointer;
 }
 .detail-action:hover, .detail-action:focus-visible { color: var(--at-label-primary); border-color: var(--at-border-l3); }
+/* \u3014\u89C6\u56FE\u4FEE\u8BA2 2026-10-25\u3015\u6A21\u5F0F\u5206\u6BB5\u6309\u94AE\uFF1A\u7B80\u6D01/\u8BE6\u7EC6\uFF08active = \u5F53\u524D\u6A21\u5F0F\uFF09 */
+.detail-modes { display: inline-flex; flex: none; border: 0.5px solid var(--at-border-l2); border-radius: 6px; overflow: hidden; }
+.detail-modes .detail-mode-btn { border: none; border-radius: 0; }
+.detail-modes .detail-mode-btn + .detail-mode-btn { border-left: 0.5px solid var(--at-border-l2); }
+.detail-mode-btn.active {
+  background: color-mix(in srgb, var(--at-business) 14%, transparent);
+  color: var(--at-business);
+  font-weight: 500;
+}
+.detail-mode-btn.active:hover, .detail-mode-btn.active:focus-visible { color: var(--at-business); }
 .detail-list { overflow-y: auto; scrollbar-gutter: stable; padding: 8px 9px 16px 14px; flex: auto; min-height: 0; scrollbar-color: var(--at-scrollbar-thumb) transparent; }
 .detail-state { font-size: 12px; color: var(--at-label-tertiary); padding: 16px 4px; display: flex; align-items: center; gap: 6px; }
 .detail-state.error { color: var(--at-error-text); }
@@ -536,6 +546,31 @@ article.task {
   margin: 2px 0 0 18px;
 }
 .tool-row.open + .tool-detail { display: block; }
+/* toolGroup\uFF1A\u6309\u8F6E\u52A8\u4F5C\u7EC4\uFF08\u5934\u90E8\u4E00\u884C\u6C47\u603B\uFF1B\u5C55\u5F00\u9010\u6761\u5DE5\u5177\u884C\uFF0C\u7F29\u8FDB\u5BF9\u9F50 tool-detail\uFF09 */
+.tool-group-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  border-top: 0.5px solid var(--at-border-l2);
+  padding: 4px 0;
+  margin-top: 4px;
+  font: inherit;
+  color: var(--at-label-tertiary);
+  cursor: pointer;
+}
+.tool-group-head:hover, .tool-group-head:focus-visible { color: var(--at-label-primary); }
+.tool-group-head .tool-group-label { font-size: 11px; line-height: 20px; color: var(--at-label-secondary); }
+.tool-group-head:hover .tool-group-label,
+.tool-group-head:focus-visible .tool-group-label { color: var(--at-label-primary); }
+.tool-group-head svg { flex: none; transition: transform 0.12s; }
+.tool-group.open .tool-group-head svg { transform: rotate(180deg); }
+.tool-group-items { display: none; margin-left: 18px; }
+.tool-group.open .tool-group-items { display: block; }
+.tool-group-items > :first-child { border-top: none; }
 .detail-pager { display: flex; align-items: center; gap: 8px; padding: 4px 0 8px; }
 .detail-pager .detail-action[disabled] { opacity: 0.45; cursor: default; }
 `;
@@ -615,7 +650,11 @@ article.task {
       "detail.toolCall": "\u5DE5\u5177\u8C03\u7528",
       "detail.noSession": "\u4F1A\u8BDD id \u672A\u843D\u5B9A\uFF08\u6210\u5458\u53EF\u80FD\u5C1A\u5728\u51C6\u5907\u4E2D\uFF09",
       "detail.you": "\u6211",
-      "detail.count": "{n} \u6761"
+      "detail.count": "{n} \u6761",
+      "detail.modeSummary": "\u7B80\u6D01",
+      "detail.modeFull": "\u8BE6\u7EC6",
+      "detail.toolGroup": "{n} \u4E2A\u52A8\u4F5C \xB7 {list}",
+      "detail.countSummary": "{n} \u6761 \xB7 \u5171 {sourceTotal} \u6761\u8F6C\u5F55"
     },
     en: {
       "detail.back": "Back",
@@ -634,7 +673,11 @@ article.task {
       "detail.toolCall": "Tool call",
       "detail.noSession": "Session id not settled yet (member may still be provisioning)",
       "detail.you": "me",
-      "detail.count": "{n} items"
+      "detail.count": "{n} items",
+      "detail.modeSummary": "Concise",
+      "detail.modeFull": "Detailed",
+      "detail.toolGroup": "{n} actions \xB7 {list}",
+      "detail.countSummary": "{n} items \xB7 of {sourceTotal} transcript items"
     }
   };
   function t(lang2, key, vars) {
@@ -906,19 +949,43 @@ article.task {
   }
 
   // src/ui-core/detail-render.ts
+  function aggregateToolNames(tools) {
+    const counts = /* @__PURE__ */ new Map();
+    for (const tool of tools) counts.set(tool.name, (counts.get(tool.name) ?? 0) + 1);
+    return [...counts.entries()].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0)).map(([name, n]) => `${name}\xD7${n}`).join(" \xB7 ");
+  }
+  function renderToolEntry(tool) {
+    const hasPayload = tool.text !== void 0 && tool.text.length > 0;
+    const summary = `<span class="tool-summary">${hasPayload ? iconChevron(12) : ""}<span class="tool-name">${esc(tool.name)}</span><span>${esc(tool.status)}</span></span>`;
+    return hasPayload ? `<button class="tool-row" aria-expanded="false">${summary}</button><pre class="tool-detail">${esc(tool.text)}</pre>` : `<span class="tool-static">${summary}</span>`;
+  }
   function renderDetailItem(item, lang2) {
     const time = item.ts.slice(11, 19);
     const badge = item.framed !== void 0 ? `<span class="msg-badge">${esc(td(lang2, "detail.framedFrom", { name: item.framed.from }))}</span>` : "";
     if (item.kind === "toolCall") {
       const tool = item.tool ?? { name: "?", status: "?" };
-      const hasPayload = item.text !== void 0 && item.text.length > 0;
-      const summary = `<span class="tool-summary">${hasPayload ? iconChevron(12) : ""}<span class="tool-name">${esc(tool.name)}</span><span>${esc(tool.status)}</span></span>`;
-      return `<div class="msg assistant"><div class="msg-head"><span class="msg-role">assistant</span><span class="msg-time">${time}</span></div>` + (hasPayload ? `<button class="tool-row" aria-expanded="false">${summary}</button><pre class="tool-detail">${esc(item.text)}</pre>` : `<span class="tool-static">${summary}</span>`) + `</div>`;
+      const entry = {
+        ts: item.ts,
+        name: tool.name,
+        status: tool.status,
+        ...item.text !== void 0 ? { text: item.text } : {}
+      };
+      return `<div class="msg assistant"><div class="msg-head"><span class="msg-role">assistant</span><span class="msg-time">${time}</span></div>` + renderToolEntry(entry) + `</div>`;
+    }
+    if (item.kind === "toolGroup") {
+      const tools = item.tools ?? [];
+      const count = item.count ?? tools.length;
+      const label = td(lang2, "detail.toolGroup", { n: count, list: aggregateToolNames(tools) });
+      return `<div class="msg assistant tool-group"><div class="msg-head"><span class="msg-role">assistant</span><span class="msg-time">${time}</span></div><button class="tool-group-head" aria-expanded="false">${iconChevron(12)}<span class="tool-group-label">${esc(label)}</span></button><div class="tool-group-items">${tools.map((tool) => renderToolEntry(tool)).join("")}</div></div>`;
     }
     const roleLabel = item.role === "user" ? esc(td(lang2, "detail.you")) : item.role;
     return `<div class="msg ${item.role}"><div class="msg-head"><span class="msg-role">${roleLabel}</span><span class="msg-time">${time}</span>${badge}</div><div class="msg-text">${esc(item.text ?? "")}</div></div>`;
   }
-  function renderDetailBody(st, lang2) {
+  function modeOf(st, opts) {
+    if (opts.mode !== void 0) return opts.mode;
+    return st.kind === "ready" ? st.detail.mode : "summary";
+  }
+  function renderDetailBody(st, lang2, opts = {}) {
     if (st.kind === "loading") {
       return `<div class="detail-state"><span class="dot ongoing"></span>${esc(td(lang2, "detail.loading"))}</div>`;
     }
@@ -927,17 +994,28 @@ article.task {
       return `<div class="detail-state error"><span class="dot error"></span><span>${esc(text)}</span></div><div class="detail-pager"><button class="detail-action" data-detail-retry>${esc(td(lang2, "detail.refresh"))}</button></div>`;
     }
     const d = st.detail;
-    const count = `<span class="msg-time">${esc(td(lang2, "detail.count", { n: d.total }))}</span>`;
+    const mode = modeOf(st, opts);
+    const countText = mode === "summary" ? td(lang2, "detail.countSummary", { n: d.total, sourceTotal: d.sourceTotal }) : td(lang2, "detail.count", { n: d.total });
+    const count = `<span class="msg-time">${esc(countText)}</span>`;
     if (d.page.items.length === 0) {
       return `<div class="detail-state">${esc(td(lang2, "detail.empty"))}</div>`;
     }
     const pager = d.page.nextCursor !== void 0 ? `<div class="detail-pager"><button class="detail-action" data-detail-earlier data-cursor="${d.page.nextCursor}">${esc(td(lang2, "detail.earlier"))}</button>${count}</div>` : `<div class="detail-pager">${count}</div>`;
     return pager + d.page.items.map((item) => renderDetailItem(item, lang2)).join("");
   }
+  function renderModeSwitch(mode, lang2) {
+    const button = (target, key) => {
+      const active = mode === target;
+      return `<button class="detail-action detail-mode-btn${active ? " active" : ""}" data-detail-mode="${target}" aria-pressed="${active ? "true" : "false"}">${esc(td(lang2, key))}</button>`;
+    };
+    return `<span class="detail-modes">${button("summary", "detail.modeSummary")}${button("full", "detail.modeFull")}</span>`;
+  }
   function renderDetailView(st, lang2, opts = {}) {
     if (st.kind === "closed") return "";
+    const mode = modeOf(st, opts);
     const actions = [];
     if (st.kind === "ready") {
+      actions.push(renderModeSwitch(mode, lang2));
       actions.push(`<button class="detail-action" data-detail-refresh>${esc(td(lang2, "detail.refresh"))}</button>`);
       actions.push(
         `<button class="detail-action" data-detail-copy title="${esc(st.detail.sessionId)}">${esc(td(lang2, "detail.copySessionId"))}</button>`
@@ -946,7 +1024,7 @@ article.task {
         actions.push(`<button class="detail-action" data-detail-wake>${esc(td(lang2, "detail.wake"))}</button>`);
       }
     }
-    return `<div class="detail-head"><button class="detail-back" data-detail-back>${iconArrowLeft(14)}${esc(td(lang2, "detail.back"))}</button><span class="detail-title">${esc(st.name)}</span><span class="detail-actions">${actions.join("")}</span></div><div class="detail-list" data-detail-list>${renderDetailBody(st, lang2)}</div>`;
+    return `<div class="detail-head"><button class="detail-back" data-detail-back>${iconArrowLeft(14)}${esc(td(lang2, "detail.back"))}</button><span class="detail-title">${esc(st.name)}</span><span class="detail-actions">${actions.join("")}</span></div><div class="detail-list" data-detail-list>${renderDetailBody(st, lang2, { mode })}</div>`;
   }
 
   // src/ui-core/expand.ts
@@ -1029,6 +1107,7 @@ article.task {
   var lang = langOfLocale(navigator.language);
   var frame = null;
   var detailState = { kind: "closed" };
+  var detailMode = "summary";
   var expandStore = memoryExpandStore();
   var detachExpand = null;
   var pinned = false;
@@ -1072,7 +1151,7 @@ html, body { margin: 0; min-height: 100%; background: var(--at-bg-menu); font-fa
     detailView.hidden = !inDetail;
     panelEl.classList.toggle("compact", frame !== null && isCompact(frame) && !inDetail);
     if (inDetail) {
-      detailView.innerHTML = renderDetailView(detailState, lang);
+      detailView.innerHTML = renderDetailView(detailState, lang, { mode: detailMode });
       bindDetail();
       return;
     }
@@ -1218,7 +1297,7 @@ html, body { margin: 0; min-height: 100%; background: var(--at-bg-menu); font-fa
     if (id === void 0) return;
     void openDetail(id, member.querySelector(".name")?.textContent ?? id);
   });
-  async function openDetail(memberId, name, cursor) {
+  async function openDetail(memberId, name, cursor, mode = detailMode) {
     const seq = detailSequencer.begin();
     const fromList = detailState.kind === "closed";
     detailState = { kind: "loading", memberId, name };
@@ -1228,10 +1307,12 @@ html, body { margin: 0; min-height: 100%; background: var(--at-bg-menu); font-fa
       const body = await apiCall({
         action: "detail",
         target: memberId,
+        mode,
         ...cursor !== void 0 ? { cursor } : {}
       });
       if (!detailSequencer.isCurrent(seq)) return;
       if (body.kind === "detail" && body.detail !== void 0) {
+        detailMode = body.detail.mode;
         detailState = { kind: "ready", memberId, name, detail: body.detail };
       } else {
         detailState = {
@@ -1273,12 +1354,32 @@ html, body { margin: 0; min-height: 100%; background: var(--at-bg-menu); font-fa
         }, 1500);
       }
     });
+    for (const btn of detailView.querySelectorAll("[data-detail-mode]")) {
+      btn.addEventListener("click", () => {
+        const next = btn.dataset.detailMode;
+        if (next !== "summary" && next !== "full") return;
+        if (next === detailMode) return;
+        if (detailState.kind !== "ready" && detailState.kind !== "error") return;
+        const { memberId, name } = detailState;
+        detailMode = next;
+        detailSequencer.begin();
+        detailState = { kind: "loading", memberId, name };
+        void openDetail(memberId, name, void 0, next);
+      });
+    }
     detailView.querySelector("[data-detail-earlier]")?.addEventListener("click", (ev) => {
       const cursor = Number(ev.currentTarget.dataset.cursor);
       if (detailState.kind === "ready" && Number.isFinite(cursor)) {
         void openDetail(detailState.memberId, detailState.name, cursor);
       }
     });
+    for (const head of detailView.querySelectorAll("button.tool-group-head")) {
+      head.addEventListener("click", () => {
+        const group = head.closest(".tool-group");
+        const open2 = group?.classList.toggle("open") ?? false;
+        head.setAttribute("aria-expanded", open2 ? "true" : "false");
+      });
+    }
     for (const row of detailView.querySelectorAll("button.tool-row")) {
       row.addEventListener("click", () => {
         const o = row.classList.toggle("open");

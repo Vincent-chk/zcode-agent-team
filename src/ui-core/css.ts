@@ -432,6 +432,16 @@ article.task {
   cursor: pointer;
 }
 .detail-action:hover, .detail-action:focus-visible { color: var(--at-label-primary); border-color: var(--at-border-l3); }
+/* 〔视图修订 2026-10-25〕模式分段按钮：简洁/详细（active = 当前模式） */
+.detail-modes { display: inline-flex; flex: none; border: 0.5px solid var(--at-border-l2); border-radius: 6px; overflow: hidden; }
+.detail-modes .detail-mode-btn { border: none; border-radius: 0; }
+.detail-modes .detail-mode-btn + .detail-mode-btn { border-left: 0.5px solid var(--at-border-l2); }
+.detail-mode-btn.active {
+  background: color-mix(in srgb, var(--at-business) 14%, transparent);
+  color: var(--at-business);
+  font-weight: 500;
+}
+.detail-mode-btn.active:hover, .detail-mode-btn.active:focus-visible { color: var(--at-business); }
 .detail-list { overflow-y: auto; scrollbar-gutter: stable; padding: 8px 9px 16px 14px; flex: auto; min-height: 0; scrollbar-color: var(--at-scrollbar-thumb) transparent; }
 .detail-state { font-size: 12px; color: var(--at-label-tertiary); padding: 16px 4px; display: flex; align-items: center; gap: 6px; }
 .detail-state.error { color: var(--at-error-text); }
@@ -480,6 +490,31 @@ article.task {
   margin: 2px 0 0 18px;
 }
 .tool-row.open + .tool-detail { display: block; }
+/* toolGroup：按轮动作组（头部一行汇总；展开逐条工具行，缩进对齐 tool-detail） */
+.tool-group-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  border-top: 0.5px solid var(--at-border-l2);
+  padding: 4px 0;
+  margin-top: 4px;
+  font: inherit;
+  color: var(--at-label-tertiary);
+  cursor: pointer;
+}
+.tool-group-head:hover, .tool-group-head:focus-visible { color: var(--at-label-primary); }
+.tool-group-head .tool-group-label { font-size: 11px; line-height: 20px; color: var(--at-label-secondary); }
+.tool-group-head:hover .tool-group-label,
+.tool-group-head:focus-visible .tool-group-label { color: var(--at-label-primary); }
+.tool-group-head svg { flex: none; transition: transform 0.12s; }
+.tool-group.open .tool-group-head svg { transform: rotate(180deg); }
+.tool-group-items { display: none; margin-left: 18px; }
+.tool-group.open .tool-group-items { display: block; }
+.tool-group-items > :first-child { border-top: none; }
 .detail-pager { display: flex; align-items: center; gap: 8px; padding: 4px 0 8px; }
 .detail-pager .detail-action[disabled] { opacity: 0.45; cursor: default; }
 `;
