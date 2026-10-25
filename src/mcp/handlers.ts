@@ -32,7 +32,7 @@ export interface HandleToolOptions {
   now?: () => number;
 }
 
-/** 工具分发（10 工具；未知工具 → 可读错误，不贴假 code）。 */
+/** 工具分发（9 工具；未知工具 → 可读错误，不贴假 code）。 */
 export async function handleTeamToolCall(
   opts: HandleToolOptions,
   tool: string,
@@ -75,13 +75,12 @@ async function dispatch(
   switch (tool) {
     case "spawn_teammate":
       // 输出 = {member:MEMBER_VIEW}（02 §9.3；方法表结果原样即此形，target 改名在域层）
+      // 0.4.0：无 model/thoughtLevel 参数——成员模型唯一路线 = provider 每轮跟随 Lead。
       return backend.spawnTeammate(identity, {
         name: args.name,
         description: args.description,
         prompt: args.prompt,
         ...(args.context !== undefined ? { context: args.context } : {}),
-        ...(args.model !== undefined ? { model: args.model } : {}),
-        ...(args.thoughtLevel !== undefined ? { thoughtLevel: args.thoughtLevel } : {}),
       });
     case "send_message":
       guardNonEmptyString(args.message, "message");
@@ -92,16 +91,7 @@ async function dispatch(
       // 〔对齐轮〕0.2.1 D3：interrupt=false 时工具未注册 → 按未知工具拒绝（不静默、不贴假 code）
       if (!backend.interruptEnabled) throw new TypeError("unsupported team tool: interrupt_agent");
       return backend.interruptAgent(identity, { target: args.target });
-    case "member_set_model":
-      // 02 §9.13：model / thoughtLevel 至少一项（JSON Schema 无法表达 oneOf 必填 → 工具面守卫）
-      if (args.model === undefined && args.thoughtLevel === undefined) {
-        throw invalidArg('param "model" or "thoughtLevel" is required');
-      }
-      return backend.setMemberModel(identity, {
-        target: args.target,
-        ...(args.model !== undefined ? { model: args.model } : {}),
-        ...(args.thoughtLevel !== undefined ? { thoughtLevel: args.thoughtLevel } : {}),
-      });
+    // 0.4.0 注销 member_set_model case（工具面 9 个；未知工具由上游分派拒绝）。
     case "wait_agent":
       return backend.waitAgent(
         identity,

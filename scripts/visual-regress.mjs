@@ -215,33 +215,8 @@ for (const file of pages) {
       const emptyState = q(".detail-state");
       if (emptyState !== null && out.msgCount === 0) out.emptyStateText = emptyState.textContent.trim();
     }
-    // stage-8 D：成员齿轮 / 设置弹窗 / 凭据输入面
-    const gear = q("[data-member-gear]");
-    if (gear) {
-      const card = gear.closest(".member-card");
-      out.gearCount = document.querySelectorAll("[data-member-gear]").length;
-      out.memberCardCount = document.querySelectorAll(".member-card").length;
-      out.gearW = rect(gear).width;
-      out.gearH = rect(gear).height;
-      out.gearIconW = rect(gear.querySelector("svg")).width;
-      out.gearRightInset = rect(card).right - rect(gear).right;
-      out.gearTopInset = rect(gear).top - rect(card).top;
-      out.gearInsideButton = gear.closest("button.member") !== null;
-    }
-    const settings = q("[data-settings-overlay]");
-    if (settings) {
-      out.settingsPresent = true;
-      out.settingsSelects = document.querySelectorAll(".settings-modal select").length;
-      out.settingsHasApply = q("[data-settings-apply]") !== null;
-      out.settingsHasRefresh = q("[data-settings-refresh]") !== null;
-      const badge = q(".source-badge");
-      if (badge) out.settingsBadge = badge.textContent.trim();
-      const hint = q(".settings-advanced-hint");
-      if (hint) out.settingsAdvancedHint = hint.textContent.trim();
-      out.settingsFitsPanel = rect(q(".settings-modal")).width <= rect(panel).width + 0.5;
-      out.settingsProviderGroups = document.querySelectorAll("[data-settings-provider] optgroup").length;
-      out.settingsDisabledProvider = document.querySelector("[data-settings-provider] option[disabled]") !== null;
-    }
+    // 0.4.0：齿轮/设置弹窗下线 → 全页面必须不存在任何成员配置入口（零容忍反向断言）
+    out.gearCount = document.querySelectorAll("[data-member-gear], .member-card, [data-settings-overlay]").length;
     out.passwordInputs = document.querySelectorAll("input[type=password]").length;
     out.credentialInputs = document.querySelectorAll(
       "input[type=password], input[name*=apiKey i], input[name*=baseURL i], textarea",
@@ -259,38 +234,12 @@ for (const file of pages) {
     if (actual === undefined) return;
     if (actual !== expected) asserts.push(`${name}: ${JSON.stringify(actual)} ≠ ${JSON.stringify(expected)}`);
   };
-  // stage-8 D：凭据输入面零容忍（全部页面：无 password input/凭据字段/textarea）
+  // 0.4.0：凭据输入面零容忍 + 成员配置入口零存在（齿轮/member-card/弹窗全下线）
   eq("passwordInputs(零凭据输入)", geo.passwordInputs, 0);
   eq("credentialInputs(零凭据字段)", geo.credentialInputs, 0);
-  // 齿轮（仅 panel 载体 + teammate 行；card 载体保持默认关）
-  if (geo.gearCount !== undefined) {
-    eq("gearCount(=memberCardCount)", geo.gearCount, geo.memberCardCount);
-    eq("gearInsideButton(不嵌套 button)", geo.gearInsideButton, false);
-    near("gearW(22px 命中区)", geo.gearW, 22);
-    near("gearH(22px 命中区)", geo.gearH, 22);
-    near("gearIconW(14px)", geo.gearIconW, 14);
-    near("gearRightInset(右上角 4px)", geo.gearRightInset, 4);
-    near("gearTopInset(右上角 4px)", geo.gearTopInset, 4);
-  } else if (carrier === "card" && geo.gearCount !== undefined) {
-    // 卡片载体（::visualize 沙箱）无成员设置入口
-    asserts.push("card carrier must not render member gear");
-  }
+  eq("gearCount(配置入口零存在)", geo.gearCount, 0);
 
-  if (fixture.startsWith("settings")) {
-    // stage-8 D 弹窗（open 态）：控件齐备 + 来源 badge + 高级模式引导 + 弹窗适配面板宽
-    eq("settingsPresent", geo.settingsPresent, true);
-    eq("settingsSelects(provider/model/level = 3)", geo.settingsSelects, 3);
-    eq("settingsHasApply", geo.settingsHasApply, true);
-    eq("settingsHasRefresh(高级模式刷新)", geo.settingsHasRefresh, true);
-    eq("settingsProviderGroups(启用/不可用两组)", geo.settingsProviderGroups, 2);
-    eq("settingsDisabledProvider(禁用 provider 灰显)", geo.settingsDisabledProvider, true);
-    eq("settingsFitsPanel", geo.settingsFitsPanel, true);
-    eq("settingsBadge(继承自 Lead)", geo.settingsBadge, lang === "zh" ? "继承自 Lead" : "Inherited from Lead");
-    const wantHint = lang === "zh" ? "ZCode 设置 → 模型服务" : "ZCode Settings → Model services";
-    if (geo.settingsAdvancedHint === undefined || !geo.settingsAdvancedHint.includes(wantHint)) {
-      asserts.push(`settingsAdvancedHint: ${JSON.stringify(geo.settingsAdvancedHint)} 缺 ${wantHint}`);
-    }
-  } else if (fixture.startsWith("detail")) {
+  if (fixture.startsWith("detail")) {
     // V16（T5.7 查看视图版面；无 DSH 参照——判据 = 几何不破版 + 只读边界 + 三态）
     eq("detailPresent", geo.detailPresent, true);
     eq("detailFillsPanel(V16 占满内容区)", geo.detailFillsPanel, true);

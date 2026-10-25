@@ -2,13 +2,9 @@
 //   {label?}                                   → 心跳/回环计数（stage-1 基线不回归，H12 载体）
 //   {action:"refresh"}                         → 全量视图帧（断线重连/手动刷新）
 //   {action:"detail", target, cursor?, limit?} → 成员会话查看视图（T5.7 detail 契约）
-//   {action:"modelOptions", memberId?}         → 模型目录（+成员当前生效值与来源；stage-8 Round D）
-//   {action:"setMemberModel", memberId, model?, thoughtLevel?} → 受控成员模型变更（stage-8 Round D）
 //
-// 〔stage-8 Round D 规格例外登记〕本通道历史上零变更能力（F07/F14）。Round D 经批准开一个
-// **受控**变更动作 setMemberModel：仅 Lead 身份、仅 active teammate、复用 backend.setMemberModel
-// （member.set_model 方法表通路，含目录消歧/校验/立即-or-pending 语义）；面板不新增任何
-// 凭据输入。02 规格 §10.1/§10.6 的修订留 Round E 文档轮统一回写（TODO 登记）。
+// 面板通道零变更能力（F07/F14）：stage-8 Round D 曾开过的受控变更动作 modelOptions/setMemberModel
+// 已于 0.4.0 注销（成员模型唯一路线 = 每轮跟随 Lead；规格例外随之关闭，见 traceability §18）。
 // 失败返回 {error:{code,message}}（可读原因，面板呈现可重试错误态，不静默）。
 // daemon 接线：tools/call name==="team_panel_call" → handlePanelCall（本文件）。
 
@@ -16,15 +12,8 @@ import { TeamError } from "../domain/errors.js";
 import { teamPaths } from "../coord/paths.js";
 import { load } from "../coord/replay.js";
 import { TranscriptReader } from "../provider/transcript.js";
-import { resolveIdentity, type CallMeta, type ResolvedIdentity } from "../mcp/identity.js";
+import { resolveIdentity, type CallMeta } from "../mcp/identity.js";
 import { requireMembership } from "../domain/projection.js";
-import { readModelCatalog } from "../provider/model-catalog.js";
-import { memberPaths, readModelFailed, readOrigin } from "../provider/member-files.js";
-import { parseModelSelection } from "../provider/model-selection.js";
-import type { ModelCatalog } from "../provider/model-catalog.js";
-import type { TeamToolBackend } from "../mcp/backend.js";
-import type { TeamState } from "../domain/projection.js";
-import type { MemberModelCurrent, ModelSource } from "../ui-core/member-settings.js";
 import { PanelViewService, resolveMemberSession } from "./view-service.js";
 import { buildDetail, renderDetailText, SessionNotSettledError, type DetailResult } from "./detail.js";
 import type { ViewFrame } from "../ui-core/view.js";
@@ -35,24 +24,12 @@ export type PanelCallArgs = {
   target?: unknown;
   cursor?: unknown;
   limit?: unknown;
-  /** stage-8 D：成员设置（模型目录/变更）。 */
-  memberId?: unknown;
-  model?: unknown;
-  thoughtLevel?: unknown;
 };
 
 export type PanelCallResult =
   | { kind: "heartbeat"; counter: number; ts: string; label: string | null }
   | { kind: "view"; frame: ViewFrame }
   | { kind: "detail"; detail: DetailResult }
-  | { kind: "modelOptions"; memberId?: string; memberName?: string; catalog: ModelCatalog; current?: MemberModelCurrent }
-  | {
-      kind: "modelSet";
-      applied: "now" | "next-turn" | "failed";
-      memberId: string;
-      /** applied:"failed" 时的宿主原文原因（GitHub #6：失败必须可读，不包装成下一轮生效）。 */
-      reason?: string;
-    }
   | { kind: "error"; code: string; message: string; reason?: string };
 
 export interface PanelCallDeps {
@@ -63,10 +40,6 @@ export interface PanelCallDeps {
   reader?: TranscriptReader;
   /** 心跳计数递增（daemon 侧 view.counter 同源，stage-1 语义保持）。 */
   bumpCounter: () => number;
-  /** 模型变更通路（stage-8 D：daemon 注入同一 backend 实例）。 */
-  backend?: TeamToolBackend;
-  /** 模型目录（缺省 readModelCatalog；daemon 注入 mtime 缓存读器）。 */
-  catalog?: () => ModelCatalog;
   now?: () => string;
   warn?: (message: string) => void;
 }
@@ -94,12 +67,6 @@ export async function handlePanelCall(
         throw new TeamError("TEAM_INVALID_ARGUMENT", 'param "target" must be a non-empty string');
       }
       return { kind: "detail", detail: await buildDetailCall(deps, args, meta) };
-    }
-    if (action === "modelOptions") {
-      return await buildModelOptions(deps, args, meta);
-    }
-    if (action === "setMemberModel") {
-      return await applyMemberModel(deps, args, meta);
     }
     throw new TeamError("TEAM_INVALID_ARGUMENT", `unknown panel action "${String(action)}"`);
   } catch (err) {
@@ -150,162 +117,6 @@ async function buildDetailCall(
 
 function now(deps: PanelCallDeps): string {
   return deps.now !== undefined ? deps.now() : new Date().toISOString();
-}
-
-// ---------------------------------------------------------------- stage-8 D：模型设置
-
-interface PanelMemberContext {
-  identity: ResolvedIdentity;
-  state: TeamState;
-  teamDir: string;
-}
-
-/** 面板调用上下文：身份解析 → 重放态 → 成员资格（C5 fail-closed，与 detail 同口径）。 */
-async function loadPanelMemberContext(deps: PanelCallDeps, meta: CallMeta | undefined): Promise<PanelMemberContext> {
-  const identity = resolveIdentity({
-    dataRoot: deps.dataRoot,
-    meta,
-    bootTimeMs: deps.bootTimeMs,
-  });
-  const paths = teamPaths(deps.dataRoot, identity.teamId);
-  const loaded = await load(paths.teamDir, identity.teamId);
-  requireMembership(() => {
-    if (loaded.state.failure !== undefined) throw new Error(loaded.state.failure);
-    return loaded.state;
-  }, identity.agentId);
-  return { identity, state: loaded.state, teamDir: paths.teamDir };
-}
-
-/** 成员 id → active teammate（不存在/failed/provisioning → TEAM_MEMBER_NOT_FOUND）。 */
-function requireActiveMember(state: TeamState, memberId: string): { id: string; name: string } {
-  const member = state.members.find((m) => m.id === memberId);
-  if (member === undefined || member.phase !== "active") {
-    throw new TeamError("TEAM_MEMBER_NOT_FOUND", `active teammate "${memberId}" not found`);
-  }
-  return { id: member.id, name: member.name };
-}
-
-/**
- * 当前生效模型 + 来源：origin 配置（explicit/inherited 权威）→ 会话库 setModel 条目
- * （observed：非本插件写入）→ 消息实测模型（observed）→ cli-default（无记录）。
- * 附 `failedApply`（GitHub #6）：最近一次终态失败的选择与原因（读 model-failed.json）。
- */
-/** 终态失败记录 → 弹窗展示字段（GitHub #6；损坏/缺失 → undefined，不阻断目录读取）。 */
-function failedApplyOf(teamDir: string, memberId: string): MemberModelCurrent["failedApply"] {
-  let record;
-  try {
-    record = readModelFailed(memberPaths(teamDir, memberId));
-  } catch {
-    return undefined;
-  }
-  if (record === undefined) return undefined;
-  const selection = parseModelSelection(record.modelSelection);
-  if (selection === undefined) return undefined;
-  return {
-    modelId: selection.modelId,
-    ...(selection.providerId !== undefined ? { providerId: selection.providerId } : {}),
-    ...(selection.reasoningLevel !== undefined ? { reasoningLevel: selection.reasoningLevel } : {}),
-    reason: typeof record.reason === "string" ? record.reason : "",
-  };
-}
-
-function currentModelOf(
-  deps: PanelCallDeps,
-  teamDir: string,
-  dataRoot: string,
-  memberId: string,
-): MemberModelCurrent {
-  const origin = readOrigin(memberPaths(teamDir, memberId));
-  const sessionId = resolveMemberSession(teamDir, dataRoot, memberId);
-  const reader = deps.reader ?? new TranscriptReader();
-  if (origin?.modelSelection !== undefined) {
-    const selection = origin.modelSelection;
-    const source: ModelSource =
-      origin.modelSource === "inherited" ? "inherited" : origin.modelSource === "explicit" ? "explicit" : "explicit";
-    return {
-      model: selection.modelId,
-      providerId: selection.providerId,
-      ...(selection.reasoningLevel !== undefined ? { reasoningLevel: selection.reasoningLevel } : {}),
-      source,
-    };
-  }
-  if (sessionId !== undefined) {
-    const entry = reader.latestModelSelection(sessionId);
-    if (entry !== undefined) {
-      return {
-        model: entry.modelId,
-        providerId: entry.providerId,
-        ...(entry.reasoningLevel !== undefined ? { reasoningLevel: entry.reasoningLevel } : {}),
-        source: "observed",
-      };
-    }
-    const observed = reader.latestModel(sessionId);
-    if (observed !== undefined) return { model: observed, source: "observed" };
-  }
-  return { source: "cli-default" };
-}
-
-/** modelOptions：memberId 缺省 → 仅目录（面板全局刷新）；给定 → 目录 + 该成员当前值与来源。 */
-async function buildModelOptions(
-  deps: PanelCallDeps,
-  args: PanelCallArgs,
-  meta: CallMeta | undefined,
-): Promise<Extract<PanelCallResult, { kind: "modelOptions" }>> {
-  const catalog = (deps.catalog ?? (() => readModelCatalog()))();
-  if (args.memberId === undefined) return { kind: "modelOptions", catalog };
-  if (typeof args.memberId !== "string" || args.memberId.length === 0) {
-    throw new TeamError("TEAM_INVALID_ARGUMENT", 'param "memberId" must be a non-empty string');
-  }
-  const ctx = await loadPanelMemberContext(deps, meta);
-  const member = requireActiveMember(ctx.state, args.memberId);
-  const failedApply = failedApplyOf(ctx.teamDir, member.id);
-  const observed = currentModelOf(deps, ctx.teamDir, deps.dataRoot, member.id);
-  return {
-    kind: "modelOptions",
-    memberId: member.id,
-    memberName: member.name,
-    catalog,
-    current: { ...observed, ...(failedApply !== undefined ? { failedApply } : {}) },
-  };
-}
-
-/** setMemberModel：受控变更（只有 Lead 身份；active teammate；复用 backend 通路）。 */
-async function applyMemberModel(
-  deps: PanelCallDeps,
-  args: PanelCallArgs,
-  meta: CallMeta | undefined,
-): Promise<Extract<PanelCallResult, { kind: "modelSet" }>> {
-  if (typeof args.memberId !== "string" || args.memberId.length === 0) {
-    throw new TeamError("TEAM_INVALID_ARGUMENT", 'param "memberId" must be a non-empty string');
-  }
-  const hasModel = typeof args.model === "string" && args.model.length > 0;
-  const hasLevel = typeof args.thoughtLevel === "string" && args.thoughtLevel.length > 0;
-  if (args.model !== undefined && !hasModel) {
-    throw new TeamError("TEAM_INVALID_ARGUMENT", 'param "model" must be a non-empty string');
-  }
-  if (args.thoughtLevel !== undefined && !hasLevel) {
-    throw new TeamError("TEAM_INVALID_ARGUMENT", 'param "thoughtLevel" must be a non-empty string');
-  }
-  if (!hasModel && !hasLevel) {
-    throw new TeamError("TEAM_INVALID_ARGUMENT", 'param "model" or "thoughtLevel" is required');
-  }
-  const backend = deps.backend;
-  if (backend === undefined) {
-    throw new TeamError("TEAM_INVALID_ARGUMENT", "model changes are unavailable in this panel session");
-  }
-  const ctx = await loadPanelMemberContext(deps, meta);
-  const member = requireActiveMember(ctx.state, args.memberId);
-  const applied = await backend.setMemberModel(ctx.identity, {
-    target: member.name,
-    ...(hasModel ? { model: args.model } : {}),
-    ...(hasLevel ? { thoughtLevel: args.thoughtLevel } : {}),
-  });
-  return {
-    kind: "modelSet",
-    applied: applied.applied,
-    memberId: member.id,
-    ...(applied.reason !== undefined ? { reason: applied.reason } : {}),
-  };
 }
 
 /** team-ctl transcript 的 CLI 渲染出口（F12；与面板 detail 同一合成函数）。 */

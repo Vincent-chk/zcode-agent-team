@@ -136,35 +136,6 @@ describe("AppServerSessionBreeder.createChild", () => {
     expect(setModel.params.model).toEqual({ providerId: "prov-b", modelId: "model-b" });
   });
 
-  it("setModel 失败 → 容忍继续 spawn；只记目标三元组与错误文本（不落 result）", async () => {
-    const records: Array<Record<string, unknown>> = [];
-    process.env.FAKE_APP_SERVER_FAIL = "setModel";
-    const b = new AppServerSessionBreeder({
-      zcode: { command: process.execPath, argvPrefix: [FAKE], source: "env" },
-      tasksIndexPath,
-      log: (record) => records.push(record),
-      readyTimeoutMs: 8_000,
-    });
-    const result = await b.createChild({
-      teamId: "sess_lead",
-      workspacePath: root,
-      modelSelection: { providerId: "prov-c", modelId: "model-c", reasoningLevel: "max" },
-    });
-    expect(result.childSessionId).toBe("sess_fake_child");
-    expect(taskRow("sess_fake_anchor")).toMatchObject({ deleted: 1 });
-    expect(records.some((r) => r.event === "session-bred")).toBe(true);
-    const failure = records.find((r) => r.event === "model-set-failed")!;
-    expect(failure).toMatchObject({
-      teamId: "sess_lead",
-      childSessionId: "sess_fake_child",
-      providerId: "prov-c",
-      modelId: "model-c",
-      reasoningLevel: "max",
-      message: "fake setModel failure",
-    });
-    expect(failure).not.toHaveProperty("result"); // 巨型消息快照不得整包落日志
-  });
-
   it("已存在同 task_id 的用户任务 → 拒绝 tombstone（保护用户行）", async () => {
     const db = new DatabaseSync(tasksIndexPath);
     db.prepare(
@@ -354,9 +325,8 @@ describe("AppServerSessionBreeder.applyModelSelection（mid-life）", () => {
   });
 });
 
-describe("AppServerSessionBreeder.createChild · 模型兜底（Round E-1）", () => {
+describe("AppServerSessionBreeder.createChild · 继承模型同步失败即抛（0.4.0）", () => {
   const PRIMARY = { providerId: "account:unavailable-plan", modelId: "GLM-5.3", reasoningLevel: "max" };
-  const FALLBACK = { providerId: "fallback-prov", modelId: "fallback-model", reasoningLevel: "max" };
 
   function readRequests(): Array<{ method: string; params: Record<string, unknown> }> {
     return fs
@@ -366,7 +336,7 @@ describe("AppServerSessionBreeder.createChild · 模型兜底（Round E-1）", (
       .map((l) => JSON.parse(l) as { method: string; params: Record<string, unknown> });
   }
 
-  it("主选成功 → appliedModel=primary；不尝试兜底；日志 model-set(primary)", async () => {
+  it("模型应用成功 → appliedModel 记录；一次 setModel；日志 model-set", async () => {
     const records: Array<Record<string, unknown>> = [];
     const b = new AppServerSessionBreeder({
       zcode: { command: process.execPath, argvPrefix: [FAKE], source: "env" },
@@ -378,52 +348,18 @@ describe("AppServerSessionBreeder.createChild · 模型兜底（Round E-1）", (
       teamId: "sess_lead",
       workspacePath: root,
       modelSelection: PRIMARY,
-      modelFallback: FALLBACK,
     });
     expect(result.appliedModel).toEqual(PRIMARY);
-    // 主选成功 → 只有一次 setModel（3 个请求：create / side / setModel）
     expect(readRequests().filter((r) => r.method === "session/setModel")).toHaveLength(1);
     expect(records.find((r) => r.event === "model-set")).toMatchObject({
-      which: "primary",
       providerId: PRIMARY.providerId,
       modelId: PRIMARY.modelId,
+      reasoningLevel: "max",
     });
     expect(records.some((r) => r.event === "model-set-failed")).toBe(false);
   });
 
-  it("主选失败 → 兜底成功：appliedModel=fallback；日志 model-set-failed + model-set(fallback)", async () => {
-    const records: Array<Record<string, unknown>> = [];
-    process.env.FAKE_APP_SERVER_FAIL = "setModel-once";
-    const b = new AppServerSessionBreeder({
-      zcode: { command: process.execPath, argvPrefix: [FAKE], source: "env" },
-      tasksIndexPath,
-      log: (record) => records.push(record),
-      readyTimeoutMs: 8_000,
-    });
-    const result = await b.createChild({
-      teamId: "sess_lead",
-      workspacePath: root,
-      modelSelection: PRIMARY,
-      modelFallback: FALLBACK,
-    });
-    expect(result.appliedModel).toEqual(FALLBACK);
-    const setModelCalls = readRequests().filter((r) => r.method === "session/setModel");
-    expect(setModelCalls).toHaveLength(2);
-    expect(setModelCalls[0]!.params.model).toMatchObject({ modelId: PRIMARY.modelId });
-    expect(setModelCalls[1]!.params.model).toMatchObject({ modelId: FALLBACK.modelId });
-    expect(records.find((r) => r.event === "model-set-failed")).toMatchObject({
-      childSessionId: "sess_fake_child",
-      modelId: PRIMARY.modelId,
-      message: "fake setModel failure",
-    });
-    expect(records.find((r) => r.event === "model-set")).toMatchObject({
-      which: "fallback",
-      modelId: FALLBACK.modelId,
-    });
-    expect(records.some((r) => r.event === "model-set-fallback-failed")).toBe(false);
-  });
-
-  it("主选失败 + 兜底也失败 → 无 appliedModel；两条失败日志", async () => {
+  it("模型应用失败 → 抛 BreedError(model-rejected)；绝不静默返回成功（不谎报继承）", async () => {
     const records: Array<Record<string, unknown>> = [];
     process.env.FAKE_APP_SERVER_FAIL = "setModel";
     const b = new AppServerSessionBreeder({
@@ -432,42 +368,34 @@ describe("AppServerSessionBreeder.createChild · 模型兜底（Round E-1）", (
       log: (record) => records.push(record),
       readyTimeoutMs: 8_000,
     });
-    const result = await b.createChild({
-      teamId: "sess_lead",
-      workspacePath: root,
-      modelSelection: PRIMARY,
-      modelFallback: FALLBACK,
-    });
-    expect(result.appliedModel).toBeUndefined();
-    expect(result.childSessionId).toBe("sess_fake_child"); // spawn 仍然成功（不因模型失败而失败）
-    expect(readRequests().filter((r) => r.method === "session/setModel")).toHaveLength(2);
-    const primaryFail = records.find((r) => r.event === "model-set-failed")!;
-    const fallbackFail = records.find((r) => r.event === "model-set-fallback-failed")!;
-    expect(primaryFail).toMatchObject({ modelId: PRIMARY.modelId, message: "fake setModel failure" });
-    expect(fallbackFail).toMatchObject({ modelId: FALLBACK.modelId, message: "fake setModel failure" });
-    expect(primaryFail).not.toHaveProperty("result");
-    expect(fallbackFail).not.toHaveProperty("result");
+    const err = await b
+      .createChild({ teamId: "sess_lead", workspacePath: root, modelSelection: PRIMARY })
+      .catch((e: unknown) => e);
+    expect(err).toMatchObject({ name: "BreedError", code: "model-rejected" });
+    // 错误文本 = 继承语义可读原因（resume-provider 据此写 model-failed）
+    expect(String((err as Error).message)).toContain("inherited model");
+    // 失败留痕 = model-set-failed（单次尝试：setModel 一次，无兜底档；
+    // 巨型消息快照不得整包落日志 → 只记目标三元组与错误文本）
+    expect(readRequests().filter((r) => r.method === "session/setModel")).toHaveLength(1);
+    const failure = records.find((r) => r.event === "model-set-failed")!;
+    expect(failure).toMatchObject({ providerId: PRIMARY.providerId, modelId: PRIMARY.modelId, message: "fake setModel failure" });
+    expect(failure).not.toHaveProperty("result");
     expect(records.some((r) => r.event === "model-set")).toBe(false);
   });
 
-  it("无兜底 + 主选失败 → 无 appliedModel，只记 model-set-failed（不出现 fallback 日志）", async () => {
-    const records: Array<Record<string, unknown>> = [];
+  it("模型失败路径 anchor 已 tombstone（隐藏不露出）", async () => {
     process.env.FAKE_APP_SERVER_FAIL = "setModel";
     const b = new AppServerSessionBreeder({
       zcode: { command: process.execPath, argvPrefix: [FAKE], source: "env" },
       tasksIndexPath,
-      log: (record) => records.push(record),
+      log: () => undefined,
       readyTimeoutMs: 8_000,
     });
-    const result = await b.createChild({
-      teamId: "sess_lead",
-      workspacePath: root,
-      modelSelection: PRIMARY,
-    });
-    expect(result.appliedModel).toBeUndefined();
-    expect(readRequests().filter((r) => r.method === "session/setModel")).toHaveLength(1);
-    expect(records.some((r) => r.event === "model-set-failed")).toBe(true);
-    expect(records.some((r) => r.event === "model-set-fallback-failed")).toBe(false);
+    const pending = b.createChild({ teamId: "sess_lead", workspacePath: root, modelSelection: PRIMARY });
+    await expect(pending).rejects.toThrow(/inherited model/);
+    const row = taskRow("sess_fake_anchor");
+    expect(row).toBeDefined();
+    expect(row!.deleted).toBe(1); // 培育失败清理（disposeBredSessions 幂等补写）
   });
 });
 

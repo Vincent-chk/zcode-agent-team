@@ -11,7 +11,6 @@ import { requireMembership } from "./projection.js";
 import type { TeamStore, ReconciliationSource, TargetInspector } from "./ports.js";
 import { errorMessage } from "./ports.js";
 import type { TeammateProvider } from "../provider/teammate-provider.js";
-import type { MemberModelSelection } from "../provider/model-selection.js";
 import type { LifecyclePort } from "./lifecycle.js";
 
 /** §5.1 名字规则。 */
@@ -26,11 +25,7 @@ export interface SpawnArgs {
   description: string;
   prompt: string;
   context?: "fresh" | "fork";
-  model?: string;
-  /** stage-8：结构化模型选择（backend 已按目录/Lead 继承解析）。 */
-  modelSelection?: MemberModelSelection;
-  /** stage-8：思考强度覆盖（provider 合并进选择）。 */
-  thoughtLevel?: string;
+  // 0.4.0 注销 model/modelSelection/thoughtLevel：成员模型唯一路线 = provider 每轮跟随 Lead。
   signal?: AbortSignal;
 }
 
@@ -171,9 +166,6 @@ export class TeamRoster {
           description,
           firstPrompt: args.prompt, // 对齐轮：0.2.1 初始任务不含身份前缀
           context,
-          model: args.model,
-          ...(args.modelSelection !== undefined ? { modelSelection: args.modelSelection } : {}),
-          ...(args.thoughtLevel !== undefined ? { thoughtLevel: args.thoughtLevel } : {}),
           signal,
         });
       } catch (err) {

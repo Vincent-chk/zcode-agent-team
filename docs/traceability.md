@@ -85,12 +85,12 @@
 
 | 规格点 | 实现 | 用例/证据 | 状态 |
 |---|---|---|---|
-| 注册与作用域（app-only team_panel_call；team_ping 默认隐藏 D22） | `src/daemon.ts`、`src/mcp/registry.ts` | `test/mcp/tools-snapshot.test.ts`（wire 恰 10）、`test/mcp/policy-injection.test.ts` | 通过 |
+| 注册与作用域（app-only team_panel_call；team_ping 默认隐藏 D22） | `src/daemon.ts`、`src/mcp/registry.ts` | `test/mcp/tools-snapshot.test.ts`（wire 恰 9）、`test/mcp/policy-injection.test.ts` | 通过（0.4.0 口径） |
 | team:policy 全文（0.2.1 换版；D4/D5/D7） | `src/mcp/policy.ts` | `scripts/text-audit.mjs`（23 项全绿；含 D26 编排段） | 通过 |
-| 10 工具 schema/逐字参数/错误 | `src/mcp/handlers.ts`、`src/mcp/registry.ts`、`src/mcp/tools.ts` | `test/mcp/model-tools.test.ts`（17）、`test/mcp/f07-codes.test.ts`、S1/S4/S5 | 通过 |
+| 9 工具 schema/逐字参数/错误 | `src/mcp/handlers.ts`、`src/mcp/registry.ts`、`src/mcp/tools.ts` | `test/mcp/f07-codes.test.ts`、S1/S4/S5 | 通过（0.4.0 口径） |
 | MEMBER_VIEW / TASK_VIEW 字段 | `src/domain/roster.ts`、`src/domain/task-view.ts`、`src/provider/resume-provider.ts#modelOf` | `test/domain/roster.test.ts`（27）、`test/domain/task-view.test.ts`、`test/provider/resume-provider.test.ts`（modelOf/leadModelOf） | 通过 |
-| §9.3 spawn 的 model/thoughtLevel（裸 id 消歧；thoughtLevel variants 校验） | `src/mcp/backend.ts#resolveModelArgs`、`src/mcp/tools.ts` | `test/mcp/model-tools.test.ts`（消歧三态/目录不可用/无 reasoning）、`test/mcp/tools-snapshot.test.ts` | 通过 |
-| §9.13 member_set_model（Lead-only/active 目标/三态） | `src/mcp/handlers.ts`、`src/mcp/backend.ts#setMemberModel`、`src/coord/methods.ts`、`src/provider/resume-provider.ts#setMemberModel` | `test/mcp/model-tools.test.ts`、`test/coord/integration/host-methods.test.ts`（member.set_model 五分支）、`test/provider/member-set-model.test.ts`（9） | 通过 |
+| §9.3 spawn 的 model/thoughtLevel | —— | —— | **注销（0.4.0）**：成员模型唯一路线 = 每轮跟随 Lead；F34 原文见 §18 |
+| §9.13 member_set_model | —— | —— | **注销（0.4.0）**：F35/F37 原文见 §18 |
 | send 结果 {sent:true}（D1，不暴露 messageId） | `src/mcp/backend.ts` | `test/mcp/tools-snapshot.test.ts`、S1/S5 | 通过 |
 | identity 两分支（D2，hook 同层注入） | `src/mcp/policy.ts`、`src/hooks.ts` | `scripts/text-audit.mjs`、S2（无身份前缀）、S6（SessionStart 注入） | 通过 |
 
@@ -100,12 +100,12 @@
 |---|---|---|---|
 | 挂载/数据源（resources/subscribe → team://view） | `src/daemon.ts`、`src/panel/main.ts` | `test/panel/view-service.test.ts`、`test/ui-core/widget.test.ts` | 通过 |
 | 触发器交互（hover 150/pin/Escape/外点/锚定/紧凑） | `src/panel/companion-main.ts` | `scripts/f10-companion.mjs`（17 项全绿，含快速切成员） | 通过 |
-| 通知条/花名册/任务板（只读；D21 静态卡片 inactive） | `src/ui-core/render.ts`、`src/ui-core/detail-render.ts` | `test/ui-core/render.test.ts`（29）、视觉回归 80 基线 | 通过 |
+| 通知条/花名册/任务板（只读；D21 静态卡片 inactive） | `src/ui-core/render.ts`、`src/ui-core/detail-render.ts` | `test/ui-core/render.test.ts`（26）、视觉回归 76 基线 | 通过（0.4.0：齿轮/弹窗下线） |
 | 文案词典 25 键（zh/en 一致，无 status.deleted） | `src/ui-core/dict.ts` | `scripts/text-audit.mjs` | 通过 |
 | 成员会话查看视图 detail（分页/三态/复制 id；〔0.3.2·二次〕按轮摘要唯一形态、toolGroup、sourceTotal） | `src/panel/detail.ts`、`src/ui-core/detail-render.ts`、`src/panel/main.ts`、`src/panel/companion-main.ts`、`src/cli/ui.ts` | `test/panel/detail.test.ts`（24）、`test/ui-core/detail-render.test.ts`（25）、`test/cli`（transcript 摘要对等、无 `--mode`）、f10 快速切成员、视觉回归 detail 3 组 12 页 | 通过 |
-| §10.5 成员设置齿轮（仅 teammate / 仅面板载体；不嵌套 button） | `src/ui-core/render.ts#renderMember`、`src/panel/main.ts` | `test/ui-core/render.test.ts`（齿轮 4 例）、`scripts/visual-regress.mjs`（齿轮几何断言） | 通过 |
-| §10.1/§10.6 面板受控变更例外（modelOptions/setMemberModel） | `src/panel/panel-call.ts`、`src/daemon.ts`、`src/panel/main.ts` | `test/panel/member-model-call.test.ts`（15）、`scripts/smoke-daemon.mjs` | 通过（规格例外 F36；桌面实录待内测） |
-| §10.7 MEMBER_SETTINGS_DICT 独立命名空间（29 键，settings.*） | `src/ui-core/member-settings.ts` | `test/ui-core/member-settings.test.ts`（23）、`test/ui-core/dict.test.ts`（15，含与 25 键零交集）、`scripts/text-audit.mjs` | 通过 |
+| §10.5 成员设置齿轮 | —— | —— | **注销（0.4.0）**：F36 原文见 §18；render 测试保留反向断言（任何路径不输出齿轮/member-card） |
+| §10.1/§10.6 面板受控变更例外（modelOptions/setMemberModel） | —— | —— | **注销（0.4.0）**：面板恢复零变更通道；F36 原文见 §18 |
+| §10.7 MEMBER_SETTINGS_DICT 独立命名空间 | —— | —— | **注销（0.4.0）**：弹窗词典随模块下线；25 键 DICT 不变 |
 
 ## 11. 错误码总表（§11，27 个）
 
@@ -164,10 +164,10 @@
 | 19 | wait 被唤醒 | timedOut=false（变化触发） | S1 / perf 11ms |
 | 20 | hook 三通道 | stop 3 次后 UPS/SessionStart 接力、回执恰一次 | S6（10 项） |
 | 21 | D26 编排段 | orchestrator 注入含段且禁 interrupt_agent；collaborator/两参缺省不含段 | `scripts/text-audit.mjs`（D26 项）+ `test/mcp/policy-injection.test.ts` |
-| 22 | 工具面 10 个 | wire 清单逐字节 = 期望 JSON（无 team_ping；含 member_set_model） | `test/mcp/tools-snapshot.test.ts` |
-| 23 | team://models 脱敏 | 输出无 `apiKey`/`baseURL`/`options` 与占位凭据值；重复读命中 mtime 缓存 | `test/mcp/tools-snapshot.test.ts`、`test/provider/model-catalog.test.ts` |
-| 24 | 成员齿轮位置/结构 | 仅 teammate、仅面板载体；22px 命中区、右上 4px、不嵌套 button | `scripts/visual-regress.mjs`、`test/ui-core/render.test.ts` |
-| 25 | 弹窗零凭据输入 | 全 80 页无 `input[type=password]`/`textarea`/凭据字段 | `scripts/visual-regress.mjs`、`test/ui-core/member-settings.test.ts` |
+| 22 | 工具面 9 个（0.4.0） | wire 清单逐字节 = 期望 JSON（无 team_ping；无 member_set_model；spawn 无模型参数） | `test/mcp/tools-snapshot.test.ts` |
+| 23 | 模型目录脱敏（内部；0.4.0 起 `team://models` 资源已下线） | provider 读目录输出无 `apiKey`/`baseURL`/凭据值；mtime 缓存 | `test/provider/model-catalog.test.ts`；`test/mcp/tools-snapshot.test.ts`（资源面反向断言：无 team://models） |
+| 24 | 成员无配置入口（0.4.0 反向） | 全部渲染路径无 `data-member-gear`/`.member-card`/弹窗节点 | `test/ui-core/render.test.ts`、`scripts/visual-regress.mjs`（gearCount=0 全页断言） |
+| 25 | 零凭据输入（全页面） | 全 76 页无 `input[type=password]`/`textarea`/凭据字段 | `scripts/visual-regress.mjs` |
 
 ## 16. 不适用项与理由
 
@@ -182,8 +182,8 @@
 ## 17. 覆盖率结论
 
 - 02 规格 §1–§14 全部有映射（含子节）；不适用项 5 条均给出理由。
-- 27 错误码、4 限额、10 工具、25 词典键（+29 键独立成员设置命名空间）、4 事件类型在自动化审计中逐字核对。
-- 偏差登记：D1–D27（D19–D25 见 04；D26/D27 见 stage-6.5）；stage-8 适配登记见 §18。
+- 27 错误码、4 限额、25 词典键、4 事件类型在自动化审计中逐字核对；工具面 0.4.0 起 = 9（§18/§19 记录增删演变）。
+- 偏差登记：D1–D27（D19–D25 见 04；D26/D27 见 stage-6.5）；stage-8 适配登记见 §18；0.4.0 收敛注销见 §19。
 
 ## 18. stage-8 模型可配置化（2026-10-24；F33–F36）
 
@@ -196,4 +196,13 @@
 | F35 | **member_set_model + mid-life + team://models（脱敏目录）** | `src/coord/methods.ts`（`member.set_model`，60s）、`src/provider/session-breeder.ts#applyModelSelection`（临时实例 `session/resume`→`session/setModel`）、`src/provider/resume-provider.ts#setMemberModel`（now/next-turn/pending 兜底）、`src/provider/member-files.ts`（`model-pending.json`）、`src/provider/model-catalog.ts`（白名单投影+mtime 缓存）、`src/daemon.ts`（`RESOURCES`+read 分支） | `test/provider/member-set-model.test.ts`（9：now/next-turn/未落定/即时失败/pending 三例）、`test/provider/model-catalog.test.ts`（8：脱敏/容错/缓存）、`test/provider/session-breeder.test.ts`（22，含 apply 三例）、`test/mcp/tools-snapshot.test.ts`（team://models 资源契约：无 apiKey/baseURL/options）、`test/mcp/model-tools.test.ts` | 通过 |
 | F36 | **面板齿轮 + 弹窗 + 高级模式（含规格例外）** | `src/ui-core/icons.ts#iconGear`、`src/ui-core/render.ts`（member-card/齿轮/选项门控）、`src/ui-core/member-settings.ts`（新：弹窗+MEMBER_SETTINGS_DICT+联动）、`src/ui-core/css.ts`、`src/ui-core/escape.ts`（新，防循环引用）、`src/panel/panel-call.ts`（modelOptions/modelSet）、`src/panel/main.ts`（齿轮点击/状态机/ESC/遮罩）、`src/daemon.ts`（schema+两分支） | `test/ui-core/member-settings.test.ts`（22：四来源/optgroup/无 reasoning/零凭据/联动）、`test/ui-core/render.test.ts`（29，齿轮 4 例）、`test/ui-core/dict.test.ts`（15，命名空间隔离）、`test/panel/member-model-call.test.ts`（15）、`scripts/visual-regress.mjs` 80 基线（齿轮几何/弹窗控件/零凭据输入） | 通过（桌面实录待内测） |
 | F37 | **设置失败可见性（GitHub #6；§9.13 failed 语义 + §10.7 30 键修订）** | `src/coord/methods.ts`（`applied:"failed"`+reason 终态）、`src/provider/resume-provider.ts`（失败不落 pending/前置应用失败终态/`diagnosticsOf`/spawn 降级与显式失败落盘/成功清除）、`src/provider/member-files.ts`（`model-failed.json` 读写）、`src/domain/roster.ts`（presentation 诊断追加）、`src/panel/panel-call.ts`（`current.failedApply`）、`src/ui-core/member-settings.ts`（`settings.failedApply` 常驻错误提示）、`src/mcp/tools.ts`+`test/mcp/expected-tools.ts`（描述补失败语义，F01 双源） | `test/provider/member-set-model.test.ts`（9→14）、`test/panel/member-model-call.test.ts`（+3）、`test/mcp/model-tools.test.ts`（+1）、`test/ui-core/member-settings.test.ts`（+1）、`test/coord/integration/host-methods.test.ts`（+1）、`test/domain/roster.test.ts`（+2）、`test/provider/session-isolation.test.ts`（+1）；真模型 E2E 失败路径四断言（e2e6/6b/6c/6d，`stage-8-model-config/e2e-real-model-evidence.json`） | 通过（v0.3.1，issue #6 已关闭附验证评论） |
-| F38 | **第三方模型继承精化（0.3.2 分类优先）**：继承链 [session_entry → model_usage] 按目录过滤（新导出 `catalogSupports` 为唯一判据：provider+model 存在且均 enabled）；官方套餐（account:/builtin:）零 setModel 尝试直接回退宿主缺省；空目录守卫（目录不可读不过滤）；跳过仍写 model-failed（套餐/目录外两态文案）；显式通道与尝试失败路径不变 | `src/provider/model-catalog.ts#catalogSupports`、`src/provider/resume-provider.ts#lookupLeadModelSelections`（过滤+守卫）与 startContinuable（跳过分支+两态文案）、`README.md` §2.1 继承边界声明、`docs/使用手册.md` §2.1 同口径 | `test/provider/model-catalog.test.ts`（catalogSupports 五态）、`test/provider/session-isolation.test.ts`（32 it：分类五态/空目录守卫/显式不变/既有重写）；真模型 E2E qwen3.8-flash+max 双源 + 套餐零尝试（stage-8-model-config/e2e-real-model-evidence.json） | 通过（v0.3.2） |
+| F38 | **第三方模型继承精化（0.3.2 分类优先）**：继承链 [session_entry → model_usage] 按目录过滤（新导出 `catalogSupports` 为唯一判据：provider+model 存在且均 enabled）；官方套餐（account:/builtin:）零 setModel 尝试直接回退宿主缺省；空目录守卫（目录不可读不过滤）；跳过仍写 model-failed（套餐/目录外两态文案）；显式通道与尝试失败路径不变 | `src/provider/model-catalog.ts#catalogSupports`、`src/provider/resume-provider.ts#lookupLeadModelSelections`（过滤+守卫）与 startContinuable（跳过分支+两态文案）、`README.md` §2.1 继承边界声明、`docs/使用手册.md` §2.1 同口径 | `test/provider/model-catalog.test.ts`（catalogSupports 五态）、`test/provider/session-isolation.test.ts`（32 it：分类五态/空目录守卫/显式不变/既有重写）；真模型 E2E qwen3.8-flash+max 双源 + 套餐零尝试（stage-8-model-config/e2e-real-model-evidence.json） | 通过（v0.3.2）；**部分被 0.4.0 取代（§19 F39）** |
+
+## 19. 0.4.0 成员模型收敛（2026-10-25；F39）
+
+决策（用户拍板）：全部收敛于「成员每轮执行前自动跟随 Lead 最新已确认模型」一条路线；**注销** §9.3 spawn 模型参数（F34）、§9.13 member_set_model（F35/F37 对话通道部分）、§10.1/§10.5/§10.6/§10.7 齿轮+弹窗+面板受控变更例外（F36），并下线 `team://models` 资源。§18 历史台账逐行保留（原文可考），下表登记替代关系。
+
+| 编号 | 规格点 | 实现 | 测试/证据 | 状态 |
+|---|---|---|---|---|
+| F39 | **继承跟随 Lead（三源判定 + 每轮执行前同步 + 失败即报）**：Lead 模型解析 = [提交快照（real_user 消息 modelSelection，宿主保存消息时写入）/ session_entry（`/model` 刷新）/ main_turn 实际调用（`query_source='main_turn'` 严格排除 compact/标题/subagent/workflow 辅助行）] 三路按时间戳取最新（修 0.3.2 固定优先级 + 实证 issue #7 场景可跟上）；分类判据沿用 `catalogSupports`（空目录守卫保留）；解析不出/官方套餐/目录外 = spawn 与每轮同步抛 `ModelInheritanceError`（明确报告用户，绝不静默回退宿主缺省冒充继承成功；createChild 失败同样抛+回收）；同步点 = launchTurn 执行前统一入口（首轮/续跑/恢复三路共用，有变化才发 setModel）；origin 唯一记 `modelSource:"inherited"`（explicit 面注销）；model-pending.json 机器与 mid-life 通道删除；`model-failed.json`/`diagnosticsOf` 成员行诊断保留（继承失败兜底可见） | `src/provider/model-inheritance.ts`（新错误类型）、`transcript.ts#latestSubmissionSelection/#latestModelSelectionTimed/#latestMainTurnUsage`（三源）、`resume-provider.ts#resolveLeadInheritance/#syncMemberModel`（判定+每轮同步）、`session-breeder.ts`（createChild model-rejected 即抛、applyModelSelection 改每轮同步通道）、`mcp/tools.ts`+`expected-tools.ts`（F01 双源 9 工具）、`coord/methods.ts`（方法表 13）、`panel/panel-call.ts`+`daemon.ts`（面板两 action 与资源下线） | `test/provider/session-isolation.test.ts`（17 it：三源各路/陈旧条目→提交胜/`/model`→条目胜/main_turn 过滤辅助/套餐与目录外与无记录三抛/空目录守卫/每轮同步成功与阻止/套餐切换阻止/legacy 不应用）、`session-breeder.test.ts`（模型三例新语义：成功/失败即抛不落 result/anchor tombstone）、`tools-snapshot.test.ts`（9 工具逐字节 + spawn 无模型参数 + resources 面反向断言）、`host-methods.test.ts`（13 方法 + set_model 未知方法）、`render.test.ts`（齿轮反向）；`kit.ts` 三源夹具（query_source 列 + 提交快照插入器）；787/787 全绿 + 视觉 76 基线 + smoke | 通过 |
+

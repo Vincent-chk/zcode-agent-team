@@ -1,4 +1,5 @@
-// 10 个模型工具的字面定义（stage-3 T3.2；02 规格 §9.3–§9.12 逐字；stage-8 Round C 追加 §9.13）。
+// 9 个模型工具的字面定义（stage-3 T3.2；02 规格 §9.3–§9.12 逐字；0.4.0 注销 §9.13 member_set_model，
+// spawn 的 model/thoughtLevel 参数同步移除——成员模型唯一路线 = 每轮跟随 Lead 最新已确认选择）。
 // name / description / 参数描述 / required / enum / additionalProperties:false 全量对齐规格原文；
 // 本文件是 tools/list 快照（F01）与期望 JSON 生成器的唯一来源（同一序列化器口径）。
 //
@@ -59,13 +60,13 @@ export interface ToolDefinition {
   _meta?: Record<string, unknown>;
 }
 
-/** 10 工具注册表（顺序 = stage-3 任务书列举序 + stage-8 §9.13 插在 interrupt 之后；快照与 tools/list 同源）。 */
+/** 9 工具注册表（顺序 = stage-3 任务书列举序；0.4.0 注销 member_set_model；快照与 tools/list 同源）。 */
 export const TEAM_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
   {
     // 02 §9.3
     name: "spawn_teammate",
     description:
-      "Create one named, durable teammate. Only the Team Lead may call this tool. In orchestrator mode, create teammates proactively when the goal benefits from delegation, within the member limit.",
+      "Create one named, durable teammate. Only the Team Lead may call this tool. In orchestrator mode, create teammates proactively when the goal benefits from delegation, within the member limit. The teammate automatically follows the Lead's latest confirmed model and reasoning level on every turn; there is no per-member model option.",
     inputSchema: {
       type: "object",
       properties: {
@@ -76,16 +77,6 @@ export const TEAM_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
           type: "string",
           enum: ["fresh", "fork"],
           description: "fresh starts without Lead history; fork inherits completed Lead turns. Defaults to fresh.",
-        },
-        model: {
-          type: "string",
-          description:
-            'Optional model as "providerId$modelId" or a bare modelId from the team://models resource. Defaults to inheriting the Lead model.',
-        },
-        thoughtLevel: {
-          type: "string",
-          description:
-            'Optional reasoning level for the model (one of its variants from team://models, for example "high").',
         },
       },
       required: ["name", "description", "prompt"],
@@ -140,31 +131,8 @@ export const TEAM_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
       additionalProperties: false,
     },
   },
-  {
-    // 02 §9.13（stage-8 Round C）
-    name: "member_set_model",
-    description:
-      'Change the model or reasoning level of one teammate. A running target applies it on its next turn; an idle target applies it immediately. Use "providerId$modelId" or a bare modelId; list models with the team://models resource. Team Lead only. Returns applied:"failed" with reason when the combination is rejected.',
-    inputSchema: {
-      type: "object",
-      properties: {
-        target: {
-          type: "string",
-          description: "Teammate target returned by spawn_teammate or list_agents.",
-        },
-        model: {
-          type: "string",
-          description: 'Model as "providerId$modelId" or a bare modelId from team://models.',
-        },
-        thoughtLevel: {
-          type: "string",
-          description: "Reasoning level (one of the model's variants); omit to keep the model default.",
-        },
-      },
-      required: ["target"],
-      additionalProperties: false,
-    },
-  },
+  // 0.4.0 注销 member_set_model（02 §9.13）：成员模型没有独立配置通道，唯一路线 = 每轮
+  // 跟随 Lead 最新已确认选择；原规格条目见 traceability §18 与 git 历史。
   {
     // 02 §9.7（〔对齐轮〕0.2.1 描述："mailbox"→"message"）
     name: "wait_agent",
@@ -282,7 +250,7 @@ export const TEAM_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
   },
 ];
 
-/** 10 工具名集合（daemon 分派判定；含 interrupt_agent——分派校验用全集）。 */
+/** 9 工具名集合（daemon 分派判定；含 interrupt_agent——分派校验用全集）。 */
 export const TEAM_TOOL_NAMES: ReadonlySet<string> = new Set(TEAM_TOOL_DEFINITIONS.map((t) => t.name));
 
 /**

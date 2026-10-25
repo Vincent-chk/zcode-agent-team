@@ -3,7 +3,6 @@
 // status.deleted 键（deleted 复用 completed 文案由 statusKey() 承担）。
 import { describe, expect, it } from "vitest";
 import { DICT, DICT_KEYS, statusKey, memberStatusKey, langOfLocale, t, td, DETAIL_DICT } from "../../src/ui-core/dict.js";
-import { MEMBER_SETTINGS_DICT, tms } from "../../src/ui-core/member-settings.js";
 
 /** 02 §10.7 逐字基准（键 → [zh, en]；与规格表行序一致）。 */
 const SPEC: Record<string, [string, string]> = {
@@ -119,20 +118,5 @@ describe("DETAIL_DICT（T5.7 新增文案；不进 F08 逐字面，但 zh/en 键
     );
     expect("detail.modeSummary" in DETAIL_DICT.zh).toBe(false);
     expect("detail.modeFull" in DETAIL_DICT.en).toBe(false);
-  });
-});
-
-describe("MEMBER_SETTINGS_DICT（stage-8 D 新增文案；不进 F08 逐字面）", () => {
-  it("zh/en 键集一致；命名空间与 25 键 DICT 完全隔离", () => {
-    expect(Object.keys(MEMBER_SETTINGS_DICT.zh).sort()).toEqual(Object.keys(MEMBER_SETTINGS_DICT.en).sort());
-    for (const key of Object.keys(MEMBER_SETTINGS_DICT.zh)) {
-      expect(key.startsWith("settings.")).toBe(true);
-      expect(DICT_KEYS).not.toContain(key as never);
-    }
-    expect(DICT_KEYS).toHaveLength(25);
-  });
-  it("tms 插值 {reason}/{message}", () => {
-    expect(tms("zh", "settings.disabledBecause", { reason: "inactive" })).toBe("（inactive）");
-    expect(tms("en", "settings.error", { message: "x" })).toBe("Model settings unavailable: x");
   });
 });

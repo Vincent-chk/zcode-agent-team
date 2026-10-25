@@ -155,7 +155,7 @@ describe("模型呈现（stage-8 Round B）", () => {
     expect(kit!.provider.modelOf("m-nobody")).toBeUndefined();
   });
 
-  it("leadModelSelectionOf：Lead 条目优先 → usage 兜底 → undefined（backend 裸 id 消歧用）", () => {
+  it("leadModelSelectionOf：三源按时间戳取最新（0.4.0 展示口径；不可继承 → undefined）", () => {
     expect(kit!.provider.leadModelSelectionOf()).toBeUndefined();
     insertModelUsage(kit!.dbPath, {
       sessionId: kit!.teamId,

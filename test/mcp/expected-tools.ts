@@ -1,24 +1,25 @@
 // F01 期望 JSON 生成器（stage-3 T3.5a）。
-// 独立转写 02 规格 §9.3–§9.13（name/description/参数描述/required/enum/additionalProperties:false
+// 独立转写 02 规格 §9.3–§9.12（name/description/参数描述/required/enum/additionalProperties:false
 // 全字段逐字）——**不从 src/mcp/tools.ts 导入**，以便逐字节 diff 是真实的保真校验（捕获漂移），
 // 而非自我比对。生成期望 JSON 时用与实际输出同一序列化器（JSON.stringify 无缩进）避免假阴性
 // （键序/空白差异）。
 //
-// 顺序 = stage-3 任务书列举序 + stage-8 §9.13：spawn_teammate / send_message / list_agents /
-// interrupt_agent / member_set_model / wait_agent / team_task_create / team_task_list /
-// team_task_get / team_task_update。
+// 顺序 = stage-3 任务书列举序：spawn_teammate / send_message / list_agents /
+// interrupt_agent / wait_agent / team_task_create / team_task_list / team_task_get /
+// team_task_update。（0.4.0 注销 §9.13 member_set_model；spawn 的 model/thoughtLevel 参数移除，
+// 成员模型唯一路线 = 每轮跟随 Lead 最新已确认选择。）
 //
 // 〔F13〕spawn_teammate 携带 `_meta.ui`（resourceUri + surface）——宿主定义侧解析（见 tools.ts 注记）。
 // 〔登记〕outputSchema 不声明（宿主 outputSchema 校验要求 object 型；list_agents 输出为数组无法原样
 // 声明；F01 断言范围 = name/description/inputSchema，与验收标准一致）。输出契约由 F02 行为测试保证。
 
-/** 期望的 10 工具（02 §9.3–§9.13 逐字转写）。 */
+/** 期望的 9 工具（02 §9.3–§9.12 逐字转写；0.4.0 口径）。 */
 export const EXPECTED_TEAM_TOOLS: readonly Record<string, unknown>[] = [
   // §9.3 spawn_teammate
   {
     name: "spawn_teammate",
     description:
-      "Create one named, durable teammate. Only the Team Lead may call this tool. In orchestrator mode, create teammates proactively when the goal benefits from delegation, within the member limit.",
+      "Create one named, durable teammate. Only the Team Lead may call this tool. In orchestrator mode, create teammates proactively when the goal benefits from delegation, within the member limit. The teammate automatically follows the Lead's latest confirmed model and reasoning level on every turn; there is no per-member model option.",
     inputSchema: {
       type: "object",
       properties: {
@@ -29,16 +30,6 @@ export const EXPECTED_TEAM_TOOLS: readonly Record<string, unknown>[] = [
           type: "string",
           enum: ["fresh", "fork"],
           description: "fresh starts without Lead history; fork inherits completed Lead turns. Defaults to fresh.",
-        },
-        model: {
-          type: "string",
-          description:
-            'Optional model as "providerId$modelId" or a bare modelId from the team://models resource. Defaults to inheriting the Lead model.',
-        },
-        thoughtLevel: {
-          type: "string",
-          description:
-            'Optional reasoning level for the model (one of its variants from team://models, for example "high").',
         },
       },
       required: ["name", "description", "prompt"],
@@ -87,31 +78,6 @@ export const EXPECTED_TEAM_TOOLS: readonly Record<string, unknown>[] = [
         target: {
           type: "string",
           description: "Teammate target returned by spawn_teammate or list_agents.",
-        },
-      },
-      required: ["target"],
-      additionalProperties: false,
-    },
-  },
-  // §9.13 member_set_model（stage-8 Round C）
-  {
-    name: "member_set_model",
-    description:
-      'Change the model or reasoning level of one teammate. A running target applies it on its next turn; an idle target applies it immediately. Use "providerId$modelId" or a bare modelId; list models with the team://models resource. Team Lead only. Returns applied:"failed" with reason when the combination is rejected.',
-    inputSchema: {
-      type: "object",
-      properties: {
-        target: {
-          type: "string",
-          description: "Teammate target returned by spawn_teammate or list_agents.",
-        },
-        model: {
-          type: "string",
-          description: 'Model as "providerId$modelId" or a bare modelId from team://models.',
-        },
-        thoughtLevel: {
-          type: "string",
-          description: "Reasoning level (one of the model's variants); omit to keep the model default.",
         },
       },
       required: ["target"],

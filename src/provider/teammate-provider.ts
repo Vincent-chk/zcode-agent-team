@@ -1,9 +1,8 @@
 // TeammateProvider 接口 —— 接口草案 §1 逐字对齐（stage-1 冻结契约）。
 // 唯一增补：args.signal?: AbortSignal（02 §5.3 步骤 3「调用方 signal 与运行时 signal 的
 // AbortSignal.any」的承载位；草案 §1 注释引用了该语义但类型漏列）——已单列登记。
-// stage-8 Round B/C 增补（登记于开发记录）：modelSelection/thoughtLevel（结构化模型选择与
-// 思考强度）与可选方法 setMemberModel（mid-life 改模型，provider 不支持时缺省）。
-import type { MemberModelSelection } from "./model-selection.js";
+// 0.4.0 注销：model/modelSelection/thoughtLevel 显式通道与可选方法 setMemberModel——成员模型
+// 唯一路线 = 每轮执行前自动跟随 Lead 最新已确认选择（stage-8 增补原文见 traceability §18）。
 
 /** teammate 会话供给接口 —— 两实现（AppServerProvider / ResumePerTurnProvider），ADR-4 定版后主实现 + 兜底开关 */
 export interface TeammateProvider {
@@ -12,7 +11,10 @@ export interface TeammateProvider {
    *  context: "fresh"=新会话；"fork"=继承 Lead 上下文（app-server session/fork 或 D3 转录注入兜底）。
    *  实现 MUST 保证「落盘先于投递」：member(provisioning) 事件已 fsync 后才 spawn。
    *  accepted = 首轮 prompt 已被目标会话持久接收（02 §5.3 checkpointInitialPrompt 的承载口径）；
-   *  accepted:false / 抛错 = 未持久接收（→ TEAM_PROVISIONING_CONFLICT 分支或失败路径）。 */
+   *  accepted:false / 抛错 = 未持久接收（→ TEAM_PROVISIONING_CONFLICT 分支或失败路径）。
+   *  0.4.0：child 隔离模式下模型唯一来源 = 继承 Lead 最新已确认选择；解析不出 / 官方套餐 /
+   *  目录外 / setModel 被拒 = 抛错（fail-fast，不产生成员、不静默回退宿主缺省）。
+   *  legacy 模式无继承语义（CLI 工作区缺省模型）。 */
   startContinuable(args: {
     teamId: string;
     memberId: string;
@@ -20,24 +22,8 @@ export interface TeammateProvider {
     description: string;
     firstPrompt: string;
     context: "fresh" | "fork";
-    model?: string; // 缺省 = provider 默认（最低档）
-    /** 结构化模型选择（显式指定优先；缺省时 child 隔离模式继承 Lead）。 */
-    modelSelection?: MemberModelSelection;
-    /** 思考强度覆盖（与继承/显式选择合并；无可用模型时忽略）。 */
-    thoughtLevel?: string;
     signal?: AbortSignal;
   }): Promise<{ memberId: string; accepted: boolean }>;
-
-  /** stage-8 Round C：mid-life 修改成员模型/思考强度（可选实现；mock 与真 provider 均提供）。
-   *  applied:"now" = 已写入会话库条目（当前空闲）；"next-turn" = 目标运行中，已排队（下一轮
-   *  拉起前应用一次）；"failed" = 宿主拒绝该组合（附带原文 reason），**不排队、不重试**
-   *  （GitHub #6：失败必须立即告知用户，而不是包装成下一轮生效）。
-   *  target 会话未落定 → 抛错。 */
-  setMemberModel?(args: {
-    memberId: string;
-    modelSelection?: MemberModelSelection;
-    thoughtLevel?: string;
-  }): Promise<{ applied: "now" | "next-turn" | "failed"; reason?: string }>;
 
   /** 向成员会话投递一条已框架化消息（「Team message from <name>: 」前缀，逐字；〔对齐轮〕0.2.1 无消息 id）。
    *  返回 "accepted"（本轮调用内完成拉起/写入）或 "queued"（目标运行中，已入 pending 持久化；〔对齐轮〕0.2.1 已删 pending 上限）。

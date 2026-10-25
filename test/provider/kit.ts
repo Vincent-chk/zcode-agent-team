@@ -62,7 +62,8 @@ export function createTestDb(dbPath: string): void {
     );
     CREATE TABLE model_usage (
       id TEXT PRIMARY KEY, session_id TEXT NOT NULL, provider_id TEXT NOT NULL,
-      model_id TEXT NOT NULL, variant TEXT, status TEXT NOT NULL, started_at INTEGER NOT NULL
+      model_id TEXT NOT NULL, variant TEXT, status TEXT NOT NULL, started_at INTEGER NOT NULL,
+      query_source TEXT
     );
   `);
   db.close();
@@ -92,16 +93,23 @@ export function insertSessionEntry(
   }
 }
 
-/** 直插一次模型调用记录（继承兜底探针用；started_at 越大越新）。 */
+/** 直插一次模型调用记录（继承兜底探针用；started_at 越大越新；query_source 缺省 main_turn）。 */
 export function insertModelUsage(
   dbPath: string,
-  args: { sessionId: string; providerId: string; modelId: string; variant?: string | null; startedAt?: number },
+  args: {
+    sessionId: string;
+    providerId: string;
+    modelId: string;
+    variant?: string | null;
+    startedAt?: number;
+    querySource?: string;
+  },
 ): void {
   const db = new DatabaseSync(dbPath);
   try {
     const startedAt = args.startedAt ?? Date.now();
     db.prepare(
-      "INSERT INTO model_usage (id, session_id, provider_id, model_id, variant, status, started_at) VALUES (?,?,?,?,?,?,?)",
+      "INSERT INTO model_usage (id, session_id, provider_id, model_id, variant, status, started_at, query_source) VALUES (?,?,?,?,?,?,?,?)",
     ).run(
       `usage-${args.sessionId}-${startedAt}`,
       args.sessionId,
@@ -110,6 +118,46 @@ export function insertModelUsage(
       args.variant ?? null,
       "completed",
       startedAt,
+      args.querySource ?? "main_turn",
+    );
+  } finally {
+    db.close();
+  }
+}
+
+/** 直插一条「真实用户提交」消息（0.4.0 三源判定的提交快照源；宿主保存时写入 modelSelection）。 */
+export function insertSubmissionMessage(
+  dbPath: string,
+  args: {
+    sessionId: string;
+    providerId: string;
+    modelId: string;
+    reasoningLevel?: string;
+    timeCreated: number;
+    sequence?: number;
+  },
+): void {
+  const db = new DatabaseSync(dbPath);
+  try {
+    db.prepare(
+      "INSERT INTO message (id, session_id, time_created, time_updated, data, sequence) VALUES (?,?,?,?,?,?)",
+    ).run(
+      `msg-submission-${args.sessionId}-${args.timeCreated}`,
+      args.sessionId,
+      args.timeCreated,
+      args.timeCreated,
+      JSON.stringify({
+        role: "user",
+        semantics: { origin: "real_user" },
+        modelSelection: {
+          providerId: args.providerId,
+          modelId: args.modelId,
+          ...(args.reasoningLevel !== undefined
+            ? { options: { reasoningLevel: args.reasoningLevel } }
+            : {}),
+        },
+      }),
+      args.sequence ?? args.timeCreated,
     );
   } finally {
     db.close();

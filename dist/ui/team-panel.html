@@ -15107,179 +15107,8 @@ h3 .count {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-/* stage-8 D \u6210\u5458\u5361\u5BB9\u5668\uFF1A\u9F7F\u8F6E\u4E0E\u6210\u5458\u6309\u94AE\u5E76\u5217\uFF08HTML \u4E0D\u5141\u8BB8 button \u5D4C button\uFF09\u3002
-   \u7F51\u683C\u5B50\u9879\u7531 .member \u53D8\u4E3A .member-card\uFF1B\u6210\u5458\u6309\u94AE\u94FA\u6EE1\u5BB9\u5668\uFF0C\u53F3\u4FA7\u8BA9\u51FA\u9F7F\u8F6E\u4F4D\u3002 */
-.member-card { position: relative; display: flex; min-width: 0; }
-.member-card .member { width: 100%; padding-right: 28px; }
-/* \u9F7F\u8F6E\uFF1A\u5E38\u663E\u4F4E\u5F3A\u8C03\uFF08tertiary 55%\uFF09\uFF0Chover/focus \u63D0\u4EAE\uFF1B22px \u547D\u4E2D\u533A\u5185\u5D4C 14px \u7EBF\u6027\u56FE\u6807 */
-.member-gear {
-  position: absolute;
-  top: 4px;
-  right: 4px;
-  width: 22px;
-  height: 22px;
-  padding: 0;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  background: none;
-  border: none;
-  border-radius: 6px;
-  color: var(--at-label-tertiary);
-  cursor: pointer;
-  opacity: 0.55;
-  transition: opacity 0.12s, color 0.12s, background-color 0.12s;
-}
-.member-card:hover .member-gear,
-.member-gear:focus-visible { opacity: 1; }
-.member-gear:hover,
-.member-gear:focus-visible {
-  color: var(--at-label-primary);
-  background: color-mix(in srgb, var(--at-label-tertiary) 12%, transparent);
-}
-.member-gear:focus-visible { outline: 2px solid color-mix(in srgb, var(--at-business) 45%, transparent); outline-offset: 1px; }
-/* stage-8 D \u8BBE\u7F6E\u5F39\u7A97\uFF1A.team-panel \u4E3A position:relative + overflow:hidden \u2192 absolute inset \u8986\u76D6\u9762\u677F */
-.settings-overlay {
-  position: absolute;
-  inset: 0;
-  z-index: 20;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 16px;
-  background: color-mix(in srgb, var(--at-label-primary) 22%, transparent);
-}
-.settings-modal {
-  width: min(380px, 100%);
-  max-height: 100%;
-  overflow-y: auto;
-  scrollbar-gutter: stable;
-  background: var(--at-bg-menu);
-  color: var(--at-label-primary);
-  border-radius: 12px;
-  box-shadow: var(--at-shadow-prominent);
-  outline: 0.5px solid var(--at-border-l1);
-  padding: 12px 14px 14px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-.settings-head { display: flex; align-items: center; gap: 8px; }
-.settings-title {
-  font-size: 13px;
-  font-weight: 500;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.settings-close {
-  margin-left: auto;
-  flex: none;
-  width: 22px;
-  height: 22px;
-  padding: 0;
-  background: none;
-  border: none;
-  border-radius: 6px;
-  color: var(--at-label-tertiary);
-  font: inherit;
-  font-size: 16px;
-  line-height: 1;
-  cursor: pointer;
-}
-.settings-close:hover,
-.settings-close:focus-visible { color: var(--at-label-primary); background: color-mix(in srgb, var(--at-label-tertiary) 12%, transparent); }
-.settings-current {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-  font-size: 12px;
-  color: var(--at-label-secondary);
-}
-.settings-label { font-size: 11px; color: var(--at-label-tertiary); }
-.settings-current-model { font-size: 12px; font-weight: 500; color: var(--at-label-primary); }
-.source-badge {
-  font-size: 10px;
-  line-height: 15px;
-  padding: 0 6px;
-  border-radius: 4px;
-  background: color-mix(in srgb, var(--at-business) 16%, transparent);
-  color: var(--at-business);
-}
-.source-badge.inherited {
-  background: color-mix(in srgb, var(--at-state-ongoing) 16%, transparent);
-  color: var(--at-state-ongoing);
-}
-.source-badge.observed {
-  background: color-mix(in srgb, var(--at-label-tertiary) 14%, transparent);
-  color: var(--at-label-secondary);
-}
-.source-badge.cli-default {
-  background: color-mix(in srgb, var(--at-label-tertiary) 10%, transparent);
-  color: var(--at-label-tertiary);
-}
-.settings-field { display: flex; flex-direction: column; gap: 4px; }
-.modal-select {
-  width: 100%;
-  font: inherit;
-  font-size: 12px;
-  line-height: 18px;
-  padding: 4px 6px;
-  border-radius: 6px;
-  border: 0.5px solid var(--at-border-l2);
-  background: var(--at-bg-layer-2);
-  color: var(--at-label-primary);
-}
-.modal-select:disabled { opacity: 0.6; }
-.modal-select:focus-visible {
-  outline: 2px solid color-mix(in srgb, var(--at-business) 45%, transparent);
-  outline-offset: 1px;
-}
-.settings-state {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  color: var(--at-label-tertiary);
-  padding: 8px 0;
-}
-.settings-state.error { color: var(--at-error-text); }
-.settings-notice { font-size: 11px; color: var(--at-state-ongoing); }
-/* GitHub #6\uFF1A\u7EC8\u6001\u5931\u8D25\u63D0\u793A\u7528\u9519\u8BEF\u8272\uFF08\u4E0E\u300C\u5DF2\u5E94\u7528 / \u4E0B\u4E00\u8F6E\u751F\u6548\u300D\u4E2D\u6027\u63D0\u793A\u533A\u5206\uFF09 */
-.settings-notice.error { color: var(--at-error-text); }
-.settings-foot { display: flex; justify-content: flex-end; gap: 8px; }
-.settings-btn {
-  background: none;
-  border: 0.5px solid var(--at-border-l2);
-  border-radius: 6px;
-  color: var(--at-label-secondary);
-  font: inherit;
-  font-size: 12px;
-  line-height: 20px;
-  padding: 1px 10px;
-  cursor: pointer;
-}
-.settings-btn:hover,
-.settings-btn:focus-visible { color: var(--at-label-primary); border-color: var(--at-border-l3); }
-.settings-btn.primary {
-  background: color-mix(in srgb, var(--at-business) 14%, transparent);
-  border-color: color-mix(in srgb, var(--at-business) 45%, transparent);
-  color: var(--at-business);
-  font-weight: 500;
-}
-.settings-btn[disabled] { opacity: 0.45; cursor: default; }
-.settings-advanced {
-  border-top: 0.5px solid var(--at-border-l2);
-  padding-top: 8px;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.settings-advanced-title { font-size: 11px; font-weight: 500; color: var(--at-label-secondary); }
-.settings-advanced-hint { font-size: 11px; line-height: 16px; color: var(--at-label-tertiary); }
-.settings-advanced .settings-btn { align-self: flex-start; }
+/* 0.4.0 \u6CE8\u9500\u6210\u5458\u5361/\u9F7F\u8F6E\u4E0E\u8BBE\u7F6E\u5F39\u7A97\u6837\u5F0F\uFF08member-card\u3001member-gear\u3001settings \u7CFB\u5217\u3001
+   source-badge\u3001modal-select\uFF09\uFF1A\u6210\u5458\u6A21\u578B\u552F\u4E00\u8DEF\u7EBF = \u6BCF\u8F6E\u8DDF\u968F Lead\uFF0C\u9762\u677F\u6062\u590D\u96F6\u53D8\u66F4\u901A\u9053\u3002 */
 /* \u72B6\u6001\u70B9\uFF1A\u76F4\u5F84\u4E00\u81F4 8px\uFF08V06\uFF09 */
 .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; display: inline-block; }
 .dot.ongoing { background: var(--at-state-ongoing); }
@@ -15617,227 +15446,10 @@ body { background: transparent; }
   function iconArrowLeft(size = 14) {
     return svg('<path d="M9.5 3.5 5 8l4.5 4.5"/><path d="M5 8h8"/>', size);
   }
-  function iconGear(size = 14) {
-    return svg(
-      '<circle cx="8" cy="8" r="4.4"/><circle cx="8" cy="8" r="1.9"/><path d="M8 1.5v2.1M8 12.4v2.1M1.5 8h2.1M12.4 8h2.1M3.4 3.4l1.5 1.5M11.1 11.1l1.5 1.5M12.6 3.4l-1.5 1.5M4.9 11.1l-1.5 1.5"/>',
-      size
-    );
-  }
 
   // src/ui-core/escape.ts
   function esc2(s) {
     return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
-  }
-
-  // src/provider/model-selection.ts
-  var DEFAULT_REASONING_LEVEL = "max";
-
-  // src/ui-core/member-settings.ts
-  var COMMON_REASONING_LEVELS = ["low", "medium", "high", "max"];
-  var MEMBER_SETTINGS_DICT = {
-    zh: {
-      "settings.open": "\u6210\u5458\u8BBE\u7F6E",
-      "settings.title": "\u6210\u5458\u8BBE\u7F6E",
-      "settings.close": "\u5173\u95ED",
-      "settings.current": "\u5F53\u524D\u751F\u6548",
-      "settings.noModel": "\u672A\u8BB0\u5F55",
-      "settings.source.explicit": "\u624B\u52A8\u6307\u5B9A",
-      "settings.source.inherited": "\u7EE7\u627F\u81EA Lead",
-      "settings.source.observed": "\u8FD0\u884C\u65F6\u89C2\u6D4B",
-      "settings.source.cli-default": "CLI \u9ED8\u8BA4",
-      "settings.provider": "Provider",
-      "settings.model": "\u6A21\u578B",
-      "settings.thoughtLevel": "\u601D\u8003\u5F3A\u5EA6",
-      "settings.levelDefault": "\u6A21\u578B\u9ED8\u8BA4",
-      // 保留：Registry 目前只暴露 variants 或「未知」，尚无「明确不支持档位」标记；
-      // 未来若注册表给出该能力位，用它渲染禁用态（E-1b 起未知档位改走常用档）。
-      "settings.noReasoning": "\u8BE5\u6A21\u578B\u4E0D\u652F\u6301\u601D\u8003\u5F3A\u5EA6",
-      "settings.groupEnabled": "\u5DF2\u542F\u7528",
-      "settings.groupDisabled": "\u4E0D\u53EF\u7528",
-      "settings.disabledBecause": "\uFF08{reason}\uFF09",
-      "settings.advanced": "\u9AD8\u7EA7\u6A21\u5F0F",
-      "settings.advancedHint": "\u9700\u8981\u65B0\u589E\u6A21\u578B\u6216 Provider\uFF1F\u5728 ZCode \u8BBE\u7F6E \u2192 \u6A21\u578B\u670D\u52A1 \u4E2D\u6DFB\u52A0\u540E\uFF0C\u56DE\u5230\u6B64\u5904\u70B9\u51FB\u5237\u65B0",
-      "settings.refresh": "\u5237\u65B0",
-      "settings.cancel": "\u53D6\u6D88",
-      "settings.apply": "\u5E94\u7528",
-      "settings.saving": "\u6B63\u5728\u5E94\u7528\u2026",
-      "settings.applied": "\u5DF2\u5E94\u7528",
-      "settings.nextTurn": "\u5DF2\u4FDD\u5B58\uFF0C\u4E0B\u4E00\u8F6E\u751F\u6548",
-      "settings.failedApply": "\u4E0A\u6B21\u8BBE\u7F6E\u672A\u751F\u6548\uFF1A{model}\uFF08{reason}\uFF09",
-      "settings.loading": "\u6B63\u5728\u52A0\u8F7D\u6A21\u578B\u2026",
-      "settings.error": "\u6A21\u578B\u8BBE\u7F6E\u4E0D\u53EF\u7528\uFF1A{message}",
-      "settings.emptyCatalog": "\u6A21\u578B\u76EE\u5F55\u4E3A\u7A7A\uFF08\u53EF\u5728\u9AD8\u7EA7\u6A21\u5F0F\u5237\u65B0\uFF09",
-      "settings.noSelection": "\u8BF7\u5148\u9009\u62E9 Provider \u4E0E\u6A21\u578B"
-    },
-    en: {
-      "settings.open": "Member settings",
-      "settings.title": "Member settings",
-      "settings.close": "Close",
-      "settings.current": "Currently in effect",
-      "settings.noModel": "Not recorded",
-      "settings.source.explicit": "Set explicitly",
-      "settings.source.inherited": "Inherited from Lead",
-      "settings.source.observed": "Observed at runtime",
-      "settings.source.cli-default": "CLI default",
-      "settings.provider": "Provider",
-      "settings.model": "Model",
-      "settings.thoughtLevel": "Reasoning level",
-      "settings.levelDefault": "Model default",
-      // 保留（同上）：显式「不支持档位」能力位尚未由注册表提供。
-      "settings.noReasoning": "This model has no reasoning levels",
-      "settings.groupEnabled": "Enabled",
-      "settings.groupDisabled": "Unavailable",
-      "settings.disabledBecause": " ({reason})",
-      "settings.advanced": "Advanced",
-      "settings.advancedHint": "Need another model or provider? Add it in ZCode Settings \u2192 Model services, then come back and refresh.",
-      "settings.refresh": "Refresh",
-      "settings.cancel": "Cancel",
-      "settings.apply": "Apply",
-      "settings.saving": "Applying\u2026",
-      "settings.applied": "Applied",
-      "settings.nextTurn": "Saved; applies on the next turn",
-      "settings.failedApply": "Last change did not apply: {model} ({reason})",
-      "settings.loading": "Loading models\u2026",
-      "settings.error": "Model settings unavailable: {message}",
-      "settings.emptyCatalog": "Model catalog is empty (use Refresh in Advanced)",
-      "settings.noSelection": "Select a provider and model first"
-    }
-  };
-  function tms(lang2, key, vars) {
-    const template = MEMBER_SETTINGS_DICT[lang2][key];
-    if (vars === void 0) return template;
-    return template.replace(/\{(\w+)\}/g, (m, k2) => k2 in vars ? String(vars[k2]) : m);
-  }
-  function catalogProvider(catalog, providerId) {
-    return providerId === void 0 ? void 0 : catalog.providers.find((p2) => p2.providerId === providerId);
-  }
-  function catalogModelOf(catalog, providerId, modelId) {
-    if (modelId === void 0) return void 0;
-    return catalogProvider(catalog, providerId)?.models.find((m) => m.id === modelId);
-  }
-  function defaultLevel(model) {
-    const variants = model?.reasoning?.variants;
-    const preferred = model?.reasoning?.defaultVariant;
-    if (variants === void 0) return preferred ?? DEFAULT_REASONING_LEVEL;
-    if (variants.length === 0) return DEFAULT_REASONING_LEVEL;
-    return preferred !== void 0 && variants.includes(preferred) ? preferred : variants[0];
-  }
-  function draftFromCurrent(catalog, current) {
-    if (current !== void 0) {
-      const direct = current.providerId !== void 0 ? catalogModelOf(catalog, current.providerId, current.model) : void 0;
-      if (direct !== void 0) {
-        const known = direct.reasoning?.variants;
-        const level = current.reasoningLevel !== void 0 && (known === void 0 || known.includes(current.reasoningLevel)) ? current.reasoningLevel : defaultLevel(direct);
-        return { providerId: current.providerId, modelId: direct.id, reasoningLevel: level };
-      }
-      if (current.model !== void 0) {
-        const hits = catalog.providers.filter((p2) => p2.enabled && p2.models.some((m) => m.id === current.model));
-        if (hits.length === 1) {
-          const model = hits[0].models.find((m) => m.id === current.model);
-          return { providerId: hits[0].providerId, modelId: model.id, reasoningLevel: defaultLevel(model) };
-        }
-      }
-    }
-    return draftFromProvider(catalog, void 0);
-  }
-  function draftFromProvider(catalog, providerId) {
-    const provider = catalogProvider(catalog, providerId) ?? catalog.providers.find((p2) => p2.enabled && p2.models.length > 0);
-    const model = provider?.models[0];
-    return {
-      ...provider !== void 0 ? { providerId: provider.providerId } : {},
-      ...model !== void 0 ? { modelId: model.id, reasoningLevel: defaultLevel(model) } : {}
-    };
-  }
-  function selectProvider(catalog, draft, providerId) {
-    if (draft.providerId === providerId) return draft;
-    return draftFromProvider(catalog, providerId);
-  }
-  function selectModel(catalog, draft, modelId) {
-    const model = catalogModelOf(catalog, draft.providerId, modelId);
-    return {
-      ...draft.providerId !== void 0 ? { providerId: draft.providerId } : {},
-      modelId,
-      reasoningLevel: defaultLevel(model)
-    };
-  }
-  function selectLevel(draft, level) {
-    return level.length === 0 ? { ...draft.providerId !== void 0 ? { providerId: draft.providerId } : {}, ...draft.modelId !== void 0 ? { modelId: draft.modelId } : {} } : { ...draft, reasoningLevel: level };
-  }
-  function draftSelection(draft) {
-    if (draft.providerId === void 0 || draft.modelId === void 0) return void 0;
-    return {
-      model: `${draft.providerId}$${draft.modelId}`,
-      ...draft.reasoningLevel !== void 0 ? { thoughtLevel: draft.reasoningLevel } : {}
-    };
-  }
-  function renderMemberSettingsModal(st, lang2) {
-    if (st.kind === "closed") return "";
-    const title = `${tms(lang2, "settings.title")} \xB7 ${st.name}`;
-    const close = `<button class="settings-close" data-settings-close aria-label="${esc2(tms(lang2, "settings.close"))}" title="${esc2(tms(lang2, "settings.close"))}">\xD7</button>`;
-    const head = `<div class="settings-head"><span class="settings-title">${esc2(title)}</span>${close}</div>`;
-    let body;
-    if (st.kind === "loading") {
-      body = `<div class="settings-state"><span class="dot ongoing"></span>${esc2(tms(lang2, "settings.loading"))}</div>`;
-    } else if (st.kind === "error") {
-      body = `<div class="settings-state error"><span class="dot error"></span><span>${esc2(
-        tms(lang2, "settings.error", { message: st.message })
-      )}</span></div><div class="settings-foot"><button class="settings-btn" data-settings-refresh>${esc2(tms(lang2, "settings.refresh"))}</button></div>`;
-    } else {
-      body = renderReadyBody(st, lang2);
-    }
-    return `<div class="settings-overlay" data-settings-overlay><div class="settings-modal" role="dialog" aria-modal="true" aria-label="${esc2(title)}">` + head + body + `</div></div>`;
-  }
-  function renderReadyBody(st, lang2) {
-    const { catalog, current, draft } = st;
-    const saving = st.kind === "saving";
-    const available = catalog.providers.length > 0;
-    const currentModel = current?.model;
-    const currentParts = [];
-    currentParts.push(esc2(currentModel ?? tms(lang2, "settings.noModel")));
-    if (current?.reasoningLevel !== void 0) currentParts.push(`\xB7 ${esc2(current.reasoningLevel)}`);
-    const source = current?.source ?? "cli-default";
-    const currentLine = `<div class="settings-current"><span class="settings-label">${esc2(tms(lang2, "settings.current"))}</span><span class="settings-current-model">${currentParts.join(" ")}</span><span class="source-badge ${esc2(source)}">${esc2(tms(lang2, `settings.source.${source}`))}</span></div>`;
-    const notice = st.notice !== void 0 ? `<div class="settings-notice" role="status">${esc2(
-      tms(lang2, st.notice === "now" ? "settings.applied" : "settings.nextTurn")
-    )}</div>` : "";
-    const failed = current?.failedApply;
-    const failedNotice = failed !== void 0 ? `<div class="settings-notice error" role="alert">${esc2(
-      tms(lang2, "settings.failedApply", {
-        model: failed.modelId,
-        reason: failed.reason.length > 0 ? failed.reason : "\u2014"
-      })
-    )}</div>` : "";
-    if (!available) {
-      return currentLine + failedNotice + `<div class="settings-state">${esc2(tms(lang2, "settings.emptyCatalog"))}</div>` + notice + renderFoot(lang2, true) + renderAdvanced(lang2);
-    }
-    const provider = catalogProvider(catalog, draft.providerId);
-    const model = catalogModelOf(catalog, draft.providerId, draft.modelId);
-    const variants = model?.reasoning?.variants;
-    const providerSelect = `<label class="settings-field"><span class="settings-label">${esc2(tms(lang2, "settings.provider"))}</span><select class="modal-select" data-settings-provider${saving ? " disabled" : ""}>` + renderProviderOptions(catalog, draft.providerId, lang2) + `</select></label>`;
-    const modelSelect = `<label class="settings-field"><span class="settings-label">${esc2(tms(lang2, "settings.model"))}</span><select class="modal-select" data-settings-model${saving ? " disabled" : ""}>` + (provider !== void 0 ? `<optgroup label="${esc2(provider.name)}">` + provider.models.map(
-      (m) => `<option value="${esc2(m.id)}"${m.id === draft.modelId ? " selected" : ""}${m.enabled === false ? " disabled" : ""}>${esc2(m.id)}</option>`
-    ).join("") + `</optgroup>` : "") + `</select></label>`;
-    const levelOptions = variants ?? [...COMMON_REASONING_LEVELS];
-    const levelSelect = `<label class="settings-field"><span class="settings-label">${esc2(tms(lang2, "settings.thoughtLevel"))}</span><select class="modal-select" data-settings-level${saving ? " disabled" : ""}><option value=""${draft.reasoningLevel === void 0 ? " selected" : ""}>${esc2(tms(lang2, "settings.levelDefault"))}</option>` + levelOptions.map(
-      (v2) => `<option value="${esc2(v2)}"${v2 === draft.reasoningLevel ? " selected" : ""}>${esc2(v2)}</option>`
-    ).join("") + `</select></label>`;
-    return currentLine + failedNotice + providerSelect + modelSelect + levelSelect + notice + renderFoot(lang2, saving) + renderAdvanced(lang2);
-  }
-  function renderProviderOptions(catalog, selected, lang2) {
-    const enabled = catalog.providers.filter((p2) => p2.enabled);
-    const disabled = catalog.providers.filter((p2) => !p2.enabled);
-    const option = (p2, isDisabled) => `<option value="${esc2(p2.providerId)}"${p2.providerId === selected ? " selected" : ""}${isDisabled ? " disabled" : ""}>` + esc2(p2.name) + (isDisabled && p2.disabledReason !== void 0 ? esc2(tms(lang2, "settings.disabledBecause", { reason: p2.disabledReason })) : "") + `</option>`;
-    const group = (label, items) => items.length === 0 ? "" : `<optgroup label="${esc2(label)}">${items.map((p2) => option(p2, !p2.enabled)).join("")}</optgroup>`;
-    return group(tms(lang2, "settings.groupEnabled"), enabled) + group(tms(lang2, "settings.groupDisabled"), disabled);
-  }
-  function renderFoot(lang2, saving) {
-    const selectionDisabled = saving ? " disabled" : "";
-    return `<div class="settings-foot"><button class="settings-btn" data-settings-cancel${saving ? " disabled" : ""}>${esc2(tms(lang2, "settings.cancel"))}</button><button class="settings-btn primary" data-settings-apply${selectionDisabled}>${esc2(
-      saving ? tms(lang2, "settings.saving") : tms(lang2, "settings.apply")
-    )}</button></div>`;
-  }
-  function renderAdvanced(lang2) {
-    return `<div class="settings-advanced"><div class="settings-advanced-title">${esc2(tms(lang2, "settings.advanced"))}</div><div class="settings-advanced-hint">${esc2(tms(lang2, "settings.advancedHint"))}</div><button class="settings-btn" data-settings-refresh>${esc2(tms(lang2, "settings.refresh"))}</button></div>`;
   }
 
   // src/ui-core/render.ts
@@ -15895,14 +15507,9 @@ body { background: transparent; }
     const sub = `<span class="sub">${esc2(t(lang2, memberStatusKey(m.status)))}${modelSuffix}</span>`;
     const diag = m.diagnostics.length > 0 ? `<span class="diagnostic">${esc2(m.diagnostics[0])}</span>` : "";
     const openAttr = disabled ? "" : ` title="${esc2(t(lang2, "open"))}"`;
-    const body = `<button class="${cls}" data-member-id="${esc2(m.id)}"${disabled ? " disabled" : ""}${openAttr}>` + memberIndicator(m) + `<span class="member-text">${nameRow}${sub}${diag}</span></button>`;
-    if (opts.memberSettings !== true || m.role !== "teammate") {
-      return body;
-    }
-    const gear = `<button class="member-gear" data-member-gear="${esc2(m.id)}" title="${esc2(tms(lang2, "settings.open"))}" aria-label="${esc2(tms(lang2, "settings.open"))}">${iconGear(14)}</button>`;
-    return `<div class="member-card">${body}${gear}</div>`;
+    return `<button class="${cls}" data-member-id="${esc2(m.id)}"${disabled ? " disabled" : ""}${openAttr}>` + memberIndicator(m) + `<span class="member-text">${nameRow}${sub}${diag}</span></button>`;
   }
-  function renderRoster(frame2, lang2, options = {}) {
+  function renderRoster(frame2, lang2) {
     const members = frame2.members;
     const currentId = currentMemberId(frame2);
     const countHtml = members.length > 1 ? `<span class="count">${members.length}</span>` : "";
@@ -15912,8 +15519,7 @@ body { background: transparent; }
         // Tag 恒随当前会话；高亮/描边才受 members>1 限制（上游 TeamAction 同口径）。
         isCurrent: m.id === currentId,
         highlightCurrent: m.id === currentId && members.length > 1,
-        disabled: isMemberDisabled(m, currentId),
-        ...options.memberSettings === true ? { memberSettings: true } : {}
+        disabled: isMemberDisabled(m, currentId)
       })
     ).join("");
     return `<section class="roster-section"><h3>${esc2(t(lang2, "roster"))}${countHtml}</h3><div class="roster">${cards}</div></section>`;
@@ -15967,7 +15573,7 @@ body { background: transparent; }
     }
     return out.join("");
   }
-  function renderPanelBody(frame2, lang2, runtime, options = {}) {
+  function renderPanelBody(frame2, lang2, runtime) {
     const noTeam = frame2.team === null;
     const notices = renderNotices({
       lang: lang2,
@@ -15979,7 +15585,7 @@ body { background: transparent; }
     if (noTeam && runtime?.loading !== true) {
       return notices;
     }
-    return notices + renderRoster(frame2, lang2, options) + renderTasks(frame2, lang2);
+    return notices + renderRoster(frame2, lang2) + renderTasks(frame2, lang2);
   }
 
   // src/ui-core/detail-render.ts
@@ -16123,25 +15729,22 @@ body { background: transparent; }
   var lang = "zh";
   var navError;
   var detailState = { kind: "closed" };
-  var settingsState = { kind: "closed" };
   var expandStore = memoryExpandStore();
   var detachExpand = null;
   var heartbeatTimer = null;
   var heartbeatInFlight = false;
   var viewSequencer = new RequestSequencer();
   var detailSequencer = new RequestSequencer();
-  var settingsSequencer = new RequestSequencer();
   var style = document.createElement("style");
   style.textContent = COMPONENT_CSS + PANEL_CSS;
   document.head.appendChild(style);
   var root = document.createElement("div");
   root.className = "at-root";
-  root.innerHTML = `<div class="team-panel" role="dialog" tabindex="-1" data-team-panel><div class="panel-body" data-list-view></div><div class="detail-view" data-detail-view tabindex="-1" hidden></div><div data-settings-layer hidden></div></div>`;
+  root.innerHTML = `<div class="team-panel" role="dialog" tabindex="-1" data-team-panel><div class="panel-body" data-list-view></div><div class="detail-view" data-detail-view tabindex="-1" hidden></div></div>`;
   document.body.appendChild(root);
   var panelEl = root.querySelector(".team-panel");
   var listView = root.querySelector("[data-list-view]");
   var detailView = root.querySelector("[data-detail-view]");
-  var settingsLayer = root.querySelector("[data-settings-layer]");
   function applyHostContext() {
     const ctx = app.getHostContext();
     const theme = ctx?.theme === "dark" ? "dark" : "light";
@@ -16313,161 +15916,6 @@ body { background: transparent; }
       // 注入失败不打断视图（下钻是提示性动作）
     );
   }
-  async function callPanelBody(args) {
-    const res = await app.callServerTool({ name: "team_panel_call", arguments: args });
-    const body = JSON.parse(parseToolText(res));
-    if (body.ok === false || body.error !== void 0) {
-      throw new Error(body.error?.message ?? "panel call failed");
-    }
-    return body;
-  }
-  function memberNameOf(memberId) {
-    return frame?.members.find((m) => m.id === memberId)?.target ?? memberId;
-  }
-  async function openSettings(memberId) {
-    const seq = settingsSequencer.begin();
-    const name = memberNameOf(memberId);
-    settingsState = { kind: "loading", memberId, name };
-    renderSettings();
-    try {
-      const body = await callPanelBody({ action: "modelOptions", memberId });
-      if (!settingsSequencer.isCurrent(seq)) return;
-      const catalog = body.catalog;
-      const current = body.current;
-      settingsState = {
-        kind: "ready",
-        memberId,
-        name: typeof body.memberName === "string" ? body.memberName : name,
-        catalog,
-        ...current !== void 0 ? { current } : {},
-        draft: draftFromCurrent(catalog, current)
-      };
-    } catch (err) {
-      if (!settingsSequencer.isCurrent(seq)) return;
-      settingsState = {
-        kind: "error",
-        memberId,
-        name,
-        message: err instanceof Error ? err.message : String(err)
-      };
-    }
-    renderSettings();
-  }
-  function closeSettings() {
-    settingsSequencer.invalidate();
-    settingsState = { kind: "closed" };
-    renderSettings();
-  }
-  async function applySettings() {
-    if (settingsState.kind !== "ready") return;
-    const selection = draftSelection(settingsState.draft);
-    if (selection === void 0) return;
-    const { memberId, name, catalog, current, draft } = settingsState;
-    const seq = settingsSequencer.begin();
-    settingsState = {
-      kind: "saving",
-      memberId,
-      name,
-      catalog,
-      ...current !== void 0 ? { current } : {},
-      draft
-    };
-    renderSettings();
-    let applied = "now";
-    try {
-      const body = await callPanelBody({
-        action: "setMemberModel",
-        memberId,
-        model: selection.model,
-        ...selection.thoughtLevel !== void 0 ? { thoughtLevel: selection.thoughtLevel } : {}
-      });
-      if (!settingsSequencer.isCurrent(seq)) return;
-      if (body.applied === "failed") {
-        settingsState = {
-          kind: "error",
-          memberId,
-          name,
-          message: typeof body.reason === "string" && body.reason.length > 0 ? body.reason : "member model change was rejected"
-        };
-        renderSettings();
-        return;
-      }
-      applied = body.applied === "next-turn" ? "next-turn" : "now";
-      const refreshed = await callPanelBody({ action: "modelOptions", memberId });
-      if (!settingsSequencer.isCurrent(seq)) return;
-      const nextCatalog = refreshed.catalog;
-      const nextCurrent = refreshed.current;
-      settingsState = {
-        kind: "ready",
-        memberId,
-        name: typeof refreshed.memberName === "string" ? refreshed.memberName : name,
-        catalog: nextCatalog,
-        ...nextCurrent !== void 0 ? { current: nextCurrent } : {},
-        draft: draftFromCurrent(nextCatalog, nextCurrent),
-        notice: applied === "next-turn" ? "next-turn" : "now"
-      };
-    } catch (err) {
-      if (!settingsSequencer.isCurrent(seq)) return;
-      settingsState = {
-        kind: "error",
-        memberId,
-        name,
-        message: err instanceof Error ? err.message : String(err)
-      };
-    }
-    renderSettings();
-  }
-  function renderSettings() {
-    settingsLayer.hidden = settingsState.kind === "closed";
-    if (settingsState.kind === "closed") {
-      settingsLayer.innerHTML = "";
-      return;
-    }
-    settingsLayer.innerHTML = renderMemberSettingsModal(settingsState, lang);
-    bindSettings();
-  }
-  function bindSettings() {
-    const overlay = settingsLayer.querySelector("[data-settings-overlay]");
-    overlay?.addEventListener("click", (ev) => {
-      if (ev.target === overlay) closeSettings();
-    });
-    settingsLayer.querySelector("[data-settings-close]")?.addEventListener("click", closeSettings);
-    settingsLayer.querySelector("[data-settings-cancel]")?.addEventListener("click", closeSettings);
-    settingsLayer.querySelector("[data-settings-refresh]")?.addEventListener("click", () => {
-      if (settingsState.kind !== "closed") void openSettings(settingsState.memberId);
-    });
-    settingsLayer.querySelector("[data-settings-apply]")?.addEventListener("click", () => {
-      void applySettings();
-    });
-    const bound = settingsState;
-    if (bound.kind !== "ready") return;
-    const catalog = bound.catalog;
-    const draft = bound.draft;
-    const providerSelect = settingsLayer.querySelector("[data-settings-provider]");
-    providerSelect?.addEventListener("change", () => {
-      if (settingsState.kind !== "ready") return;
-      settingsState = { ...settingsState, draft: selectProvider(catalog, draft, providerSelect.value) };
-      renderSettings();
-    });
-    const modelSelect = settingsLayer.querySelector("[data-settings-model]");
-    modelSelect?.addEventListener("change", () => {
-      if (settingsState.kind !== "ready") return;
-      settingsState = { ...settingsState, draft: selectModel(catalog, draft, modelSelect.value) };
-      renderSettings();
-    });
-    const levelSelect = settingsLayer.querySelector("[data-settings-level]");
-    levelSelect?.addEventListener("change", () => {
-      if (settingsState.kind !== "ready") return;
-      settingsState = { ...settingsState, draft: selectLevel(draft, levelSelect.value) };
-      renderSettings();
-    });
-  }
-  document.addEventListener("keydown", (ev) => {
-    if (ev.key === "Escape" && settingsState.kind !== "closed") {
-      ev.preventDefault();
-      closeSettings();
-    }
-  });
   function render() {
     const inDetail = detailState.kind !== "closed";
     listView.hidden = inDetail;
@@ -16496,9 +15944,7 @@ body { background: transparent; }
       {
         ...navError !== void 0 ? { navError } : {},
         loading: false
-      },
-      // stage-8 D：齿轮仅在 MCP Apps 面板路径开启（伴生页/静态卡片默认关）
-      { memberSettings: true }
+      }
     );
     detachExpand = attachExpandBehavior(listView, expandStore, {
       expand: DICT[lang]["task.expand"],
@@ -16509,13 +15955,6 @@ body { background: transparent; }
     const target = ev.target;
     if (target?.closest("[data-task-toggle]") !== null && target !== void 0) {
       persistWidgetState();
-      return;
-    }
-    const gear = target?.closest("[data-member-gear]");
-    if (gear !== null && gear !== void 0) {
-      ev.stopPropagation();
-      const gearId = gear.dataset.memberGear;
-      if (gearId !== void 0) void openSettings(gearId);
       return;
     }
     const member = target?.closest("button.member");
@@ -16584,7 +16023,6 @@ body { background: transparent; }
   app.onhostcontextchanged = () => {
     applyHostContext();
     render();
-    if (settingsState.kind !== "closed") renderSettings();
   };
   void (async () => {
     applyHostContext();

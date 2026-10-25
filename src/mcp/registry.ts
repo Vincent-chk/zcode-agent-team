@@ -1,4 +1,4 @@
-// 10 工具注册表（stage-3 T3.1；stage-8 Round C 追加 member_set_model）。
+// 9 工具注册表（stage-3 T3.1；0.4.0 注销 member_set_model，成员模型唯一路线 = 跟随 Lead）。
 // tools/list = TEAM_TOOL_DEFINITIONS 原样（F01 快照同源；顺序冻结）；
 // tools/call = 身份解析 → 后端操作 → 结果整形（handlers/results）。
 // progress 保活：宿主 _meta.progressToken 在场且工具为 wait_agent 时，提供 emitProgress
@@ -21,7 +21,7 @@ export interface ProgressNotifier {
   }): Promise<void>;
 }
 
-/** tools/list 条目（10 工具；〔对齐轮〕interrupt=false 时 9 工具；与快照生成器同源同序列化器）。 */
+/** tools/list 条目（9 工具；〔对齐轮〕interrupt=false 时 8 工具；与快照生成器同源同序列化器）。 */
 export function listTeamTools(options: { interrupt?: boolean } = {}): readonly Record<string, unknown>[] {
   return teamToolDefinitions(options).map((t) => ({
     name: t.name,
@@ -42,7 +42,7 @@ export interface CallTeamToolInput {
   now?: () => number;
 }
 
-/** tools/call 分派（仅 10 工具；team_ping/panel 由 daemon 自处理，不走本函数）。 */
+/** tools/call 分派（仅 9 工具；team_ping/panel 由 daemon 自处理，不走本函数）。 */
 export async function callTeamTool(
   input: CallTeamToolInput,
   notifier?: ProgressNotifier,

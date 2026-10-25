@@ -19,6 +19,12 @@ export interface TranscriptSessionRow {
   time_created: number;
 }
 
+/** 带生效时间的模型选择（0.4.0 三源判定比较时间戳用；at 为 epoch ms）。 */
+export interface TimedModelSelection {
+  selection: MemberModelSelection;
+  at: number;
+}
+
 export interface TranscriptUserMessage {
   messageId: string;
   text: string;
@@ -183,6 +189,84 @@ export class TranscriptReader {
       .get(sessionId) as { model: string } | undefined;
     return row?.model;
   }
+
+  /**
+   * 最近一条「真实用户提交」（semantics.origin=real_user）消息携带的模型快照 + 提交时间。
+   * 0.4.0 三源判定的「提交证据」：宿主保存用户消息时写入该次提交的 modelSelection（本机源码核对），
+   * 输入框切换在提交瞬间即体现在这里——不依赖会话选模条目（issue #7 场景它可能滞后）。
+   * hook/系统注入的 user 消息（origin≠real_user）不算提交。
+   */
+  latestSubmissionSelection(sessionId: string): TimedModelSelection | undefined {
+    if (this.missing()) return undefined;
+    const row = this.open()
+      .prepare(
+        `SELECT m.time_created tc,
+                json_extract(m.data,'$.modelSelection.providerId') p,
+                json_extract(m.data,'$.modelSelection.modelId') mo,
+                json_extract(m.data,'$.modelSelection.options.reasoningLevel') lvl
+         FROM message m
+         WHERE m.session_id = ? AND json_extract(m.data,'$.role') = 'user'
+           AND json_extract(m.data,'$.semantics.origin') = 'real_user'
+           AND json_extract(m.data,'$.modelSelection.providerId') IS NOT NULL
+           AND json_extract(m.data,'$.modelSelection.modelId') IS NOT NULL
+         ORDER BY m.time_created DESC LIMIT 1`,
+      )
+      .get(sessionId) as { tc: number; p: string; mo: string; lvl: string | null } | undefined;
+    if (row === undefined) return undefined;
+    const providerId = row.p.trim();
+    const modelId = row.mo.trim();
+    if (providerId.length === 0 || modelId.length === 0) return undefined;
+    const lvl = typeof row.lvl === "string" ? row.lvl.trim() : "";
+    return {
+      selection: { providerId, modelId, ...(lvl.length > 0 ? { reasoningLevel: lvl } : {}) },
+      at: row.tc,
+    };
+  }
+
+  /** 会话选模条目 + 生效时间（UPSERT 单行；用于与提交快照比较「后来是否有 /model 修改」）。 */
+  latestModelSelectionTimed(sessionId: string): TimedModelSelection | undefined {
+    if (this.missing()) return undefined;
+    const row = this.open()
+      .prepare(
+        `SELECT data, MAX(COALESCE(time_updated, time_created), time_created) at FROM session_entry
+         WHERE session_id = ? AND type = 'runtime/model_selection'
+         ORDER BY time_created DESC LIMIT 1`,
+      )
+      .get(sessionId) as { data: string; at: number } | undefined;
+    if (row === undefined) return undefined;
+    const selection = this.latestModelSelection(sessionId);
+    if (selection === undefined) return undefined;
+    return { selection, at: row.at };
+  }
+
+  /**
+   * 最近一次**主轮**实际模型调用（+ 开始时间）。query_source='main_turn' 过滤是 0.4.0 关键口径：
+   * compact/标题生成/goal 摘要/subagent/workflow 子轮的行属于辅助模型，绝不能当作 Lead 当前模型
+   * （实测本机取值域 = compact, goal_summary_title, main_turn, session_title, subagent,
+   * target_completion_verification, workflow_child）。
+   */
+  latestMainTurnUsage(sessionId: string): TimedModelSelection | undefined {
+    if (this.missing()) return undefined;
+    const row = this.open()
+      .prepare(
+        `SELECT provider_id, model_id, variant, started_at FROM model_usage
+         WHERE session_id = ? AND query_source = 'main_turn'
+         ORDER BY started_at DESC LIMIT 1`,
+      )
+      .get(sessionId) as
+      | { provider_id: string; model_id: string; variant: string | null; started_at: number }
+      | undefined;
+    if (row === undefined) return undefined;
+    const providerId = row.provider_id.trim();
+    const modelId = row.model_id.trim();
+    if (providerId.length === 0 || modelId.length === 0) return undefined;
+    const variant = typeof row.variant === "string" ? row.variant.trim() : "";
+    return {
+      selection: { providerId, modelId, ...(variant.length > 0 ? { reasoningLevel: variant } : {}) },
+      at: row.started_at,
+    };
+  }
+
 
   /**
    * 会话库中最近一次 setModel 的选择（Round A 实证：条目为 UPSERT 单行，canonical id

@@ -141,7 +141,7 @@ describe("成员卡渲染（V05/V06）", () => {
   });
 });
 
-describe("成员设置齿轮（stage-8 D）", () => {
+describe("成员卡无配置通道（0.4.0）", () => {
   const twoMembers = frame({
     members: [
       member({ target: "lead", role: "lead", id: TEAM, sessionId: TEAM }),
@@ -149,37 +149,14 @@ describe("成员设置齿轮（stage-8 D）", () => {
     ],
   });
 
-  it("默认关：不输出 member-card/齿轮（伴生页/静态卡片结构不变）", () => {
+  it("任何路径都不输出 member-card/齿轮（成员模型唯一路线 = 跟随 Lead）", () => {
     const html = renderRoster(twoMembers, "zh");
     expect(html).not.toContain("member-card");
     expect(html).not.toContain("data-member-gear");
     const viaBody = renderPanelBody(twoMembers, "zh");
     expect(viaBody).not.toContain("data-member-gear");
-  });
-
-  it("开启后：成员按钮外包 div.member-card；仅 teammate 出齿轮（Lead 不放）", () => {
-    const html = renderRoster(twoMembers, "zh", { memberSettings: true });
-    expect(html).toContain('<div class="member-card"><button class="member" data-member-id="m_alice"');
-    expect((html.match(/data-member-gear=/g) ?? []).length).toBe(1);
-    expect(html).toContain('data-member-gear="m_alice"');
-    // Lead 行保持原结构（不包 member-card、无齿轮）
     expect(html).toContain(`<button class="member current" data-member-id="${TEAM}"`);
-    expect(html).not.toContain(`data-member-gear="${TEAM}"`);
-  });
-
-  it("齿轮在成员按钮之外（不嵌套 button）+ aria/title 文案 + 14px 图标", () => {
-    const html = renderRoster(twoMembers, "en", { memberSettings: true });
-    // 结构：</button><button class="member-gear" ...>（HTML 不允许 button 嵌 button）
-    expect(html).toMatch(/<\/button><button class="member-gear" data-member-gear="m_alice"/);
-    expect(html).toContain('title="Member settings"');
-    expect(html).toContain('aria-label="Member settings"');
-    expect(html).toContain('width="14"');
-    expect(html).toContain('class="member-gear"');
-  });
-
-  it("renderPanelBody 透传选项（第 4 参）", () => {
-    const html = renderPanelBody(twoMembers, "zh", { loading: false }, { memberSettings: true });
-    expect(html).toContain("data-member-gear");
+    expect(html).toContain('<button class="member" data-member-id="m_alice"');
   });
 });
 

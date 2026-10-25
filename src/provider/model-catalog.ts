@@ -91,7 +91,8 @@ export interface ModelCatalogReader {
 }
 
 /**
- * mtime 缓存读器（daemon 的 team://models 资源用）：两个源文件的 mtime+size 未变 → 返回缓存；
+ * mtime 缓存读器（通用缓存工具；0.4.0：daemon 的 team://models 资源已注销，生产继承链
+ * 用同步 readModelCatalog，本读器保留供低频/诊断场景）：两个源文件的 mtime+size 未变 → 返回缓存；
  * 变化/缺失 → 重读。读取错误经 onError 上报（daemon 记 warn），不抛。
  */
 export function createModelCatalogReader(

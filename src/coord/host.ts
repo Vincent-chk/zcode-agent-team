@@ -424,7 +424,6 @@ export class TeamCoordinatorHost {
       runtime,
       store,
       coordinatorBootId: this.lock.info?.bootId ?? bootId(),
-      provider: this.provider,
     });
     registerTeamMethods(server, table);
     await server.listen({ callTimeoutMs: this.opts.callTimeoutMs });

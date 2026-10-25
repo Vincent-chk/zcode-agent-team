@@ -44,6 +44,7 @@ import { resolveZcodeBin, type ZcodeBin } from "./zcode-bin.js";
 import { AppServerSessionBreeder, isolationModeFromEnv, type IsolationMode } from "./session-breeder.js";
 import type { MemberModelSelection } from "./model-selection.js";
 import { parseModelSelection } from "./model-selection.js";
+import { ModelInheritanceError } from "./model-inheritance.js";
 import {
   applyReasoningDefault,
   catalogSupports,
@@ -96,24 +97,22 @@ export interface ResumeProviderOptions {
   log?: (record: Record<string, unknown>) => void;
 }
 
-/** 培育器最小接口（依赖倒置，便于测试注入）。 */
+/** 培育器最小接口（依赖倒置，便于测试注入）。0.4.0：createChild 无兜底档（继承失败即抛）。 */
 export interface SessionBreederLike {
   createChild(input: {
     teamId: string;
     workspacePath: string;
     modelSelection?: MemberModelSelection;
-    /** 主选失败后的唯一兜底（继承链第二档）；仅 primary 存在且失败才尝试。 */
-    modelFallback?: MemberModelSelection;
     timeoutMs?: number;
   }): Promise<{
     anchorSessionId: string;
     childSessionId: string;
     elapsedMs: number;
     workspacePath: string;
-    /** 实际生效的模型选择（primary/fallback；都失败则缺省）。 */
+    /** 实际生效的模型选择（setModel 成功才有；失败 createChild 直接抛）。 */
     appliedModel?: MemberModelSelection;
   }>;
-  /** mid-life 应用（可选：测试桩可省略 → 立即应用按失败处理，落 pending）。 */
+  /** 每轮执行前同步（0.4.0）：失败返回原因 → 调用方阻止本轮。测试桩可省略 = 同步必失败。 */
   applyModelSelection?(input: {
     sessionId: string;
     workspacePath: string;
@@ -360,11 +359,6 @@ export class ResumePerTurnProvider implements TeammateProvider {
     description: string;
     firstPrompt: string;
     context: "fresh" | "fork";
-    model?: string;
-    /** 结构化模型选择（显式指定优先；缺省时 child 隔离模式继承 Lead）。 */
-    modelSelection?: MemberModelSelection;
-    /** 思考强度覆盖（合并进最终选择：显式/继承的 reasoningLevel 被它替换）。 */
-    thoughtLevel?: string;
     signal?: AbortSignal;
   }): Promise<{ memberId: string; accepted: boolean }> {
     if (args.teamId !== this.opts.teamId) {
@@ -376,40 +370,12 @@ export class ResumePerTurnProvider implements TeammateProvider {
         ? buildForkFirstPrompt(this.reader, this.opts.teamId, args.firstPrompt).prompt
         : args.firstPrompt; // D2：fresh 首轮 = 任务原文逐字（无身份前缀块）
 
-    // 模型选择：显式 > 继承候选（0.3.2：已按目录过滤，只含注册表内启用的自有模型）；
-    // 仅 child 隔离模式可应用。显式指定不设兜底——用户意图优先，失败仅容忍（走「尝试后失败」）。
-    const explicitSelection = args.modelSelection;
-    const inheritedSelections =
-      this.sessionIsolation === "child" && explicitSelection === undefined
-        ? this.lookupLeadModelSelections()
-        : [];
-    // 分类跳过（0.3.2）：child 模式、无显式、Lead 有模型但候选全被目录过滤
-    // （官方套餐 account:*/builtin:* 或已删除的自有 provider）→ 不向 breeder 传任何选择
-    // （零 setModel 尝试），直接走宿主缺省；可见性仍写 model-failed（见下方分类诊断）。
-    const rawLeadSelections =
-      this.sessionIsolation === "child" && explicitSelection === undefined
-        ? this.rawLeadModelSelections()
-        : [];
-    const classifiedSkip =
-      this.sessionIsolation === "child" &&
-      explicitSelection === undefined &&
-      rawLeadSelections.length > 0 &&
-      inheritedSelections.length === 0;
-    const primarySelection =
-      this.sessionIsolation !== "child"
-        ? undefined
-        : (explicitSelection ?? inheritedSelections[0]);
-    // thoughtLevel 是强度覆盖：只覆盖主选（兜底沿用其自身记录的档位，不臆造该模型不支持的强度）。
-    const finalSelection =
-      primarySelection !== undefined && args.thoughtLevel !== undefined
-        ? { ...primarySelection, reasoningLevel: args.thoughtLevel }
-        : primarySelection;
-    const fallbackSelection = explicitSelection !== undefined ? undefined : inheritedSelections[1];
-    // 档位缺省链（E-1b，统一落点 = provider 层）：应用前若 selection 无 reasoningLevel →
-    // 目录 defaultVariant（有则用）→ "max"；后端只保留「variants 已知才校验」。
-    const appliedSelection = finalSelection !== undefined ? this.withReasoningDefault(finalSelection) : undefined;
-    const appliedFallback =
-      fallbackSelection !== undefined ? this.withReasoningDefault(fallbackSelection) : undefined;
+    // 0.4.0 成员模型唯一路线：child 隔离模式跟随 Lead 最新**已确认**选择（三源判定，
+    // 见 resolveLeadInheritance）。解析不出 / 官方套餐 / 目录外 = 孵化前抛错（fail-fast：
+    // 不产生成员、不静默回退宿主缺省冒充继承成功）。显式参数通道、usage 兜底档、分类跳过
+    // 分支全部删除。legacy 模式无继承语义（CLI 工作区缺省）。
+    const inheritedSelection =
+      this.sessionIsolation === "child" ? this.resolveLeadInheritance() : undefined;
 
     // 会话隔离（stage-6）：先在宿主侧培育一个原生隐藏子会话，再以 `--resume <child>` 驱动首轮。
     // 失败 = 抛出（上游落 failed 成员）——不静默回退成会在任务栏可见的顶层会话（DSH 口径）。
@@ -421,45 +387,24 @@ export class ResumePerTurnProvider implements TeammateProvider {
       appliedModel?: MemberModelSelection;
     } | null = null;
     if (this.sessionIsolation === "child") {
-      bred = await this.breeder.createChild({
-        teamId: this.opts.teamId,
-        workspacePath: this.cwd,
-        // 分类跳过：两个模型参数都缺省（createChild 不发 setModel）。
-        ...(!classifiedSkip && appliedSelection !== undefined
-          ? { modelSelection: appliedSelection }
-          : {}),
-        ...(!classifiedSkip && appliedFallback !== undefined
-          ? { modelFallback: appliedFallback }
-          : {}),
-      });
+      try {
+        bred = await this.breeder.createChild({
+          teamId: this.opts.teamId,
+          workspacePath: this.cwd,
+          ...(inheritedSelection !== undefined ? { modelSelection: inheritedSelection } : {}),
+        });
+      } catch (err) {
+        // 继承模型被宿主拒绝 → 落失败记录（成员卡诊断兜底；主报错已从 spawn 返回值透出），
+        // 原错误继续上抛（roster 失败路径落 failed 成员）。其他培育失败与模型无关，直接上抛。
+        const message = err instanceof Error ? err.message : String(err);
+        if (inheritedSelection !== undefined && /inherited model/.test(message)) {
+          this.writeModelFailure(paths, inheritedSelection, `成员模型无法继承：${message}`);
+        }
+        throw err;
+      }
     }
     // 培育器可能从会话库解析出 Lead 的真实目录；轮次/探针必须使用同一目录。
     const spawnCwd = bred?.workspacePath ?? this.cwd;
-
-    // GitHub #6 / 0.3.2：模型没生效必须可见，分两类（显式通道行为不变）：
-    //  · 分类跳过：零尝试，文案区分「官方套餐」与「目录外」；
-    //  · 尝试后失败：沿用旧文案（E-1 兜底失败 / 显式被服务端拒）。
-    // origin 始终只记实际生效者（bred.appliedModel），跳过/失败都不写 modelSelection。
-    if (classifiedSkip) {
-      this.writeModelFailure(
-        paths,
-        rawLeadSelections[0]!,
-        this.classifiedSkipReason(rawLeadSelections[0]!),
-        { fullSentence: true },
-      );
-    } else if (bred !== null && appliedSelection !== undefined) {
-      if (bred.appliedModel !== undefined) {
-        clearModelFailed(paths);
-      } else {
-        this.writeModelFailure(
-          paths,
-          appliedSelection,
-          explicitSelection !== undefined
-            ? "指定的模型不可用于成员（registry 不识别）"
-            : "Lead 模型不可用于成员（registry 不识别）",
-        );
-      }
-    }
 
     const origin: OriginRecord = {
       teamId: this.opts.teamId,
@@ -474,14 +419,9 @@ export class ResumePerTurnProvider implements TeammateProvider {
       firstPromptSha256: sha256(prompt),
       sessionId: bred?.childSessionId ?? null,
       initialUserMessageAccepted: false,
-      ...(args.model !== undefined ? { model: args.model } : {}),
-      // 只记**实际生效**者（BreedResult.appliedModel）：继承条目失败→usage 兜底成功时记 usage；
-      // 两者都没生效则不记（origin 不谎报），modelSource 规则不变。
+      // 只记实际生效者（createChild 失败即抛，走到这里 appliedModel 与继承选择一致或 legacy 无）。
       ...(bred?.appliedModel !== undefined
-        ? {
-            modelSelection: bred.appliedModel,
-            modelSource: explicitSelection !== undefined ? ("explicit" as const) : ("inherited" as const),
-          }
+        ? { modelSelection: bred.appliedModel, modelSource: "inherited" as const }
         : {}),
       sessionIsolation: bred !== null ? "child" : "legacy",
       ...(bred !== null
@@ -554,7 +494,7 @@ export class ResumePerTurnProvider implements TeammateProvider {
       if (sessionId !== null) {
         const landed = this.reader.hasUserText(sessionId, origin.firstPromptText);
         if (landed) {
-          // 再读一次 origin：并发 setMemberModel/pending 应用可能已写入 modelSelection（不覆盖）。
+          // 再读一次 origin：同步/恢复对账可能已写入 modelSelection（不覆盖）。
           const nextOrigin: OriginRecord = {
             ...(readOrigin(paths) ?? origin),
             sessionId,
@@ -855,60 +795,12 @@ export class ResumePerTurnProvider implements TeammateProvider {
     return this.reader.latestModel(this.opts.teamId) ?? this.reader.latestModelUsage(this.opts.teamId)?.modelId;
   }
 
-  /** Lead 当前结构化选择（backend 裸 modelId 消歧用：先 Lead 当前 provider）。 */
+  /** Lead 当前结构化选择（成员卡/roster 展示用；0.4.0 = 三源判定的可继承选择，可能 undefined）。 */
   leadModelSelectionOf(): MemberModelSelection | undefined {
-    return this.lookupLeadModelSelection();
+    return this.resolveLeadInheritance({ throwOnUnusable: false });
   }
 
-  /**
-   * stage-8 Round C · mid-life 改模型（GitHub #6 修订：单次尝试语义）：
-   * - 空闲 → 立即应用；成功改 origin 并清失败记录；**失败返回 {applied:"failed", reason}**，
-   *   写 model-failed.json（供成员行/弹窗展示），**不写 pending**（不再每轮静默重试）。
-   * - 运行中 → 真排队 {applied:"next-turn"}；下一轮 launchTurn 前置一次应用（失败即终态）。
-   * 目标会话未落定 → 抛错。
-   */
-  async setMemberModel(args: {
-    memberId: string;
-    modelSelection?: MemberModelSelection;
-    thoughtLevel?: string;
-  }): Promise<{ applied: "now" | "next-turn" | "failed"; reason?: string }> {
-    const paths = memberPaths(this.teamDir, args.memberId);
-    const origin = readOrigin(paths);
-    if (origin === undefined || origin.sessionId === null) {
-      throw new Error(`member session not settled: ${args.memberId}`);
-    }
-    const base = args.modelSelection ?? this.currentModelSelection(origin);
-    if (base === undefined) {
-      throw new Error(
-        `member model is unknown: specify a model (providerId$modelId or a catalog model id) for ${args.memberId}`,
-      );
-    }
-    const merged: MemberModelSelection =
-      args.thoughtLevel !== undefined ? { ...base, reasoningLevel: args.thoughtLevel } : base;
-    // 档位缺省链（E-1b）：只给 model 时也补出档位（deepseek-flash 等模型必带 reasoningLevel）。
-    const selection = this.withReasoningDefault(merged);
-
-    if (this.currentRunningTurn(paths) !== null) {
-      this.writeModelPending(paths, selection);
-      this.log({
-        ts: iso(this.now()),
-        kind: "model-set-pending",
-        teamId: this.opts.teamId,
-        memberId: args.memberId,
-        reason: "turn-running",
-      });
-      return { applied: "next-turn" };
-    }
-    const result = await this.applySelectionNow(origin.sessionId, origin.cwd, selection, args.memberId);
-    if (result.applied) {
-      this.recordModelSelection(paths, origin, selection);
-      return { applied: "now" };
-    }
-    // 终态失败：立即告知原因，并落失败记录让成员行/弹窗可见；不排队、不重试。
-    const reason = result.reason ?? "model was rejected by the host";
-    this.writeModelFailure(paths, selection, reason);
-    return { applied: "failed", reason };
-  }
+  // 0.4.0 注销 setMemberModel：成员模型不存在独立配置通道（唯一路线 = 每轮跟随 Lead）。
 
   // ---------------------------------------------------------------- hook 回执（Lead 投递 landed 依据）
 
@@ -972,8 +864,10 @@ export class ResumePerTurnProvider implements TeammateProvider {
     const turnId = nextTurnId(args.paths.runDir);
     const stdoutFile = path.join(args.paths.runDir, `${turnId}.out`);
     const turnCwd = args.cwd ?? this.cwd;
-    // mid-life 模型修改兜底：写 turn 记录之前应用 pending（避免 watcher 对 pid-null 轮次误终结）。
-    await this.applyPendingModelSelection(args.paths, args.sessionId, turnCwd, args.memberId);
+    // 0.4.0 执行前同步（每轮唯一入口，覆盖首轮/续跑/恢复）：Lead 最新已确认选择与成员
+    // 实际生效选择不一致 → 先 setModel 再启动本轮；失败 = 抛错阻止本轮（绝不带着旧模型
+    // 或宿主缺省悄悄开跑）。Lead 已切官方套餐同样阻止并报错——「同步失败即明确报告」。
+    await this.syncMemberModel(args.paths, args.memberId, args.sessionId, turnCwd);
     const scriptArgs = [
       ...this.zcode.argvPrefix,
       "-p",
@@ -1093,68 +987,115 @@ export class ResumePerTurnProvider implements TeammateProvider {
     );
   }
 
-  /** Lead 当前模型选择：setModel 权威条目 → 最近一次 model_usage（都无 = undefined，不调 setModel）。 */
-  private lookupLeadModelSelection(): MemberModelSelection | undefined {
-    return this.lookupLeadModelSelections()[0];
-  }
-
-  /** 档位缺省（已有则不覆盖）：目录 defaultVariant → "max"（E-1b 统一落点，backend 不重复补）。 */
+  /** 档位缺省（已有则不覆盖）：目录 defaultVariant → "max"（E-1b 统一落点）。 */
   private withReasoningDefault(selection: MemberModelSelection): MemberModelSelection {
     return applyReasoningDefault(this.modelCatalog(), selection);
   }
 
   /**
-   * Lead 继承候选（至多两档，按序）：`session_entry` 权威条目 → `model_usage` 最近调用。
-   * 0.3.2 分类优先：只保留**目录支持**（用户自配/注册表内且启用）的选择——官方套餐
-   * （`account:` / `builtin:` 前缀）与已删除的自有 provider 不进候选（零 setModel 尝试）。
-   * 空目录守卫：目录不可用时不过滤（旧行为：照旧尝试，宿主终审），避免目录读不到时误跳过。
-   * 去重：两档三元组完全相同则只留一个。
+   * Lead 最新**已确认**模型选择（0.4.0 三源判定；成员跟随 Lead 的唯一解析入口）。
+   *
+   * 三源各带时间戳，取最新者（epoch ms）：
+   *   1. real_user 提交快照 —— 宿主在保存用户消息时写入该次提交的 modelSelection，
+   *      输入框切换在提交瞬间即体现在这里（issue #7 不影响本源：它不刷新 entry，但刷得动消息快照）；
+   *   2. session_entry —— `/model` 命令等会话选模记录（time_updated 识别「提交后的修改」）；
+   *   3. main_turn 实际调用 —— `query_source='main_turn'` 严格过滤，compact/标题/subagent/
+   *      workflow 等辅助行绝不能当作 Lead 模型（本机实测取值域已核验）。
+   *
+   * 判出后按目录分类：官方套餐（`account:`/`builtin:` 前缀）或目录外（provider/model 不存在
+   * 或被禁用）= 不可继承。`throwOnUnusable`（缺省 true）：
+   *   - true：spawn/每轮同步入口 —— 不可继承或三源全空 → 抛 ModelInheritanceError（明确报告，
+   *     绝不静默回退宿主缺省冒充继承成功）；
+   *   - false：展示口径（Lead 伪行模型）—— 返回 undefined 交回退链处理。
+   * 空目录守卫：目录不可读 = 无法分类 → 不过滤（照旧尝试，宿主 setModel 终审）。
    */
-  private lookupLeadModelSelections(): MemberModelSelection[] {
-    const catalog = this.modelCatalog();
-    const catalogAvailable = catalog.providers.length > 0;
-    const candidates = [
-      this.reader.latestModelSelection(this.opts.teamId),
-      this.reader.latestModelUsage(this.opts.teamId),
-    ];
-    const out: MemberModelSelection[] = [];
-    for (const selection of candidates) {
-      if (selection === undefined) continue;
-      if (catalogAvailable && !catalogSupports(catalog, selection)) continue;
-      if (out.some((existing) => sameModelSelection(existing, selection))) continue;
-      out.push(selection);
+  private resolveLeadInheritance(options?: { throwOnUnusable?: boolean }): MemberModelSelection | undefined {
+    const throwOnUnusable = options?.throwOnUnusable !== false;
+    const sources = [
+      this.reader.latestSubmissionSelection(this.opts.teamId),
+      this.reader.latestModelSelectionTimed(this.opts.teamId),
+      this.reader.latestMainTurnUsage(this.opts.teamId),
+    ].filter((source): source is NonNullable<typeof source> => source !== undefined);
+    let latest: MemberModelSelection | undefined;
+    if (sources.length > 0) {
+      const winner = sources.reduce((a, b) => (b.at > a.at ? b : a));
+      latest = winner.selection;
     }
-    return out;
+    if (latest === undefined) {
+      if (!throwOnUnusable) return undefined;
+      throw new ModelInheritanceError(
+        "无法确定 Lead 当前模型（会话库中没有提交快照、选模记录或主轮调用），成员无法继承。",
+      );
+    }
+    const model = `${latest.providerId}/${latest.modelId}`;
+    const isOfficialPlan =
+      latest.providerId.startsWith("account:") || latest.providerId.startsWith("builtin:");
+    if (isOfficialPlan) {
+      if (!throwOnUnusable) return undefined;
+      throw new ModelInheritanceError(
+        `Lead 当前使用官方套餐模型（${model}），成员无法继承（CLI 进程拿不到订阅套餐凭据）。` +
+          "请在 ZCode 中切换到自配的第三方模型后重试。",
+      );
+    }
+    const catalog = this.modelCatalog();
+    if (catalog.providers.length > 0 && !catalogSupports(catalog, latest)) {
+      if (!throwOnUnusable) return undefined;
+      throw new ModelInheritanceError(
+        `Lead 模型 ${model} 不在可用模型目录（Provider 已删除/禁用，或模型不存在），成员无法继承。`,
+      );
+    }
+    return this.withReasoningDefault(latest);
   }
 
   /**
-   * Lead 的**原始**模型选择（未过滤）：用于分类跳过诊断——继承候选为空时判断 Lead 是否
-   * 「有模型但全被目录过滤」（vs「本来就无模型」），决定是否写 model-failed 及文案。
+   * 每轮执行前同步（0.4.0）：Lead 最新已确认选择 ≠ 成员实际生效选择 → setModel 后再启动本轮。
+   * - 无变化：直接返回（零 RPC）。
+   * - 应用失败 / Lead 不可继承：写 model-failed（成员卡诊断兜底）+ 抛 ModelInheritanceError
+   *   阻止本轮 —— 绝不带着旧模型或宿主缺省悄悄开跑。
+   * - legacy 隔离模式 / 会话未落定（首轮由 createChild 定模）：跳过。
    */
-  private rawLeadModelSelections(): MemberModelSelection[] {
-    const candidates = [
-      this.reader.latestModelSelection(this.opts.teamId),
-      this.reader.latestModelUsage(this.opts.teamId),
-    ];
-    const out: MemberModelSelection[] = [];
-    for (const selection of candidates) {
-      if (selection === undefined) continue;
-      if (out.some((existing) => sameModelSelection(existing, selection))) continue;
-      out.push(selection);
+  private async syncMemberModel(
+    paths: MemberPaths,
+    memberId: string,
+    sessionId: string | null,
+    workspacePath: string,
+  ): Promise<void> {
+    if (this.sessionIsolation !== "child" || sessionId === null) return;
+    const lead = this.resolveLeadInheritance(); // 不可继承 = 抛（launchTurn 调用方看到明确错误）
+    // 档位缺省链已在 resolveLeadInheritance 内应用；此处防御性兜底（undefined 时不动作）
+    if (lead === undefined) return;
+    const origin = readOrigin(paths);
+    const current =
+      origin?.modelSelection ??
+      (this.reader.latestModelSelection(sessionId) ??
+        this.reader.latestMainTurnUsage(sessionId)?.selection);
+    if (current !== undefined && sameModelSelection(current, lead)) {
+      return; // 已是 Lead 最新选择：不打扰宿主
     }
-    return out;
+    const result = await this.applySelectionNow(sessionId, workspacePath, lead, memberId);
+    if (!result.applied) {
+      const reason = result.reason ?? "model was rejected by the host";
+      this.writeModelFailure(paths, lead, `成员模型无法继承：${reason}`);
+      throw new ModelInheritanceError(
+        `成员 "${memberId}" 无法同步 Lead 模型（${lead.providerId}/${lead.modelId}）：${reason}`,
+      );
+    }
+    if (origin !== undefined) {
+      writeOrigin(paths, { ...(readOrigin(paths) ?? origin), modelSelection: lead, modelSource: "inherited" });
+    }
+    clearModelFailed(paths);
+    this.log({
+      ts: iso(this.now()),
+      kind: "model-synced",
+      teamId: this.opts.teamId,
+      memberId,
+      providerId: lead.providerId,
+      modelId: lead.modelId,
+      reasoningLevel: lead.reasoningLevel ?? null,
+    });
   }
 
-  /** 成员当前选择（thoughtLevel-only 修改的基底）：origin 记录 → transcript 条目 → 最近调用。 */
-  private currentModelSelection(origin: OriginRecord): MemberModelSelection | undefined {
-    if (origin.modelSelection !== undefined) return origin.modelSelection;
-    if (origin.sessionId === null) return undefined;
-    return (
-      this.reader.latestModelSelection(origin.sessionId) ?? this.reader.latestModelUsage(origin.sessionId)
-    );
-  }
-
-  /** 立即应用（无培育器能力/失败 → applied:false，由调用方落 pending）。 */
+  /** 应用一次模型选择（每轮同步通道：临时实例 resume → setModel；失败返回原因不抛）。 */
   private async applySelectionNow(
     sessionId: string,
     workspacePath: string,
@@ -1184,34 +1125,13 @@ export class ResumePerTurnProvider implements TeammateProvider {
     }
   }
 
-  /** pending 标记落盘（幂等覆盖：最后一次请求胜出）。 */
-  private writeModelPending(paths: MemberPaths, selection: MemberModelSelection): void {
-    writeJsonAtomic(paths.modelPendingFile, { modelSelection: selection, requestedAt: iso(this.now()) });
-  }
-
-  /** origin 回写（展示/审计；再读一次避免覆盖并发更新）。成功应用即清失败记录（#6）。 */
-  private recordModelSelection(
-    paths: MemberPaths,
-    origin: OriginRecord,
-    selection: MemberModelSelection,
-  ): void {
-    writeOrigin(paths, { ...(readOrigin(paths) ?? origin), modelSelection: selection, modelSource: "explicit" });
-    clearModelFailed(paths);
-  }
-
   /**
-   * 记录一次**终态**模型设置失败（供成员行诊断/面板弹窗；不排队、不重试）。
-   * 分类跳过的长建议是单句（句号在末尾），不能被「首句截断」切半 → 跳过类文案只做长度截断。
+   * 记录一次模型继承失败（成员卡诊断兜底；主报错已从轮次/spawn 返回值透出）。
    */
-  private writeModelFailure(
-    paths: MemberPaths,
-    selection: MemberModelSelection,
-    reason: string,
-    options?: { fullSentence?: boolean },
-  ): void {
+  private writeModelFailure(paths: MemberPaths, selection: MemberModelSelection, reason: string): void {
     writeModelFailed(paths, {
       modelSelection: selection,
-      reason: options?.fullSentence === true ? truncateReason(reason) : compactReason(reason),
+      reason: compactReason(reason),
       failedAt: iso(this.now()),
     });
     this.log({
@@ -1225,22 +1145,7 @@ export class ResumePerTurnProvider implements TeammateProvider {
   }
 
   /**
-   * 0.3.2 分类跳过文案：官方套餐（account:* / builtin:* 前缀）给可操作建议；
-   * 其他目录外模型（已删除的自有 provider/陈旧选择）给简短说明。
-   */
-  private classifiedSkipReason(selection: MemberModelSelection): string {
-    const model = `${selection.providerId}/${selection.modelId}`;
-    const isOfficialPlan =
-      selection.providerId.startsWith("account:") || selection.providerId.startsWith("builtin:");
-    return isOfficialPlan
-      ? `Lead 当前使用官方套餐模型（${model}），成员无法继承，已回退宿主缺省；可在 spawn 时指定自配模型或改用第三方模型`
-      : `Lead 模型 ${model} 不在可用目录，已回退宿主缺省`;
-  }
-
-  /** 仅长度截断（≤80 字符），不按句子切——分类跳过文案本身是一条完整建议。 */
-
-  /**
-   * 成员行诊断（GitHub #6）：读 model-failed.json → 一条可读诊断。
+   * 成员行诊断（GitHub #6 保留面）：读 model-failed.json → 一条可读诊断。
    * 无记录/损坏 → []（损坏不阻断 list_agents；失败信息已尽力而为）。
    */
   diagnosticsOf(memberId: string): string[] {
@@ -1254,54 +1159,9 @@ export class ResumePerTurnProvider implements TeammateProvider {
     if (record === undefined) return [];
     const selection = parseModelSelection(record.modelSelection);
     if (selection === undefined) return [];
-    // 落盘 reason 已按渠道截断（尝试失败=首句≤80；分类跳过=整句≤80），这里原样呈现。
+    // 落盘 reason 已截断（首句≤80），这里原样呈现。
     const reason = typeof record.reason === "string" ? record.reason : "";
-    return [`模型设置未生效：${selection.providerId}/${selection.modelId}${reason.length > 0 ? `（${reason}）` : ""}`];
-  }
-
-  /** 下一轮拉起前应用 pending（成功删标记并同步 origin；失败保留标记，不阻塞轮次）。 */
-  private async applyPendingModelSelection(
-    paths: MemberPaths,
-    sessionId: string | null,
-    workspacePath: string,
-    memberId: string,
-  ): Promise<void> {
-    if (sessionId === null) return;
-    const pending = readJson<{ modelSelection?: unknown }>(paths.modelPendingFile);
-    if (pending === undefined) return;
-    const selection = parseModelSelection(pending.modelSelection);
-    if (selection === undefined) {
-      this.log({ ts: iso(this.now()), kind: "model-pending-invalid", teamId: this.opts.teamId, memberId });
-      return;
-    }
-    // 旧 pending 文件可能没有 reasoningLevel（E-1b 之前写入）→ 应用前补同一缺省链。
-    const applied = this.withReasoningDefault(selection);
-    const result = await this.applySelectionNow(sessionId, workspacePath, applied, memberId);
-    if (!result.applied) {
-      // 单次尝试（GitHub #6）：失败即终态——删 pending（不再每轮重试）+ 落失败记录供诊断；
-      // 轮次继续用旧模型跑（不阻塞成员）。
-      try {
-        fs.unlinkSync(paths.modelPendingFile);
-      } catch {
-        /* best-effort */
-      }
-      this.writeModelFailure(paths, applied, result.reason ?? "model was rejected by the host");
-      return;
-    }
-    try {
-      fs.unlinkSync(paths.modelPendingFile);
-    } catch {
-      /* best-effort：标记残留只会导致下一轮重复应用同一选择 */
-    }
-    const origin = readOrigin(paths);
-    if (origin !== undefined) this.recordModelSelection(paths, origin, applied);
-    this.log({
-      ts: iso(this.now()),
-      kind: "model-pending-applied",
-      teamId: this.opts.teamId,
-      memberId,
-      modelId: applied.modelId,
-    });
+    return [`成员模型继承失败：${selection.providerId}/${selection.modelId}${reason.length > 0 ? `（${reason}）` : ""}`];
   }
 
   /** daemon 侧补写 teammate 映射（hook 未及写时的兜底；不覆盖已有 teammate 映射）。 */

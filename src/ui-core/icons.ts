@@ -32,12 +32,3 @@ export function iconChevron(size = 12): string {
 export function iconArrowLeft(size = 14): string {
   return svg('<path d="M9.5 3.5 5 8l4.5 4.5"/><path d="M5 8h8"/>', size);
 }
-
-/** 成员设置齿轮（14px；stage-8 Round D，线性风格与 iconUser 一致：外环+轮齿+内圈）。 */
-export function iconGear(size = 14): string {
-  return svg(
-    '<circle cx="8" cy="8" r="4.4"/><circle cx="8" cy="8" r="1.9"/>' +
-      '<path d="M8 1.5v2.1M8 12.4v2.1M1.5 8h2.1M12.4 8h2.1M3.4 3.4l1.5 1.5M11.1 11.1l1.5 1.5M12.6 3.4l-1.5 1.5M4.9 11.1l-1.5 1.5"/>',
-    size,
-  );
-}

@@ -46,7 +46,7 @@ async function expectTeamError(p: Promise<unknown>, code: string, message: strin
 }
 
 describe("真实装配 · 方法表口径（进程内直执行路径）", () => {
-  it("方法名清单 = 接口草案 §2 终版方法表 + stage-4 mailbox.ack + stage-8 member.set_model（14 方法）", async () => {
+  it("方法名清单 = 接口草案 §2 终版方法表 + stage-4 mailbox.ack（13 方法；0.4.0 注销 member.set_model）", async () => {
     const host = await openHost();
     try {
       const table = host.methodTable;
@@ -56,7 +56,6 @@ describe("真实装配 · 方法表口径（进程内直执行路径）", () => 
         "coordinator.hello",
         "member.claim",
         "member.spawn",
-        "member.set_model",
         "member.interrupt",
         "message.send",
         "mailbox.ack",
@@ -69,7 +68,6 @@ describe("真实装配 · 方法表口径（进程内直执行路径）", () => 
         "admin.reconcile",
       ]);
       expect(table?.get("wait.agent")?.timeoutMs).toBe(3_600_000 + WAIT_AGENT_GRACE_MS);
-      expect(table?.get("member.set_model")?.timeoutMs).toBe(60_000);
     } finally {
       await host.close();
     }
@@ -125,70 +123,17 @@ describe("真实装配 · 方法表口径（进程内直执行路径）", () => 
     }
   });
 
-  it("member.set_model：Lead-only / 参数守卫 / 目标校验 / MockProvider 返回五分支", async () => {
-    const teamId = "sess_set_model_lead";
+  it("0.4.0：member.set_model 已注销 → dispatch 报未知方法（成员模型唯一路线 = 跟随 Lead）", async () => {
+    const teamId = "sess_set_model_removed";
     const host = await openHost(teamId);
     try {
-      await host.dispatch("member.spawn", { session_id: teamId, name: "worker", description: "d", prompt: "p" });
-      await expectTeamError(
-        host.dispatch("member.set_model", {
-          session_id: "sess-intruder",
-          member_id: "worker",
-          modelSelection: { providerId: "p", modelId: "m" },
-        }),
-        "TEAM_LEAD_REQUIRED",
-        "only the Team Lead can change teammate models",
-      );
-      await expectTeamError(
-        host.dispatch("member.set_model", { session_id: teamId, member_id: "worker" }),
-        "TEAM_INVALID_ARGUMENT",
-        'member.set_model requires "modelSelection" or "thoughtLevel"',
-      );
-      await expectTeamError(
-        host.dispatch("member.set_model", {
-          session_id: teamId,
-          member_id: "worker",
-          modelSelection: { providerId: "p" },
-        }),
-        "TEAM_INVALID_ARGUMENT",
-        'member.set_model param "modelSelection" must be an object with providerId and modelId',
-      );
-      await expectTeamError(
-        host.dispatch("member.set_model", {
-          session_id: teamId,
-          member_id: "ghost",
-          modelSelection: { providerId: "p", modelId: "m" },
-        }),
-        "TEAM_MEMBER_NOT_FOUND",
-        'active teammate "ghost" not found',
-      );
-      await expect(
-        host.dispatch("member.set_model", {
-          session_id: teamId,
-          member_id: "worker",
-          modelSelection: { providerId: "p", modelId: "m", options: { reasoningLevel: "high" } },
-        }),
-      ).resolves.toEqual({ applied: "now" });
-    } finally {
-      await host.close();
-    }
-  });
-
-  it("GitHub #6：member.set_model 失败结果（applied:failed + reason）经方法表原样返回", async () => {
-    const teamId = "sess_set_model_failed";
-    const provider = new MockProvider();
-    const host = await TeamCoordinatorHost.open({ dataRoot: root, teamId, provider });
-    try {
-      await host.dispatch("member.spawn", { session_id: teamId, name: "worker", description: "d", prompt: "p" });
-      const memberId = [...provider.teamChildren.keys()][0]!;
-      provider.programWith({ modelSetResults: ["failed"] });
       await expect(
         host.dispatch("member.set_model", {
           session_id: teamId,
           member_id: "worker",
           modelSelection: { providerId: "p", modelId: "m" },
         }),
-      ).resolves.toEqual({ applied: "failed", reason: `mock rejected model for ${memberId}` });
+      ).rejects.toThrow(/member\.set_model/);
     } finally {
       await host.close();
     }

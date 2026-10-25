@@ -324,8 +324,11 @@ describe("Roster · 恢复对账（F12 + C3/C6）", () => {
 describe("Roster · listMembers / interrupt（F13/F14）", () => {
   it("Lead 伪行第一；status 映射；model 回退链；diagnostics=[error]", async () => {
     const { runtime, provider } = buildKit();
-    await runtime.roster.spawnTeammate(LEAD, { name: "alive-one", description: "d1", prompt: "p", model: "m-xl" });
+    await runtime.roster.spawnTeammate(LEAD, { name: "alive-one", description: "d1", prompt: "p" });
     await runtime.roster.spawnTeammate(LEAD, { name: "dead-one", description: "d2", prompt: "p" });
+    // 0.4.0：spawn 无模型参数；成员 model = 继承生效记录（mock 直改桩模拟）
+    const aliveId = [...provider.teamChildren.keys()].find((id) => provider.teamChildren.get(id)?.name === "alive-one")!;
+    provider.teamChildren.get(aliveId)!.model = "m-xl";
     provider.killChild([...provider.teamChildren.keys()].find((id) => provider.teamChildren.get(id)?.name === "dead-one") as string);
     const { members } = runtime.roster.listMembers(LEAD);
     expect(members[0]).toMatchObject({ target: "lead", role: "lead", status: "running", diagnostics: [] });

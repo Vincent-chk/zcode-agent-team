@@ -7,9 +7,8 @@
 import type { ViewFrame, ViewFrameMember } from "./view.js";
 import type { TeamTaskView } from "../domain/task-view.js";
 import { type Lang, t, statusKey, memberStatusKey } from "./dict.js";
-import { iconUser, iconChevron, iconGear } from "./icons.js";
+import { iconUser, iconChevron } from "./icons.js";
 import { esc } from "./escape.js";
-import { tms } from "./member-settings.js";
 
 export { esc } from "./escape.js";
 
@@ -71,7 +70,7 @@ function memberIndicator(m: ViewFrameMember): string {
   return `<span class="member-dot">${inner}</span>`;
 }
 
-/** 单个成员卡（§10.5）。stage-8 D：可选齿轮（仅 teammate + 面板路径）。 */
+/** 单个成员卡（§10.5）。0.4.0：无齿轮——成员模型没有面板配置通道。 */
 export function renderMember(
   m: ViewFrameMember,
   opts: {
@@ -79,8 +78,6 @@ export function renderMember(
     isCurrent: boolean;
     highlightCurrent?: boolean;
     disabled: boolean;
-    /** 面板成员设置入口（默认关；伴生页/静态卡片不改结构）。 */
-    memberSettings?: boolean;
   },
 ): string {
   const { lang, isCurrent, disabled } = opts;
@@ -96,28 +93,16 @@ export function renderMember(
   const diag = m.diagnostics.length > 0 ? `<span class="diagnostic">${esc(m.diagnostics[0])}</span>` : "";
   // 可点行 → <button>（下钻 detail）；禁用行 → <button disabled>（§10.5 cursor default，不响应）
   const openAttr = disabled ? "" : ` title="${esc(t(lang, "open"))}"`;
-  const body =
+  return (
     `<button class="${cls}" data-member-id="${esc(m.id)}"${disabled ? " disabled" : ""}${openAttr}>` +
     memberIndicator(m) +
     `<span class="member-text">${nameRow}${sub}${diag}</span>` +
-    `</button>`;
-  // HTML 不允许 button 嵌 button：齿轮是容器的兄弟节点（非成员按钮子节点）。
-  // Lead 行不放齿轮（Lead 模型是会话作用域，backend 也拒）。
-  if (opts.memberSettings !== true || m.role !== "teammate") {
-    return body;
-  }
-  const gear =
-    `<button class="member-gear" data-member-gear="${esc(m.id)}" title="${esc(tms(lang, "settings.open"))}" ` +
-    `aria-label="${esc(tms(lang, "settings.open"))}">${iconGear(14)}</button>`;
-  return `<div class="member-card">${body}${gear}</div>`;
+    `</button>`
+  );
 }
 
 /** 花名册区（§10.5）：h3（count 仅 members>1 显示）+ 双列网格。 */
-export function renderRoster(
-  frame: ViewFrame,
-  lang: Lang,
-  options: { memberSettings?: boolean } = {},
-): string {
+export function renderRoster(frame: ViewFrame, lang: Lang): string {
   const members = frame.members;
   const currentId = currentMemberId(frame);
   const countHtml = members.length > 1 ? `<span class="count">${members.length}</span>` : "";
@@ -129,7 +114,6 @@ export function renderRoster(
         isCurrent: m.id === currentId,
         highlightCurrent: m.id === currentId && members.length > 1,
         disabled: isMemberDisabled(m, currentId),
-        ...(options.memberSettings === true ? { memberSettings: true } : {}),
       }),
     )
     .join("");
@@ -224,7 +208,6 @@ export function renderPanelBody(
   frame: ViewFrame,
   lang: Lang,
   runtime?: { navError?: string; loading?: boolean },
-  options: { memberSettings?: boolean } = {},
 ): string {
   const noTeam = frame.team === null;
   const notices = renderNotices({
@@ -238,5 +221,5 @@ export function renderPanelBody(
   if (noTeam && runtime?.loading !== true) {
     return notices;
   }
-  return notices + renderRoster(frame, lang, options) + renderTasks(frame, lang);
+  return notices + renderRoster(frame, lang) + renderTasks(frame, lang);
 }

@@ -1,15 +1,23 @@
 // 会话隔离接线（stage-6）：child 模式下首轮以 `--resume <隐藏子会话>` 驱动，
 // origin 记录隔离字段；培育失败 → 直接抛错（不静默回退为可见会话）。
+// 0.4.0 模型继承重写：成员唯一路线 = 跟随 Lead 最新**已确认**选择（三源判定：提交快照 /
+// 选模条目 / main_turn 调用取最新）；解析不出 / 官方套餐 / 目录外 / 应用失败 = 抛错，
+// 绝不静默回退宿主缺省。显式参数通道、usage 兜底档、分类跳过、pending 全部注销。
 import { describe, expect, it } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
-import { buildProviderKit, insertModelUsage, insertSessionEntry } from "./kit.js";
+import {
+  buildProviderKit,
+  insertModelUsage,
+  insertSessionEntry,
+  insertSubmissionMessage,
+} from "./kit.js";
 import { listTurns, memberPaths, readOrigin } from "../../src/provider/member-files.js";
 import type { MemberModelSelection } from "../../src/provider/model-selection.js";
 
 const CHILD = "sess_child_hidden";
 
-/** 0.3.2 测试目录：仅 first-prov/first-model、second-prov/second-model 为受支持组合。 */
+/** 0.4.0 测试目录：仅 first-prov/first-model、lead-prov/lead-model、usage-prov/usage-model 等注入组合受支持。 */
 const SUPPORTED_CATALOG = {
   providers: [
     {
@@ -29,47 +37,74 @@ const SUPPORTED_CATALOG = {
   ],
 };
 
+function catalogFor(selections: Array<{ providerId: string; modelId: string }>) {
+  const byProvider = new Map<string, string[]>();
+  for (const s of selections) {
+    const list = byProvider.get(s.providerId) ?? [];
+    list.push(s.modelId);
+    byProvider.set(s.providerId, list);
+  }
+  return {
+    providers: [...byProvider.entries()].map(([providerId, models]) => ({
+      providerId,
+      name: providerId,
+      kind: "k",
+      enabled: true,
+      models: models.map((id) => ({ id, enabled: true })),
+    })),
+  };
+}
 
-/** 培育器桩：记录 primary/fallback；按 behavior 模拟 setModel 三态并回报 appliedModel。 */
+/** 培育器桩：记录 createChild/applyModelSelection 调用；behavior 模拟 setModel 成败。 */
 function fakeBreeder(
   result:
     | { anchorSessionId: string; childSessionId: string; elapsedMs: number; workspacePath?: string }
     | Error,
-  behavior: { primary?: "ok" | "fail"; fallback?: "ok" | "fail" } = {},
+  behavior: { primary?: "ok" | "fail"; apply?: "ok" | "fail" } = {},
 ) {
   return {
     calls: [] as Array<{
       teamId: string;
       workspacePath: string;
       modelSelection?: MemberModelSelection;
-      modelFallback?: MemberModelSelection;
     }>,
+    applyCalls: [] as Array<{ sessionId: string; selection: MemberModelSelection }>,
     async createChild(input: {
       teamId: string;
       workspacePath: string;
       modelSelection?: MemberModelSelection;
-      modelFallback?: MemberModelSelection;
     }) {
       this.calls.push({
         teamId: input.teamId,
         workspacePath: input.workspacePath,
         ...(input.modelSelection !== undefined ? { modelSelection: input.modelSelection } : {}),
-        ...(input.modelFallback !== undefined ? { modelFallback: input.modelFallback } : {}),
       });
       if (result instanceof Error) throw result;
-      const applied =
-        input.modelSelection === undefined
-          ? undefined
-          : (behavior.primary ?? "ok") === "ok"
-            ? input.modelSelection
-            : input.modelFallback !== undefined && (behavior.fallback ?? "ok") === "ok"
-              ? input.modelFallback
-              : undefined;
+      // 0.4.0：应用失败 = 抛（与真实 breeder 一致，绝不静默返回成功）
+      if (input.modelSelection !== undefined && behavior.primary === "fail") {
+        throw Object.assign(
+          new Error(
+            `member could not use the inherited model ${input.modelSelection.providerId}/${input.modelSelection.modelId}: fake setModel failure`,
+          ),
+          { code: "model-rejected", name: "BreedError" },
+        );
+      }
       return {
         ...result,
         workspacePath: result.workspacePath ?? input.workspacePath,
-        ...(applied !== undefined ? { appliedModel: applied } : {}),
+        ...(input.modelSelection !== undefined ? { appliedModel: input.modelSelection } : {}),
       };
+    },
+    async applyModelSelection(input: {
+      sessionId: string;
+      workspacePath: string;
+      selection: MemberModelSelection;
+    }) {
+      this.applyCalls.push({ sessionId: input.sessionId, selection: input.selection });
+      if (behavior.apply === "fail") {
+        return { applied: false, reason: "fake apply failure" };
+      }
+      return { applied: true };
     },
   };
 }
@@ -77,8 +112,18 @@ function fakeBreeder(
 describe("ResumePerTurnProvider · sessionIsolation=child", () => {
   it("首轮 argv 含 --resume <child>；origin 记录隔离字段", async () => {
     const breeder = fakeBreeder({ anchorSessionId: "sess_anchor_x", childSessionId: CHILD, elapsedMs: 12 });
-    const kit = buildProviderKit({ sessionIsolation: "child", breeder });
+    const kit = buildProviderKit({
+      sessionIsolation: "child",
+      breeder,
+      modelCatalog: () => catalogFor([{ providerId: "lead-prov", modelId: "lead-model" }]),
+    });
     try {
+      insertSubmissionMessage(kit.dbPath, {
+        sessionId: kit.teamId,
+        providerId: "lead-prov",
+        modelId: "lead-model",
+        timeCreated: 1_700_000_000_000,
+      });
       const result = await kit.provider.startContinuable({
         teamId: kit.teamId,
         memberId: "m-iso",
@@ -88,7 +133,13 @@ describe("ResumePerTurnProvider · sessionIsolation=child", () => {
         context: "fresh",
       });
       expect(result.accepted).toBe(true);
-      expect(breeder.calls).toEqual([{ teamId: kit.teamId, workspacePath: kit.cwd }]);
+      expect(breeder.calls).toEqual([
+        {
+          teamId: kit.teamId,
+          workspacePath: kit.cwd,
+          modelSelection: { providerId: "lead-prov", modelId: "lead-model", reasoningLevel: "max" },
+        },
+      ]);
 
       const paths = memberPaths(kit.provider.teamDir, "m-iso");
       const origin = readOrigin(paths);
@@ -111,8 +162,18 @@ describe("ResumePerTurnProvider · sessionIsolation=child", () => {
 
   it("培育失败 → startContinuable 抛错（不静默回退）", async () => {
     const breeder = fakeBreeder(new Error("createSelectionSideSession rejected: unsupported"));
-    const kit = buildProviderKit({ sessionIsolation: "child", breeder });
+    const kit = buildProviderKit({
+      sessionIsolation: "child",
+      breeder,
+      modelCatalog: () => catalogFor([{ providerId: "lead-prov", modelId: "lead-model" }]),
+    });
     try {
+      insertSubmissionMessage(kit.dbPath, {
+        sessionId: kit.teamId,
+        providerId: "lead-prov",
+        modelId: "lead-model",
+        timeCreated: 1_700_000_000_000,
+      });
       await expect(
         kit.provider.startContinuable({
           teamId: kit.teamId,
@@ -133,42 +194,13 @@ describe("ResumePerTurnProvider · sessionIsolation=child", () => {
   });
 });
 
-describe("ResumePerTurnProvider · 模型继承（Round B）", () => {
-  it("显式 modelSelection → 传给培育器；origin 记 explicit", async () => {
-    const selection: MemberModelSelection = {
-      providerId: "prov-explicit",
-      modelId: "model-explicit",
-      reasoningLevel: "high",
-    };
-    const breeder = fakeBreeder({ anchorSessionId: "sess_anchor_e", childSessionId: CHILD, elapsedMs: 1 });
-    const kit = buildProviderKit({ sessionIsolation: "child", breeder });
-    try {
-      const result = await kit.provider.startContinuable({
-        teamId: kit.teamId,
-        memberId: "m-explicit",
-        name: "alpha",
-        description: "d",
-        firstPrompt: "做一件事",
-        context: "fresh",
-        modelSelection: selection,
-      });
-      expect(result.accepted).toBe(true);
-      expect(breeder.calls[0]?.modelSelection).toEqual(selection);
-      const origin = readOrigin(memberPaths(kit.provider.teamDir, "m-explicit"));
-      expect(origin).toMatchObject({ modelSelection: selection, modelSource: "explicit" });
-    } finally {
-      await kit.cleanup();
-    }
-  });
-
-  it("无显式 → 继承 Lead 的 session_entry 条目（含 reasoningLevel）；origin 记 inherited", async () => {
+describe("ResumePerTurnProvider · 模型继承（0.4.0：唯一路线 = 跟随 Lead）", () => {
+  it("三源之一（选模条目）→ 继承传给培育器；origin 记 inherited", async () => {
     const breeder = fakeBreeder({ anchorSessionId: "sess_anchor_i", childSessionId: CHILD, elapsedMs: 1 });
     const kit = buildProviderKit({
       sessionIsolation: "child",
       breeder,
-      modelCatalog: () => ({
-        providers: [{ providerId: "lead-prov", name: "Lead", kind: "k", enabled: true, models: [{ id: "lead-model", enabled: true }] }],
-      }),
+      modelCatalog: () => catalogFor([{ providerId: "lead-prov", modelId: "lead-model" }]),
     });
     try {
       insertSessionEntry(kit.dbPath, {
@@ -200,22 +232,110 @@ describe("ResumePerTurnProvider · 模型继承（Round B）", () => {
     }
   });
 
-  it("session_entry 缺失 → model_usage 最新调用兜底（variant → reasoningLevel）", async () => {
+  it("提交快照比陈旧条目新 → 继承提交选择（issue #7 场景：输入框切换未刷条目也能跟上）", async () => {
+    const breeder = fakeBreeder({ anchorSessionId: "sess_anchor_sub", childSessionId: CHILD, elapsedMs: 1 });
+    const kit = buildProviderKit({
+      sessionIsolation: "child",
+      breeder,
+      modelCatalog: () => catalogFor([
+        { providerId: "old-prov", modelId: "old-model" },
+        { providerId: "new-prov", modelId: "new-model" },
+      ]),
+    });
+    try {
+      insertSessionEntry(kit.dbPath, {
+        sessionId: kit.teamId,
+        timeCreated: 1_700_000_000_000,
+        data: { modelSelection: { providerId: "old-prov", modelId: "old-model", options: { reasoningLevel: "low" } } },
+      });
+      // 更新的一次提交（宿主在保存用户消息时写 modelSelection 快照）
+      insertSubmissionMessage(kit.dbPath, {
+        sessionId: kit.teamId,
+        providerId: "new-prov",
+        modelId: "new-model",
+        reasoningLevel: "high",
+        timeCreated: 1_700_000_100_000,
+      });
+      await kit.provider.startContinuable({
+        teamId: kit.teamId,
+        memberId: "m-stale-entry",
+        name: "st",
+        description: "d",
+        firstPrompt: "做一件事",
+        context: "fresh",
+      });
+      expect(breeder.calls[0]?.modelSelection).toEqual({
+        providerId: "new-prov",
+        modelId: "new-model",
+        reasoningLevel: "high",
+      });
+    } finally {
+      await kit.cleanup();
+    }
+  });
+
+  it("/model 修改比提交新 → 继承条目选择（时间戳取最新，不固定优先级）", async () => {
+    const breeder = fakeBreeder({ anchorSessionId: "sess_anchor_mod", childSessionId: CHILD, elapsedMs: 1 });
+    const kit = buildProviderKit({
+      sessionIsolation: "child",
+      breeder,
+      modelCatalog: () => catalogFor([
+        { providerId: "sub-prov", modelId: "sub-model" },
+        { providerId: "mid-prov", modelId: "mid-model" },
+      ]),
+    });
+    try {
+      insertSubmissionMessage(kit.dbPath, {
+        sessionId: kit.teamId,
+        providerId: "sub-prov",
+        modelId: "sub-model",
+        timeCreated: 1_700_000_000_000,
+      });
+      insertSessionEntry(kit.dbPath, {
+        sessionId: kit.teamId,
+        timeCreated: 1_700_000_200_000,
+        data: { modelSelection: { providerId: "mid-prov", modelId: "mid-model", options: { reasoningLevel: "max" } } },
+      });
+      await kit.provider.startContinuable({
+        teamId: kit.teamId,
+        memberId: "m-model-cmd",
+        name: "mc",
+        description: "d",
+        firstPrompt: "做一件事",
+        context: "fresh",
+      });
+      expect(breeder.calls[0]?.modelSelection).toEqual({
+        providerId: "mid-prov",
+        modelId: "mid-model",
+        reasoningLevel: "max",
+      });
+    } finally {
+      await kit.cleanup();
+    }
+  });
+
+  it("仅 main_turn 调用记录 → 继承（variant 进档位）；辅助调用（compact/标题）绝不当作 Lead 模型", async () => {
     const breeder = fakeBreeder({ anchorSessionId: "sess_anchor_u", childSessionId: CHILD, elapsedMs: 1 });
     const kit = buildProviderKit({
       sessionIsolation: "child",
       breeder,
-      modelCatalog: () => ({
-        providers: [{ providerId: "usage-prov", name: "Usage", kind: "k", enabled: true, models: [{ id: "usage-model", enabled: true }] }],
-      }),
+      modelCatalog: () => catalogFor([{ providerId: "usage-prov", modelId: "usage-model" }]),
     });
     try {
+      // 干扰行：更晚的 compact 调用（辅助模型，必须被 query_source 过滤）
+      insertModelUsage(kit.dbPath, {
+        sessionId: kit.teamId,
+        providerId: "account:helper-plan",
+        modelId: "title-model",
+        startedAt: 1_700_000_900_000,
+        querySource: "session_title",
+      });
       insertModelUsage(kit.dbPath, {
         sessionId: kit.teamId,
         providerId: "usage-prov",
         modelId: "usage-model",
         variant: "low",
-        startedAt: 1,
+        startedAt: 1_700_000_800_000,
       });
       await kit.provider.startContinuable({
         teamId: kit.teamId,
@@ -238,73 +358,13 @@ describe("ResumePerTurnProvider · 模型继承（Round B）", () => {
     }
   });
 
-  it("Lead 无任何模型记录 → 不传 modelSelection（不调 setModel），origin 无选择字段", async () => {
-    const breeder = fakeBreeder({ anchorSessionId: "sess_anchor_n", childSessionId: CHILD, elapsedMs: 1 });
-    const kit = buildProviderKit({ sessionIsolation: "child", breeder });
-    try {
-      await kit.provider.startContinuable({
-        teamId: kit.teamId,
-        memberId: "m-default",
-        name: "delta",
-        description: "d",
-        firstPrompt: "做一件事",
-        context: "fresh",
-      });
-      expect(breeder.calls[0]?.modelSelection).toBeUndefined();
-      const origin = readOrigin(memberPaths(kit.provider.teamDir, "m-default"));
-      expect(origin?.modelSelection).toBeUndefined();
-      expect(origin?.modelSource).toBeUndefined();
-    } finally {
-      await kit.cleanup();
-    }
-  });
-
-  it("0.3.2：entry=官方套餐 + usage=目录内 → 直接继承 usage（零套餐尝试，无 fallback）", async () => {
-    const breeder = fakeBreeder({ anchorSessionId: "sess_anchor_mix", childSessionId: CHILD, elapsedMs: 1 });
-    const kit = buildProviderKit({ sessionIsolation: "child", breeder, modelCatalog: () => SUPPORTED_CATALOG });
-    try {
-      insertSessionEntry(kit.dbPath, {
-        sessionId: kit.teamId,
-        data: {
-          modelSelection: { providerId: "account:unavailable-plan", modelId: "GLM-5.3", options: { reasoningLevel: "max" } },
-        },
-      });
-      insertModelUsage(kit.dbPath, {
-        sessionId: kit.teamId,
-        providerId: "first-prov",
-        modelId: "first-model",
-        variant: "max",
-        startedAt: 1,
-      });
-      await kit.provider.startContinuable({
-        teamId: kit.teamId,
-        memberId: "m-mixed",
-        name: "mx",
-        description: "d",
-        firstPrompt: "做一件事",
-        context: "fresh",
-      });
-      // 套餐被分类过滤：breeder 只收到 usage 一档（且不是 fallback）
-      expect(breeder.calls[0]?.modelSelection).toEqual({
-        providerId: "first-prov",
-        modelId: "first-model",
-        reasoningLevel: "max",
-      });
-      expect(breeder.calls[0]?.modelFallback).toBeUndefined();
-      const origin = readOrigin(memberPaths(kit.provider.teamDir, "m-mixed"));
-      expect(origin).toMatchObject({
-        modelSelection: { providerId: "first-prov", modelId: "first-model", reasoningLevel: "max" },
-        modelSource: "inherited",
-      });
-      expect(kit.provider.diagnosticsOf("m-mixed")).toEqual([]);
-    } finally {
-      await kit.cleanup();
-    }
-  });
-
-  it("0.3.2：entry+usage 均为官方套餐 → 零 setModel 尝试 + 套餐口径诊断", async () => {
+  it("官方套餐（account:/builtin:）→ spawn 抛错（套餐口径可操作）；零 setModel 尝试；无成员落盘", async () => {
     const breeder = fakeBreeder({ anchorSessionId: "sess_anchor_plan", childSessionId: CHILD, elapsedMs: 1 });
-    const kit = buildProviderKit({ sessionIsolation: "child", breeder, modelCatalog: () => SUPPORTED_CATALOG });
+    const kit = buildProviderKit({
+      sessionIsolation: "child",
+      breeder,
+      modelCatalog: () => SUPPORTED_CATALOG,
+    });
     try {
       insertSessionEntry(kit.dbPath, {
         sessionId: kit.teamId,
@@ -316,74 +376,89 @@ describe("ResumePerTurnProvider · 模型继承（Round B）", () => {
         sessionId: kit.teamId,
         providerId: "builtin:bigmodel",
         modelId: "GLM-5.3",
-        variant: "max",
         startedAt: 1,
       });
-      await kit.provider.startContinuable({
-        teamId: kit.teamId,
-        memberId: "m-plan",
-        name: "pl",
-        description: "d",
-        firstPrompt: "做一件事",
-        context: "fresh",
-      });
-      // 分类跳过：createChild 不带任何模型参数 → provider 侧零 setModel
-      expect(breeder.calls[0]?.modelSelection).toBeUndefined();
-      expect(breeder.calls[0]?.modelFallback).toBeUndefined();
-      // origin 不谎报
-      const origin = readOrigin(memberPaths(kit.provider.teamDir, "m-plan"));
-      expect(origin?.modelSelection).toBeUndefined();
-      expect(origin?.modelSource).toBeUndefined();
-      // 套餐口径诊断（可操作建议；reason 仅长度截断 ≤80，断言首尾关键文案）
-      const [diagnostic] = kit.provider.diagnosticsOf("m-plan");
-      expect(diagnostic).toContain("模型设置未生效：account:bigmodel-start-plan/GLM-5.3");
-      expect(diagnostic).toContain("Lead 当前使用官方套餐模型");
-      expect(diagnostic).toContain("成员无法继承，已回退宿主缺省");
-      expect(diagnostic).toContain("可在 spawn 时指"); // 80 字符截断点在句中
-      expect(diagnostic).not.toContain("registry 不识别"); // 不再是「尝试后失败」文案
-      expect(fs.existsSync(memberPaths(kit.provider.teamDir, "m-plan").modelFailedFile)).toBe(true);
+      await expect(
+        kit.provider.startContinuable({
+          teamId: kit.teamId,
+          memberId: "m-plan",
+          name: "pl",
+          description: "d",
+          firstPrompt: "做一件事",
+          context: "fresh",
+        }),
+      ).rejects.toThrow(/官方套餐模型/);
+      // fail-fast：培育未发生（零 setModel 尝试的等价口径 = createChild 未被调用）
+      expect(breeder.calls).toHaveLength(0);
+      const paths = memberPaths(kit.provider.teamDir, "m-plan");
+      expect(fs.existsSync(paths.originFile)).toBe(false); // 没有产生成员
+      const message = await kit.provider
+        .startContinuable({
+          teamId: kit.teamId,
+          memberId: "m-plan2",
+          name: "pl2",
+          description: "d",
+          firstPrompt: "做一件事",
+          context: "fresh",
+        })
+        .catch((e: unknown) => String((e as Error).message));
+      expect(message).toContain("account:bigmodel-start-plan/GLM-5.3");
+      expect(message).toContain("请在 ZCode 中切换到自配的第三方模型");
     } finally {
       await kit.cleanup();
     }
   });
 
-  it("0.3.2：entry+usage 均为目录外陈旧自有 provider → 零尝试 + 目录外文案", async () => {
+  it("目录外陈旧 provider → spawn 抛错（目录外口径）", async () => {
     const breeder = fakeBreeder({ anchorSessionId: "sess_anchor_stale", childSessionId: CHILD, elapsedMs: 1 });
-    const kit = buildProviderKit({ sessionIsolation: "child", breeder, modelCatalog: () => SUPPORTED_CATALOG });
+    const kit = buildProviderKit({
+      sessionIsolation: "child",
+      breeder,
+      modelCatalog: () => SUPPORTED_CATALOG,
+    });
     try {
       insertSessionEntry(kit.dbPath, {
         sessionId: kit.teamId,
         data: { modelSelection: { providerId: "deleted-uuid", modelId: "old-model" } },
       });
-      insertModelUsage(kit.dbPath, {
-        sessionId: kit.teamId,
-        providerId: "another-gone-uuid",
-        modelId: "old-model-2",
-        startedAt: 1,
-      });
-      await kit.provider.startContinuable({
-        teamId: kit.teamId,
-        memberId: "m-stale",
-        name: "st",
-        description: "d",
-        firstPrompt: "做一件事",
-        context: "fresh",
-      });
-      expect(breeder.calls[0]?.modelSelection).toBeUndefined();
-      expect(breeder.calls[0]?.modelFallback).toBeUndefined();
-      expect(kit.provider.diagnosticsOf("m-stale")).toEqual([
-        "模型设置未生效：deleted-uuid/old-model（Lead 模型 deleted-uuid/old-model 不在可用目录，已回退宿主缺省）",
-      ]);
+      await expect(
+        kit.provider.startContinuable({
+          teamId: kit.teamId,
+          memberId: "m-stale",
+          name: "st",
+          description: "d",
+          firstPrompt: "做一件事",
+          context: "fresh",
+        }),
+      ).rejects.toThrow(/不在可用模型目录/);
+      expect(breeder.calls).toHaveLength(0);
     } finally {
       await kit.cleanup();
     }
   });
 
-  it("0.3.2：注入空目录 → 空目录守卫：不过滤，仍尝试 entry（旧行为）", async () => {
-    const breeder = fakeBreeder(
-      { anchorSessionId: "sess_anchor_empty", childSessionId: CHILD, elapsedMs: 1 },
-      { primary: "fail", fallback: "fail" },
-    );
+  it("三源全空 → spawn 抛错（无法确定 Lead 当前模型）", async () => {
+    const breeder = fakeBreeder({ anchorSessionId: "sess_anchor_n", childSessionId: CHILD, elapsedMs: 1 });
+    const kit = buildProviderKit({ sessionIsolation: "child", breeder });
+    try {
+      await expect(
+        kit.provider.startContinuable({
+          teamId: kit.teamId,
+          memberId: "m-default",
+          name: "delta",
+          description: "d",
+          firstPrompt: "做一件事",
+          context: "fresh",
+        }),
+      ).rejects.toThrow(/无法确定 Lead 当前模型/);
+      expect(breeder.calls).toHaveLength(0);
+    } finally {
+      await kit.cleanup();
+    }
+  });
+
+  it("空目录守卫：目录不可读 = 无法分类 → 不过滤，照旧尝试（宿主终审）", async () => {
+    const breeder = fakeBreeder({ anchorSessionId: "sess_anchor_empty", childSessionId: CHILD, elapsedMs: 1 });
     const kit = buildProviderKit({ sessionIsolation: "child", breeder, modelCatalog: () => ({ providers: [] }) });
     try {
       insertSessionEntry(kit.dbPath, {
@@ -398,92 +473,16 @@ describe("ResumePerTurnProvider · 模型继承（Round B）", () => {
         firstPrompt: "做一件事",
         context: "fresh",
       });
-      // 空目录不过滤 → 仍向 breeder 传选择并尝试（尝试失败文案，非套餐文案）
       expect(breeder.calls[0]?.modelSelection).toMatchObject({
         providerId: "entry-prov",
         modelId: "entry-model",
       });
-      const [diagnostic] = kit.provider.diagnosticsOf("m-empty-cat");
-      expect(diagnostic).toContain("Lead 模型不可用于成员（registry 不识别）");
     } finally {
       await kit.cleanup();
     }
   });
 
-  it("E-1：条目与 usage 相同 → 去重后不传 modelFallback", async () => {
-    const breeder = fakeBreeder({ anchorSessionId: "sess_anchor_dd", childSessionId: CHILD, elapsedMs: 1 });
-    const kit = buildProviderKit({
-      sessionIsolation: "child",
-      breeder,
-      modelCatalog: () => ({
-        providers: [{ providerId: "same-prov", name: "Same", kind: "k", enabled: true, models: [{ id: "same-model", enabled: true }] }],
-      }),
-    });
-    try {
-      insertSessionEntry(kit.dbPath, {
-        sessionId: kit.teamId,
-        data: {
-          modelSelection: { providerId: "same-prov", modelId: "same-model", options: { reasoningLevel: "high" } },
-        },
-      });
-      insertModelUsage(kit.dbPath, {
-        sessionId: kit.teamId,
-        providerId: "same-prov",
-        modelId: "same-model",
-        variant: "high",
-        startedAt: 1,
-      });
-      await kit.provider.startContinuable({
-        teamId: kit.teamId,
-        memberId: "m-dedupe",
-        name: "dd",
-        description: "d",
-        firstPrompt: "做一件事",
-        context: "fresh",
-      });
-      expect(breeder.calls[0]?.modelSelection).toEqual({
-        providerId: "same-prov",
-        modelId: "same-model",
-        reasoningLevel: "high",
-      });
-      expect(breeder.calls[0]?.modelFallback).toBeUndefined();
-    } finally {
-      await kit.cleanup();
-    }
-  });
-
-  it("E-1：显式指定不设兜底（即使 Lead 有 usage 记录）", async () => {
-    const breeder = fakeBreeder({ anchorSessionId: "sess_anchor_ex", childSessionId: CHILD, elapsedMs: 1 });
-    const kit = buildProviderKit({ sessionIsolation: "child", breeder });
-    try {
-      insertModelUsage(kit.dbPath, {
-        sessionId: kit.teamId,
-        providerId: "usage-prov",
-        modelId: "usage-model",
-        startedAt: 1,
-      });
-      await kit.provider.startContinuable({
-        teamId: kit.teamId,
-        memberId: "m-explicit-no-fb",
-        name: "ex",
-        description: "d",
-        firstPrompt: "做一件事",
-        context: "fresh",
-        modelSelection: { providerId: "user-prov", modelId: "user-model" },
-      });
-      expect(breeder.calls[0]?.modelSelection).toEqual({
-        providerId: "user-prov",
-        modelId: "user-model",
-        // E-1b 档位缺省链：显式模型无档位 → provider 层补 max（deepseek-flash 等必须带档位）
-        reasoningLevel: "max",
-      });
-      expect(breeder.calls[0]?.modelFallback).toBeUndefined();
-    } finally {
-      await kit.cleanup();
-    }
-  });
-
-  it("E-1b：继承选择无档位 → 目录 defaultVariant 补档（provider 层统一落点）", async () => {
+  it("档位缺省链：继承选择无档位 → 目录 defaultVariant 补档", async () => {
     const breeder = fakeBreeder({ anchorSessionId: "sess_anchor_rl", childSessionId: CHILD, elapsedMs: 1 });
     const kit = buildProviderKit({
       sessionIsolation: "child",
@@ -531,32 +530,42 @@ describe("ResumePerTurnProvider · 模型继承（Round B）", () => {
     }
   });
 
-  it("GitHub #6：显式指定失败 → 也落 model-failed（用户意图未被满足不能静默）", async () => {
+  it("继承应用失败 → spawn 抛错 + model-failed 留痕（成员卡诊断兜底）", async () => {
     const breeder = fakeBreeder(
       { anchorSessionId: "sess_anchor_exf", childSessionId: CHILD, elapsedMs: 1 },
       { primary: "fail" },
     );
-    const kit = buildProviderKit({ sessionIsolation: "child", breeder });
+    const kit = buildProviderKit({
+      sessionIsolation: "child",
+      breeder,
+      modelCatalog: () => catalogFor([{ providerId: "bad-prov", modelId: "bad-model" }]),
+    });
     try {
-      await kit.provider.startContinuable({
-        teamId: kit.teamId,
-        memberId: "m-explicit-fail",
-        name: "exf",
-        description: "d",
-        firstPrompt: "做一件事",
-        context: "fresh",
-        modelSelection: { providerId: "bad-prov", modelId: "bad-model" },
+      insertSessionEntry(kit.dbPath, {
+        sessionId: kit.teamId,
+        data: { modelSelection: { providerId: "bad-prov", modelId: "bad-model" } },
       });
-      expect(kit.provider.diagnosticsOf("m-explicit-fail")).toEqual([
-        "模型设置未生效：bad-prov/bad-model（指定的模型不可用于成员（registry 不识别））",
-      ]);
-      expect(readOrigin(memberPaths(kit.provider.teamDir, "m-explicit-fail"))?.modelSelection).toBeUndefined();
+      await expect(
+        kit.provider.startContinuable({
+          teamId: kit.teamId,
+          memberId: "m-apply-fail",
+          name: "exf",
+          description: "d",
+          firstPrompt: "做一件事",
+          context: "fresh",
+        }),
+      ).rejects.toThrow(/inherited model/);
+      // 成员卡诊断兜底 = 继承失败记录（reason 截断 ≤80，断言关键前缀）
+      const [diagnostic] = kit.provider.diagnosticsOf("m-apply-fail");
+      expect(diagnostic).toContain("成员模型继承失败：bad-prov/bad-model");
+      expect(diagnostic).toContain("成员模型无法继承");
+      expect(fs.existsSync(memberPaths(kit.provider.teamDir, "m-apply-fail").modelFailedFile)).toBe(true);
     } finally {
       await kit.cleanup();
     }
   });
 
-  it("legacy 模式不应用继承/显式（无子会话）；origin 不记录模型选择", async () => {
+  it("legacy 模式不应用继承（无子会话）；origin 不记录模型选择", async () => {
     const kit = buildProviderKit();
     try {
       insertSessionEntry(kit.dbPath, {
@@ -570,11 +579,156 @@ describe("ResumePerTurnProvider · 模型继承（Round B）", () => {
         description: "d",
         firstPrompt: "做一件事",
         context: "fresh",
-        modelSelection: { providerId: "ignored", modelId: "ignored" },
       });
       const origin = readOrigin(memberPaths(kit.provider.teamDir, "m-legacy-model"));
       expect(origin?.modelSelection).toBeUndefined();
       expect(origin?.modelSource).toBeUndefined();
+    } finally {
+      await kit.cleanup();
+    }
+  });
+});
+
+describe("ResumePerTurnProvider · 每轮执行前同步（0.4.0）", () => {
+  it("Lead 提交新模型后成员续跑 → 轮前 setModel 同步 + origin 更新（不谎报）", async () => {
+    const breeder = fakeBreeder({ anchorSessionId: "sess_anchor_sync", childSessionId: CHILD, elapsedMs: 1 });
+    const kit = buildProviderKit({
+      sessionIsolation: "child",
+      breeder,
+      modelCatalog: () => catalogFor([
+        { providerId: "prov-a", modelId: "model-a" },
+        { providerId: "prov-b", modelId: "model-b" },
+      ]),
+    });
+    try {
+      insertSubmissionMessage(kit.dbPath, {
+        sessionId: kit.teamId,
+        providerId: "prov-a",
+        modelId: "model-a",
+        reasoningLevel: "high",
+        timeCreated: 1_700_000_000_000,
+      });
+      await kit.provider.startContinuable({
+        teamId: kit.teamId,
+        memberId: "m-sync",
+        name: "sy",
+        description: "d",
+        firstPrompt: "做一件事",
+        context: "fresh",
+      });
+      expect(breeder.calls[0]?.modelSelection).toEqual({ providerId: "prov-a", modelId: "model-a", reasoningLevel: "high" });
+      expect(breeder.applyCalls).toHaveLength(0); // 首轮同值：不重复应用
+
+      // Lead 切模型并提交（新快照更新）
+      insertSubmissionMessage(kit.dbPath, {
+        sessionId: kit.teamId,
+        providerId: "prov-b",
+        modelId: "model-b",
+        reasoningLevel: "low",
+        timeCreated: 1_700_000_500_000,
+      });
+      const outcome = await kit.provider.deliver({
+        memberId: "m-sync",
+        framedMessage: JSON.stringify([{ type: "text", text: "Team message from lead:" }, { type: "text", text: "继续" }]),
+        messageId: `team-message-sync-${Date.now()}`,
+      });
+      expect(outcome).toBe("accepted");
+      expect(breeder.applyCalls).toEqual([
+        { sessionId: CHILD, selection: { providerId: "prov-b", modelId: "model-b", reasoningLevel: "low" } },
+      ]);
+      expect(readOrigin(memberPaths(kit.provider.teamDir, "m-sync"))).toMatchObject({
+        modelSelection: { providerId: "prov-b", modelId: "model-b", reasoningLevel: "low" },
+        modelSource: "inherited",
+      });
+    } finally {
+      await kit.cleanup();
+    }
+  });
+
+  it("同步失败 → 阻止本轮（launchTurn 抛错；绝不用旧模型悄悄开跑）", async () => {
+    const breeder = fakeBreeder(
+      { anchorSessionId: "sess_anchor_syncf", childSessionId: CHILD, elapsedMs: 1 },
+      { apply: "fail" },
+    );
+    const kit = buildProviderKit({
+      sessionIsolation: "child",
+      breeder,
+      modelCatalog: () => catalogFor([
+        { providerId: "prov-a", modelId: "model-a" },
+        { providerId: "prov-b", modelId: "model-b" },
+      ]),
+    });
+    try {
+      insertSubmissionMessage(kit.dbPath, {
+        sessionId: kit.teamId,
+        providerId: "prov-a",
+        modelId: "model-a",
+        timeCreated: 1_700_000_000_000,
+      });
+      await kit.provider.startContinuable({
+        teamId: kit.teamId,
+        memberId: "m-sync-fail",
+        name: "sf",
+        description: "d",
+        firstPrompt: "做一件事",
+        context: "fresh",
+      });
+      insertSubmissionMessage(kit.dbPath, {
+        sessionId: kit.teamId,
+        providerId: "prov-b",
+        modelId: "model-b",
+        timeCreated: 1_700_000_500_000,
+      });
+      await expect(
+        kit.provider.deliver({
+          memberId: "m-sync-fail",
+          framedMessage: JSON.stringify([{ type: "text", text: "Team message from lead:" }, { type: "text", text: "继续" }]),
+          messageId: "team-message-syncfail",
+        }),
+      ).rejects.toThrow(/无法同步 Lead 模型/);
+      // 旧选择未生效、新选择被拒 = 失败留痕（成员卡可诊断）
+      expect(fs.existsSync(memberPaths(kit.provider.teamDir, "m-sync-fail").modelFailedFile)).toBe(true);
+    } finally {
+      await kit.cleanup();
+    }
+  });
+
+  it("Lead 切到官方套餐后续跑 → 阻止本轮并报套餐口径（旧第三方模型不冒充新选择）", async () => {
+    const breeder = fakeBreeder({ anchorSessionId: "sess_anchor_pl", childSessionId: CHILD, elapsedMs: 1 });
+    const kit = buildProviderKit({
+      sessionIsolation: "child",
+      breeder,
+      modelCatalog: () => catalogFor([{ providerId: "prov-a", modelId: "model-a" }]),
+    });
+    try {
+      insertSubmissionMessage(kit.dbPath, {
+        sessionId: kit.teamId,
+        providerId: "prov-a",
+        modelId: "model-a",
+        timeCreated: 1_700_000_000_000,
+      });
+      await kit.provider.startContinuable({
+        teamId: kit.teamId,
+        memberId: "m-plan-switch",
+        name: "ps",
+        description: "d",
+        firstPrompt: "做一件事",
+        context: "fresh",
+      });
+      // Lead 提交切到官方套餐
+      insertSubmissionMessage(kit.dbPath, {
+        sessionId: kit.teamId,
+        providerId: "account:bigmodel-start-plan",
+        modelId: "GLM-5.3",
+        timeCreated: 1_700_000_500_000,
+      });
+      await expect(
+        kit.provider.deliver({
+          memberId: "m-plan-switch",
+          framedMessage: JSON.stringify([{ type: "text", text: "Team message from lead:" }, { type: "text", text: "继续" }]),
+          messageId: "team-message-planswitch",
+        }),
+      ).rejects.toThrow(/官方套餐模型/);
     } finally {
       await kit.cleanup();
     }

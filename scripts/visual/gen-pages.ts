@@ -1,8 +1,7 @@
 // 夹具页生成（visual-regress.mjs 第一步；esbuild bundle 后以 node 运行）：
 // 8 组状态夹具 × {light,dark} × {zh,en} × {panel,card} → test/visual/.work/<fixture>-<theme>-<lang>-<carrier>.html；
 // T5.7 detail 夹具（成员会话摘要：单轮 / 两轮富变体 / 空态）× {light,dark} × {zh,en}
-// → detail-*.html（V16 版面断言；2026-10-25 二次修订：视图仅简洁形态，仍为 80 页）；
-// stage-8 D 成员设置弹窗（open 态）× {light,dark} × {zh,en} → settings-*.html（panel-only）。
+// → detail-*.html（V16 版面断言；2026-10-25 二次修订：视图仅简洁形态；0.4.0 注销 settings-*.html 弹窗夹具）。
 // panel 载体 = 面板同源结构（COMPONENT_CSS + PANEL_CSS，无 App 连接——静态注入帧）；
 // card 载体 = renderWidgetFragment 产物包 standalone 壳（::visualize 沙箱等价）。
 // 两载体共用同一渲染器/几何（布局同源 → V15 基线共用前提）。
@@ -14,7 +13,6 @@ import { fileURLToPath } from "node:url";
 import { COMPONENT_CSS, PANEL_CSS } from "../../src/ui-core/css.js";
 import { renderPanelBody } from "../../src/ui-core/render.js";
 import { renderDetailView } from "../../src/ui-core/detail-render.js";
-import { renderMemberSettingsModal } from "../../src/ui-core/member-settings.js";
 import { renderWidgetFragment } from "../../src/ui-core/widget.js";
 import { DICT, type Lang } from "../../src/ui-core/dict.js";
 import {
@@ -22,11 +20,8 @@ import {
   FIXTURE_DETAIL,
   FIXTURE_DETAIL_EMPTY,
   FIXTURE_DETAIL_SUMMARY,
-  FIXTURE_SETTINGS,
-  FIXTURE_SETTINGS_FRAME,
 } from "../../test/visual/fixtures.js";
 import type { DetailResult } from "../../src/panel/detail.js";
-import type { ModelCatalog } from "../../src/provider/model-catalog.js";
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 // 固定输出根 = 本 bundle 所在目录（visual-regress.mjs 约定 bundle 输出进 test/visual/.work；
@@ -70,20 +65,12 @@ for (const [fixture, fx] of Object.entries(detailFixtures)) {
     }
   }
 }
-// stage-8 D 成员设置弹窗夹具（panel-only；弹窗 open 态 + 背景成员行齿轮）
-for (const theme of themes) {
-  for (const lang of langs) {
-    const body = settingsPage(lang, theme);
-    fs.writeFileSync(path.join(outDir, ["settings", theme, lang, "panel"].join("-") + ".html"), body);
-    count += 1;
-  }
-}
+// 0.4.0 注销成员设置弹窗夹具（settings-*.html）：齿轮/弹窗下线，基线改由重出的 panel 页覆盖。
 console.log(`gen-pages: ${count} pages → ${outDir}`);
 
 function panelPage(frame: (typeof FIXTURES)[string], lang: Lang, theme: string): string {
   const compact = frame.members.length === 1 && frame.tasks.length === 0;
-  // stage-8 D：面板载体开启成员设置齿轮（伴生页/卡片载体保持默认关）
-  const body = renderPanelBody(frame, lang, { loading: false }, { memberSettings: true });
+  const body = renderPanelBody(frame, lang, { loading: false });
   return `<!doctype html>
 <html lang="${lang === "zh" ? "zh-CN" : "en"}" data-theme="${theme}">
 <head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -110,39 +97,6 @@ function cardPage(frame: (typeof FIXTURES)[string], lang: Lang, theme: string): 
 </head>
 <body>
 ${fragment}
-</body>
-</html>`;
-}
-
-/** stage-8 D 成员设置弹窗页（open 态：列表背景 + 弹窗覆盖；面板载体同壳）。 */
-function settingsPage(lang: Lang, theme: string): string {
-  const body = renderPanelBody(FIXTURE_SETTINGS_FRAME, lang, { loading: false }, { memberSettings: true });
-  const modal = renderMemberSettingsModal(
-    {
-      kind: "ready",
-      memberId: FIXTURE_SETTINGS.memberId,
-      name: FIXTURE_SETTINGS.name,
-      catalog: FIXTURE_SETTINGS.catalog as ModelCatalog,
-      current: FIXTURE_SETTINGS.current,
-      draft: FIXTURE_SETTINGS.draft,
-    },
-    lang,
-  );
-  return `<!doctype html>
-<html lang="${lang === "zh" ? "zh-CN" : "en"}" data-theme="${theme}">
-<head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>${DICT[lang].trigger}</title>
-<style>${COMPONENT_CSS}${PANEL_CSS}
-.at-root .team-panel { height: 620px; }
-</style>
-</head>
-<body>
-<div class="at-root">
-<div class="team-panel" role="dialog" aria-label="${DICT[lang].trigger}" data-team-panel tabindex="-1" data-settings-fixture>
-<div class="panel-body" data-list-view>${body}</div>
-<div data-settings-layer>${modal}</div>
-</div>
-</div>
 </body>
 </html>`;
 }
