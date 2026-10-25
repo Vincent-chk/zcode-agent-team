@@ -341,6 +341,8 @@ h3 .count {
 }
 .settings-state.error { color: var(--at-error-text); }
 .settings-notice { font-size: 11px; color: var(--at-state-ongoing); }
+/* GitHub #6\uFF1A\u7EC8\u6001\u5931\u8D25\u63D0\u793A\u7528\u9519\u8BEF\u8272\uFF08\u4E0E\u300C\u5DF2\u5E94\u7528 / \u4E0B\u4E00\u8F6E\u751F\u6548\u300D\u4E2D\u6027\u63D0\u793A\u533A\u5206\uFF09 */
+.settings-notice.error { color: var(--at-error-text); }
 .settings-foot { display: flex; justify-content: flex-end; gap: 8px; }
 .settings-btn {
   background: none;
@@ -762,6 +764,7 @@ article.task {
       "settings.saving": "\u6B63\u5728\u5E94\u7528\u2026",
       "settings.applied": "\u5DF2\u5E94\u7528",
       "settings.nextTurn": "\u5DF2\u4FDD\u5B58\uFF0C\u4E0B\u4E00\u8F6E\u751F\u6548",
+      "settings.failedApply": "\u4E0A\u6B21\u8BBE\u7F6E\u672A\u751F\u6548\uFF1A{model}\uFF08{reason}\uFF09",
       "settings.loading": "\u6B63\u5728\u52A0\u8F7D\u6A21\u578B\u2026",
       "settings.error": "\u6A21\u578B\u8BBE\u7F6E\u4E0D\u53EF\u7528\uFF1A{message}",
       "settings.emptyCatalog": "\u6A21\u578B\u76EE\u5F55\u4E3A\u7A7A\uFF08\u53EF\u5728\u9AD8\u7EA7\u6A21\u5F0F\u5237\u65B0\uFF09",
@@ -794,6 +797,7 @@ article.task {
       "settings.saving": "Applying\u2026",
       "settings.applied": "Applied",
       "settings.nextTurn": "Saved; applies on the next turn",
+      "settings.failedApply": "Last change did not apply: {model} ({reason})",
       "settings.loading": "Loading models\u2026",
       "settings.error": "Model settings unavailable: {message}",
       "settings.emptyCatalog": "Model catalog is empty (use Refresh in Advanced)",

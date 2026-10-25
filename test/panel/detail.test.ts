@@ -1,7 +1,8 @@
-// T5.7 detail 合成器单测（F13 纯逻辑面）：
-//  - 消息流合成：时间序、role 区分、text/toolCall 两型、hook_context 用户消息不进流；
+// T5.7 detail 合成器单测（F13 纯逻辑面；〔视图修订 2026-10-25·二次〕固定按轮摘要）：
+//  - 消息流合成：时间序、role 区分、text/toolGroup/结论三型、hook_context 用户消息不进流；
+//  - 按轮投影：轮切分、三条目顺序、结论取最后非空、虚拟轮 0、动作组聚合与载荷截断；
 //  - framed 徽标回填（源 state.messages/delivered；不改写原文；每条只标一次）；
-//  - 分页游标（默认 100/上限 200/首屏=末页/nextCursor）；
+//  - 分页游标（默认 100/上限 200/首屏=末页/nextCursor；基于投影流）+ sourceTotal；
 //  - 载荷预算截断（truncated）；
 //  - 错误路径（非成员 → TEAM_MEMBER_NOT_FOUND；会话未落定 → reason=session-not-settled）。
 import fs from "node:fs";
@@ -114,8 +115,8 @@ const readOriginSession = (memberId: string): string | null | undefined =>
     ? (JSON.parse(fs.readFileSync(path.join(teamDir, "members", memberId, "origin.json"), "utf8")) as { sessionId: string | null }).sessionId
     : undefined;
 
-describe("synthesize：流合成（F13）", () => {
-  it("时间序 + role 区分 + text/toolCall 两型；hook_context/系统消息不进流", () => {
+describe("synthesize：流合成（F13；固定按轮摘要）", () => {
+  it("时间序 + role 区分；hook_context/系统消息不进流；工具并入动作组", () => {
     insertMessage(MEMBER_SESSION, "user", "hook_context", [{ type: "text", text: "[agent-team inbox] 注入" }]);
     insertMessage(MEMBER_SESSION, "user", "real_user", [{ type: "text", text: "请实现功能 A" }]);
     insertMessage(MEMBER_SESSION, "assistant", "model", [
@@ -123,17 +124,17 @@ describe("synthesize：流合成（F13）", () => {
       { type: "tool", tool: "Bash", status: "completed", input: { command: "ls" }, output: "a\nb" },
     ]);
     insertMessage(MEMBER_SESSION, "assistant", "model", [{ type: "reasoning", text: "思考中" } as never]);
-    const result = buildDetail(deps(stateWith([], [])), { target: MEMBER_ID, mode: "full" }, () => MEMBER_SESSION);
+    const result = buildDetail(deps(stateWith([], [])), { target: MEMBER_ID }, () => MEMBER_SESSION);
     const kinds = result.page.items.map((i) => `${i.role}:${i.kind}`);
-    expect(kinds).toEqual(["user:text", "assistant:text", "assistant:toolCall"]);
+    expect(kinds).toEqual(["user:text", "assistant:toolGroup", "assistant:text"]);
     expect(result.page.items[0].text).toBe("请实现功能 A");
-    expect(result.page.items[2].tool).toEqual({ name: "Bash", status: "completed" });
-    expect(result.page.items[2].text).toContain("input: ");
-    expect(result.page.items[2].text).toContain("output: a\nb");
-    // seq 连续、时间升序
+    expect(result.page.items[1].tools?.[0]).toMatchObject({ name: "Bash", status: "completed" });
+    expect(result.page.items[1].tools?.[0].text).toContain("input: ");
+    expect(result.page.items[1].tools?.[0].text).toContain("output: a\nb");
+    expect(result.page.items[2].text).toBe("开始处理");
+    expect(result.sourceTotal).toBe(3);
+    // seq 连续（基于投影流）
     expect(result.page.items.map((i) => i.seq)).toEqual([1, 2, 3]);
-    const times = result.page.items.map((i) => Date.parse(i.ts));
-    expect(times).toEqual([...times].sort((a, b) => a - b));
   });
 
   it("framed 徽标回填：delivered 团队消息标注在携带框架头的 real_user 文本上（不改写原文）", () => {
@@ -147,7 +148,7 @@ describe("synthesize：流合成（F13）", () => {
     ]);
     const result = buildDetail(
       deps(stateWith(messages, ["msg-1"])),
-      { target: MEMBER_ID, mode: "full" },
+      { target: MEMBER_ID },
       () => MEMBER_SESSION,
     );
     const item = result.page.items[0];
@@ -163,7 +164,7 @@ describe("synthesize：流合成（F13）", () => {
     insertMessage(MEMBER_SESSION, "user", "real_user", [{ type: "text", text: "Team message from lead:\n同一句话" }]);
     const result = buildDetail(
       deps(stateWith(messages, ["msg-1"])),
-      { target: MEMBER_ID, mode: "full" },
+      { target: MEMBER_ID },
       () => MEMBER_SESSION,
     );
     const framedItems = result.page.items.filter((i) => i.framed !== undefined);
@@ -196,7 +197,7 @@ describe("synthesize：流合成（F13）", () => {
   });
 });
 
-describe("summary 投影（〔视图修订 2026-10-25〕缺省 mode）", () => {
+describe("按轮摘要投影（〔视图修订 2026-10-25·二次〕固定形态）", () => {
   it("轮切分与每轮三条目顺序：user → toolGroup → 结论", () => {
     insertMessage(MEMBER_SESSION, "user", "real_user", [{ type: "text", text: "第一轮指令" }]);
     insertMessage(MEMBER_SESSION, "assistant", "model", [
@@ -210,7 +211,6 @@ describe("summary 投影（〔视图修订 2026-10-25〕缺省 mode）", () => {
 
     const result = buildDetail(deps(stateWith([], [])), { target: MEMBER_ID }, () => MEMBER_SESSION);
 
-    expect(result.mode).toBe("summary"); // 缺省
     expect(result.sourceTotal).toBe(7);
     expect(result.total).toBe(6);
     expect(result.page.items.map((i) => `${i.role}:${i.kind}`)).toEqual([
@@ -312,7 +312,7 @@ describe("summary 投影（〔视图修订 2026-10-25〕缺省 mode）", () => {
     expect(result.page.items[1].text).toBe("预热结论"); // 旧草稿被丢弃
   });
 
-  it("summary 与 full 的 total/seq/cursor 差异（sourceTotal 同源）", () => {
+  it("分页基于投影流：total/seq/nextCursor 与 sourceTotal（原始条数）", () => {
     insertMessage(MEMBER_SESSION, "user", "real_user", [{ type: "text", text: "u1" }]);
     insertMessage(MEMBER_SESSION, "assistant", "model", [{ type: "tool", tool: "Bash", status: "completed" }]);
     insertMessage(MEMBER_SESSION, "assistant", "model", [{ type: "text", text: "a1a" }]);
@@ -321,36 +321,15 @@ describe("summary 投影（〔视图修订 2026-10-25〕缺省 mode）", () => {
     insertMessage(MEMBER_SESSION, "assistant", "model", [{ type: "text", text: "a2" }]);
 
     const summary = buildDetail(deps(stateWith([], [])), { target: MEMBER_ID, limit: 4 }, () => MEMBER_SESSION);
-    const full = buildDetail(deps(stateWith([], [])), { target: MEMBER_ID, mode: "full", limit: 4 }, () => MEMBER_SESSION);
 
-    expect(summary.mode).toBe("summary");
-    expect(full.mode).toBe("full");
-    expect(summary.sourceTotal).toBe(6);
-    expect(full.sourceTotal).toBe(6);
-    expect(summary.total).toBe(5);
-    expect(full.total).toBe(6);
+    expect(summary.sourceTotal).toBe(6); // 投影前原始条目
+    expect(summary.total).toBe(5); // 投影后条目
     expect(summary.page.items.map((i) => i.seq)).toEqual([2, 3, 4, 5]);
     expect(summary.page.nextCursor).toBe(2);
-    expect(full.page.items.map((i) => i.seq)).toEqual([3, 4, 5, 6]);
-    expect(full.page.nextCursor).toBe(3);
   });
 });
 
-describe("mode 校验（契约逐字错误）", () => {
-  it("非法枚举 → TEAM_INVALID_ARGUMENT（消息逐字）", () => {
-    expect(() =>
-      buildDetail(deps(stateWith([], [])), { target: MEMBER_ID, mode: "bogus" as never }, () => MEMBER_SESSION),
-    ).toThrowError(new TeamError("TEAM_INVALID_ARGUMENT", 'param "mode" must be "summary" or "full"'));
-  });
-
-  it("非字符串 → 同口径错误", () => {
-    expect(() =>
-      buildDetail(deps(stateWith([], [])), { target: MEMBER_ID, mode: 1 as never }, () => MEMBER_SESSION),
-    ).toThrowError(new TeamError("TEAM_INVALID_ARGUMENT", 'param "mode" must be "summary" or "full"'));
-  });
-});
-
-describe("投影后分页预算（summary 作用于投影流）", () => {
+describe("投影后分页预算（作用于投影流）", () => {
   it("投影后 256KiB 裁剪仍生效（total 基于投影后条目）", () => {
     const raw = Array.from({ length: 60 }, (_, i) => ({
       ts: new Date(1760000000000 + i).toISOString(),
@@ -463,7 +442,7 @@ describe("成员解析与错误路径", () => {
 });
 
 describe("renderDetailText（team-ctl transcript CLI 对等，F12）", () => {
-  it("同一合成流的文本渲染：role/时间/framed 徽标/工具行", () => {
+  it("同一合成流的文本渲染：固定摘要 header/时间/framed 徽标/动作组行", () => {
     insertMessage(MEMBER_SESSION, "user", "real_user", [{ type: "text", text: "Team message from lead:\n推进" }]);
     insertMessage(MEMBER_SESSION, "assistant", "model", [
       { type: "tool", tool: "Read", status: "completed" },
@@ -476,7 +455,7 @@ describe("renderDetailText（team-ctl transcript CLI 对等，F12）", () => {
           ["msg-1"],
         ),
       ),
-      { target: MEMBER_ID, mode: "full" },
+      { target: MEMBER_ID },
       () => MEMBER_SESSION,
     );
     const text = renderDetailText(result, "alice");
@@ -484,14 +463,12 @@ describe("renderDetailText（team-ctl transcript CLI 对等，F12）", () => {
     expect(text).toContain(MEMBER_SESSION);
     expect(text).toContain("[team ← lead]");
     expect(text).toContain("推进");
-    expect(text).toContain("tool Read (completed)");
+    expect(text).toContain("assistant · 1 个动作（Read×1）");
     expect(text).toContain("已完成");
-    // full 模式 header 保持现状（无 summary 后缀）
-    expect(text).toContain("· 3 items");
-    expect(text).not.toContain("summary of");
+    expect(text).toContain("· 3 items (summary of 3)"); // header 恒为摘要口径
   });
 
-  it("summary：header 计数（summary of sourceTotal）+ toolGroup 聚合行", () => {
+  it("动作组行按名称聚合降序（Bash×2 · Read×1）", () => {
     insertMessage(MEMBER_SESSION, "user", "real_user", [{ type: "text", text: "请实现" }]);
     insertMessage(MEMBER_SESSION, "assistant", "model", [{ type: "tool", tool: "Bash", status: "completed" }]);
     insertMessage(MEMBER_SESSION, "assistant", "model", [{ type: "tool", tool: "Bash", status: "completed" }]);

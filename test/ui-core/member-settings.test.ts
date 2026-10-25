@@ -178,6 +178,39 @@ describe("弹窗渲染 · ready", () => {
     expect(html).toContain("data-settings-cancel");
   });
 
+  it("GitHub #6：failedApply → 弹窗顶部错误提示（明说原因，不显示成已生效）", () => {
+    const html = renderMemberSettingsModal(
+      ready({
+        current: {
+          model: "GLM-5.3",
+          providerId: "prov-a",
+          source: "explicit",
+          failedApply: {
+            modelId: "GLM-5.3-Flash",
+            providerId: "prov-a",
+            reasoningLevel: "max",
+            reason: "Reasoning level is required",
+          },
+        },
+      }),
+      "zh",
+    );
+    expect(html).toContain("上次设置未生效：GLM-5.3-Flash（Reasoning level is required）");
+    expect(html).toMatch(/class="settings-notice error" role="alert"/);
+    // 仍展示实际生效值（GLM-5.3），不是失败值
+    expect(html).toContain("GLM-5.3");
+    expect(renderMemberSettingsModal(
+      ready({
+        current: {
+          model: "m",
+          source: "cli-default",
+          failedApply: { modelId: "m2", reason: "boom" },
+        },
+      }),
+      "en",
+    )).toContain("Last change did not apply: m2 (boom)");
+  });
+
   it("notice：applied / next-turn 文案", () => {
     expect(renderMemberSettingsModal(ready({ notice: "now" }), "zh")).toContain("已应用");
     expect(renderMemberSettingsModal(ready({ notice: "next-turn" }), "zh")).toContain("已保存，下一轮生效");

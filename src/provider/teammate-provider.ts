@@ -29,13 +29,15 @@ export interface TeammateProvider {
   }): Promise<{ memberId: string; accepted: boolean }>;
 
   /** stage-8 Round C：mid-life 修改成员模型/思考强度（可选实现；mock 与真 provider 均提供）。
-   *  applied:"now" = 已写入会话库条目（当前空闲）；"next-turn" = 目标运行中或即时应用失败，
-   *  已落 pending，下一轮拉起前兜底应用。目标会话未落定 → 抛错。 */
+   *  applied:"now" = 已写入会话库条目（当前空闲）；"next-turn" = 目标运行中，已排队（下一轮
+   *  拉起前应用一次）；"failed" = 宿主拒绝该组合（附带原文 reason），**不排队、不重试**
+   *  （GitHub #6：失败必须立即告知用户，而不是包装成下一轮生效）。
+   *  target 会话未落定 → 抛错。 */
   setMemberModel?(args: {
     memberId: string;
     modelSelection?: MemberModelSelection;
     thoughtLevel?: string;
-  }): Promise<{ applied: "now" | "next-turn" }>;
+  }): Promise<{ applied: "now" | "next-turn" | "failed"; reason?: string }>;
 
   /** 向成员会话投递一条已框架化消息（「Team message from <name>: 」前缀，逐字；〔对齐轮〕0.2.1 无消息 id）。
    *  返回 "accepted"（本轮调用内完成拉起/写入）或 "queued"（目标运行中，已入 pending 持久化；〔对齐轮〕0.2.1 已删 pending 上限）。

@@ -19,13 +19,14 @@ import { TranscriptReader } from "../provider/transcript.js";
 import { resolveIdentity, type CallMeta, type ResolvedIdentity } from "../mcp/identity.js";
 import { requireMembership } from "../domain/projection.js";
 import { readModelCatalog } from "../provider/model-catalog.js";
-import { memberPaths, readOrigin } from "../provider/member-files.js";
+import { memberPaths, readModelFailed, readOrigin } from "../provider/member-files.js";
+import { parseModelSelection } from "../provider/model-selection.js";
 import type { ModelCatalog } from "../provider/model-catalog.js";
 import type { TeamToolBackend } from "../mcp/backend.js";
 import type { TeamState } from "../domain/projection.js";
 import type { MemberModelCurrent, ModelSource } from "../ui-core/member-settings.js";
 import { PanelViewService, resolveMemberSession } from "./view-service.js";
-import { buildDetail, renderDetailText, resolveDetailMode, SessionNotSettledError, type DetailResult } from "./detail.js";
+import { buildDetail, renderDetailText, SessionNotSettledError, type DetailResult } from "./detail.js";
 import type { ViewFrame } from "../ui-core/view.js";
 
 export type PanelCallArgs = {
@@ -34,8 +35,6 @@ export type PanelCallArgs = {
   target?: unknown;
   cursor?: unknown;
   limit?: unknown;
-  /** detail 视图模式（summary = 按轮摘要，缺省；full = 全量转录）。 */
-  mode?: unknown;
   /** stage-8 D：成员设置（模型目录/变更）。 */
   memberId?: unknown;
   model?: unknown;
@@ -47,7 +46,13 @@ export type PanelCallResult =
   | { kind: "view"; frame: ViewFrame }
   | { kind: "detail"; detail: DetailResult }
   | { kind: "modelOptions"; memberId?: string; memberName?: string; catalog: ModelCatalog; current?: MemberModelCurrent }
-  | { kind: "modelSet"; applied: "now" | "next-turn"; memberId: string }
+  | {
+      kind: "modelSet";
+      applied: "now" | "next-turn" | "failed";
+      memberId: string;
+      /** applied:"failed" 时的宿主原文原因（GitHub #6：失败必须可读，不包装成下一轮生效）。 */
+      reason?: string;
+    }
   | { kind: "error"; code: string; message: string; reason?: string };
 
 export interface PanelCallDeps {
@@ -132,15 +137,12 @@ async function buildDetailCall(
   const reader = deps.reader ?? new TranscriptReader();
   const cursor = typeof args.cursor === "number" ? args.cursor : undefined;
   const limit = typeof args.limit === "number" ? args.limit : undefined;
-  // 契约校验在此收口（非字符串/非枚举 → 逐字 TEAM_INVALID_ARGUMENT），再透传 buildDetail。
-  const mode = resolveDetailMode(args.mode);
   return buildDetail(
     { teamDir: paths.teamDir, teamId: identity.teamId, state: loaded.state, reader },
     {
       target: args.target as string,
       ...(cursor !== undefined ? { cursor } : {}),
       ...(limit !== undefined ? { limit } : {}),
-      mode,
     },
     (memberId) => resolveMemberSession(paths.teamDir, deps.dataRoot, memberId),
   );
@@ -186,7 +188,27 @@ function requireActiveMember(state: TeamState, memberId: string): { id: string; 
 /**
  * 当前生效模型 + 来源：origin 配置（explicit/inherited 权威）→ 会话库 setModel 条目
  * （observed：非本插件写入）→ 消息实测模型（observed）→ cli-default（无记录）。
+ * 附 `failedApply`（GitHub #6）：最近一次终态失败的选择与原因（读 model-failed.json）。
  */
+/** 终态失败记录 → 弹窗展示字段（GitHub #6；损坏/缺失 → undefined，不阻断目录读取）。 */
+function failedApplyOf(teamDir: string, memberId: string): MemberModelCurrent["failedApply"] {
+  let record;
+  try {
+    record = readModelFailed(memberPaths(teamDir, memberId));
+  } catch {
+    return undefined;
+  }
+  if (record === undefined) return undefined;
+  const selection = parseModelSelection(record.modelSelection);
+  if (selection === undefined) return undefined;
+  return {
+    modelId: selection.modelId,
+    ...(selection.providerId !== undefined ? { providerId: selection.providerId } : {}),
+    ...(selection.reasoningLevel !== undefined ? { reasoningLevel: selection.reasoningLevel } : {}),
+    reason: typeof record.reason === "string" ? record.reason : "",
+  };
+}
+
 function currentModelOf(
   deps: PanelCallDeps,
   teamDir: string,
@@ -236,12 +258,14 @@ async function buildModelOptions(
   }
   const ctx = await loadPanelMemberContext(deps, meta);
   const member = requireActiveMember(ctx.state, args.memberId);
+  const failedApply = failedApplyOf(ctx.teamDir, member.id);
+  const observed = currentModelOf(deps, ctx.teamDir, deps.dataRoot, member.id);
   return {
     kind: "modelOptions",
     memberId: member.id,
     memberName: member.name,
     catalog,
-    current: currentModelOf(deps, ctx.teamDir, deps.dataRoot, member.id),
+    current: { ...observed, ...(failedApply !== undefined ? { failedApply } : {}) },
   };
 }
 
@@ -276,7 +300,12 @@ async function applyMemberModel(
     ...(hasModel ? { model: args.model } : {}),
     ...(hasLevel ? { thoughtLevel: args.thoughtLevel } : {}),
   });
-  return { kind: "modelSet", applied: applied.applied, memberId: member.id };
+  return {
+    kind: "modelSet",
+    applied: applied.applied,
+    memberId: member.id,
+    ...(applied.reason !== undefined ? { reason: applied.reason } : {}),
+  };
 }
 
 /** team-ctl transcript 的 CLI 渲染出口（F12；与面板 detail 同一合成函数）。 */

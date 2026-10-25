@@ -121,15 +121,17 @@ afterAll(() => {
   fs.rmSync(root, { recursive: true, force: true });
 });
 
-describe("team-ctl transcript（T5.7 CLI 对等）", () => {
-  it("成员会话流（full）：role 区分 + 工具折叠行 + framed 徽标回填", async () => {
-    const r = await run(["transcript", teamDir, "worker", "--mode", "full"]);
+describe("team-ctl transcript（T5.7 CLI 对等；固定按轮摘要）", () => {
+  it("成员会话流：role 区分 + 动作组聚合行 + framed 徽标回填", async () => {
+    const r = await run(["transcript", teamDir, "worker"]);
     expect(r.code).toBe(0);
     expect(r.stdout).toContain("member worker");
     expect(r.stdout).toContain(MEMBER_SESSION);
     expect(r.stdout).toContain("[team ← lead]"); // framed 徽标（源 events/delivered，不改写原文）
     expect(r.stdout).toContain("Team message from lead:");
-    expect(r.stdout).toContain("tool Bash (completed)");
+    expect(r.stdout).toContain("3 items (summary of 3)");
+    expect(r.stdout).toContain("assistant · 1 个动作（Bash×1）");
+    expect(r.stdout).not.toContain("tool Bash (completed)"); // 摘要不逐条渲染动作
     expect(r.stdout).toContain("已完成");
   });
 
@@ -140,39 +142,21 @@ describe("team-ctl transcript（T5.7 CLI 对等）", () => {
     expect(r.stdout).toContain(TEAM);
   });
 
-  it("--json 机器可读（detail 契约形状；full 全量）", async () => {
-    const r = await run(["transcript", teamDir, "worker", "--json", "--mode", "full"]);
+  it("--json 机器可读（detail 契约形状；toolGroup 动作组）", async () => {
+    const r = await run(["transcript", teamDir, "worker", "--json"]);
     expect(r.code).toBe(0);
     const parsed = JSON.parse(r.stdout);
     expect(parsed.sessionId).toBe(MEMBER_SESSION);
     expect(parsed.memberName).toBe("worker");
+    expect(parsed.mode).toBeUndefined(); // 双模式已取消
     expect(Array.isArray(parsed.page.items)).toBe(true);
     const framedItem = parsed.page.items.find((i: { framed?: unknown }) => i.framed !== undefined);
     expect(framedItem.framed).toEqual({ messageId: "msg-t1", from: "lead" });
-    const toolItem = parsed.page.items.find((i: { kind: string }) => i.kind === "toolCall");
-    expect(toolItem.tool).toEqual({ name: "Bash", status: "completed" });
-  });
-
-  it("--mode summary（缺省）：按轮摘要 + 动作组聚合行 + framed 徽标保留", async () => {
-    const r = await run(["transcript", teamDir, "worker"]);
-    expect(r.code).toBe(0);
-    expect(r.stdout).toContain("3 items (summary of 3)");
-    expect(r.stdout).toContain("assistant · 1 个动作（Bash×1）");
-    expect(r.stdout).toContain("[team ← lead]");
-    expect(r.stdout).not.toContain("tool Bash (completed)"); // 摘要不逐条渲染动作
-  });
-
-  it("--mode full：全量转录（逐工具行，无 summary 后缀）", async () => {
-    const r = await run(["transcript", teamDir, "worker", "--mode", "full"]);
-    expect(r.code).toBe(0);
-    expect(r.stdout).toContain("tool Bash (completed)");
-    expect(r.stdout).not.toContain("(summary of");
-  });
-
-  it("非法 --mode → 中文错误 + 返回码 2（风格照 --theme）", async () => {
-    const r = await run(["transcript", teamDir, "worker", "--mode", "nope"]);
-    expect(r.code).toBe(2);
-    expect(r.stderr).toContain("--mode 仅支持 summary|full");
+    const group = parsed.page.items.find((i: { kind: string }) => i.kind === "toolGroup");
+    expect(group.count).toBe(1);
+    expect(group.tools).toEqual([
+      expect.objectContaining({ name: "Bash", status: "completed" }),
+    ]);
   });
 
   it("分页：--limit 1 → 首屏取末页（最近 1 条）+ nextCursor", async () => {
@@ -263,7 +247,7 @@ describe("usage 回归（新命令并入）", () => {
     expect(r.stdout).toContain("transcript");
     expect(r.stdout).toContain("widget");
     expect(r.stdout).toContain("state");
-    expect(r.stdout).toContain("--mode summary|full");
+    expect(r.stdout).not.toContain("--mode");
   });
 });
 

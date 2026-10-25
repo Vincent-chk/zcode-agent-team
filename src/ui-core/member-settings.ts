@@ -22,6 +22,13 @@ export interface MemberModelCurrent {
   providerId?: string;
   reasoningLevel?: string;
   source: ModelSource;
+  /** 最近一次**终态失败**的设置（GitHub #6：失败必须可见，不能让用户以为已生效）。 */
+  failedApply?: {
+    modelId: string;
+    providerId?: string;
+    reasoningLevel?: string;
+    reason: string;
+  };
 }
 
 /** 弹窗草稿（provider → model → thoughtLevel 三段联动）。 */
@@ -83,6 +90,7 @@ export const MEMBER_SETTINGS_DICT = {
     "settings.saving": "正在应用…",
     "settings.applied": "已应用",
     "settings.nextTurn": "已保存，下一轮生效",
+    "settings.failedApply": "上次设置未生效：{model}（{reason}）",
     "settings.loading": "正在加载模型…",
     "settings.error": "模型设置不可用：{message}",
     "settings.emptyCatalog": "模型目录为空（可在高级模式刷新）",
@@ -116,6 +124,7 @@ export const MEMBER_SETTINGS_DICT = {
     "settings.saving": "Applying…",
     "settings.applied": "Applied",
     "settings.nextTurn": "Saved; applies on the next turn",
+    "settings.failedApply": "Last change did not apply: {model} ({reason})",
     "settings.loading": "Loading models…",
     "settings.error": "Model settings unavailable: {message}",
     "settings.emptyCatalog": "Model catalog is empty (use Refresh in Advanced)",
@@ -289,10 +298,22 @@ function renderReadyBody(
           tms(lang, st.notice === "now" ? "settings.applied" : "settings.nextTurn"),
         )}</div>`
       : "";
+  // GitHub #6：上次终态失败的设置必须在弹窗里明说原因（不维持「快成功」观感）。
+  const failed = current?.failedApply;
+  const failedNotice =
+    failed !== undefined
+      ? `<div class="settings-notice error" role="alert">${esc(
+          tms(lang, "settings.failedApply", {
+            model: failed.modelId,
+            reason: failed.reason.length > 0 ? failed.reason : "—",
+          }),
+        )}</div>`
+      : "";
 
   if (!available) {
     return (
       currentLine +
+      failedNotice +
       `<div class="settings-state">${esc(tms(lang, "settings.emptyCatalog"))}</div>` +
       notice +
       renderFoot(lang, true) +
@@ -340,7 +361,16 @@ function renderReadyBody(
       .join("") +
     `</select></label>`;
 
-  return currentLine + providerSelect + modelSelect + levelSelect + notice + renderFoot(lang, saving) + renderAdvanced(lang);
+  return (
+    currentLine +
+    failedNotice +
+    providerSelect +
+    modelSelect +
+    levelSelect +
+    notice +
+    renderFoot(lang, saving) +
+    renderAdvanced(lang)
+  );
 }
 
 function renderProviderOptions(catalog: ModelCatalog, selected: string | undefined, lang: Lang): string {

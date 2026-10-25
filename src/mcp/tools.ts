@@ -144,7 +144,7 @@ export const TEAM_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     // 02 §9.13（stage-8 Round C）
     name: "member_set_model",
     description:
-      'Change the model or reasoning level of one teammate. A running target applies it on its next turn; an idle target applies it immediately. Use "providerId$modelId" or a bare modelId; list models with the team://models resource. Team Lead only.',
+      'Change the model or reasoning level of one teammate. A running target applies it on its next turn; an idle target applies it immediately. Use "providerId$modelId" or a bare modelId; list models with the team://models resource. Team Lead only. Returns applied:"failed" with reason when the combination is rejected.',
     inputSchema: {
       type: "object",
       properties: {

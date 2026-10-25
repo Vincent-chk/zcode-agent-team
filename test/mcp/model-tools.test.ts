@@ -279,6 +279,16 @@ describe("member_set_model", () => {
     expect(provider.modelSetCalls).toEqual([{ memberId: child()!.memberId, thoughtLevel: "low" }]);
   });
 
+  it("GitHub #6：失败结果原样返回 applied:failed + reason（工具层不包装成 next-turn）", async () => {
+    await spawnWorker();
+    provider.programWith({ modelSetResults: ["failed"] });
+    const result = await call("member_set_model", { target: "worker", model: "prov-a$model-a" });
+    expect(body(result)).toEqual({
+      applied: "failed",
+      reason: `mock rejected model for ${child()!.memberId}`,
+    });
+  });
+
   it("next-turn 结果原样返回（运行中/即时失败由 provider 决定）", async () => {
     await spawnWorker();
     provider.programWith({ modelSetResults: ["next-turn"] });

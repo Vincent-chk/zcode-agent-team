@@ -21274,6 +21274,11 @@ var TeamRoster = class {
     for (const member of state.members) {
       const status = member.phase === "failed" ? "failed" : member.phase === "provisioning" ? "provisioning" : presentation ? presentation.statusOf(member.id) : this.deps.inspector.isAlive(member.id) ? "running" : "inactive";
       const model = presentation?.modelOf(member.id) ?? this.deps.leadModel;
+      const extraDiagnostics = presentation?.diagnosticsOf?.(member.id) ?? [];
+      const diagnostics = [
+        ...member.error !== void 0 ? [member.error] : [],
+        ...extraDiagnostics
+      ];
       rows.push({
         target: member.name,
         role: "teammate",
@@ -21282,7 +21287,7 @@ var TeamRoster = class {
         provider: member.provider,
         context: member.context,
         ...model !== void 0 ? { model } : {},
-        diagnostics: member.error !== void 0 ? [member.error] : []
+        diagnostics
       });
     }
     return { members: rows };
@@ -22101,7 +22106,11 @@ var MockProvider = class {
   leadModelSelectionOf() {
     return this.program.leadModelSelection;
   }
-  /** mid-life 改模型桩（不落盘；按脚本返回 now/next-turn/throw）。 */
+  /** 成员附加诊断桩（MemberPresentation.diagnosticsOf；缺省空）。 */
+  diagnosticsOf(memberId) {
+    return this.program.memberDiagnostics?.[memberId] ?? [];
+  }
+  /** mid-life 改模型桩（不落盘；按脚本返回 now/next-turn/failed/throw）。 */
   async setMemberModel(args) {
     this.modelSetCalls.push({
       memberId: args.memberId,
@@ -22110,6 +22119,9 @@ var MockProvider = class {
     });
     const verdict = this.modelSetScript.length > 0 ? this.modelSetScript.shift() : "now";
     if (verdict === "throw") throw new Error(`mock setMemberModel failure for ${args.memberId}`);
+    if (verdict === "failed") {
+      return { applied: "failed", reason: `mock rejected model for ${args.memberId}` };
+    }
     if (verdict === "now" && args.modelSelection !== void 0) {
       const child = this.teamChildren.get(args.memberId);
       if (child !== void 0) child.modelSelection = args.modelSelection;
@@ -22990,7 +23002,8 @@ var TeamToolBackend = class {
   }
   /**
    * member_set_model（02 §9.13）：target 存在性（active）先校验 → model 规格按目录消歧 →
-   * host.dispatch 到协调者（provider.setMemberModel 决定 now/next-turn）。
+   * host.dispatch 到协调者（provider.setMemberModel 决定 now/next-turn/failed；GitHub #6：
+   * failed 附带宿主原文 reason，工具层原样透出，不包装成「下一轮生效」）。
    */
   async setMemberModel(identity, args) {
     const target = args.target;
@@ -23382,7 +23395,7 @@ var TEAM_TOOL_DEFINITIONS = [
   {
     // 02 §9.13（stage-8 Round C）
     name: "member_set_model",
-    description: 'Change the model or reasoning level of one teammate. A running target applies it on its next turn; an idle target applies it immediately. Use "providerId$modelId" or a bare modelId; list models with the team://models resource. Team Lead only.',
+    description: 'Change the model or reasoning level of one teammate. A running target applies it on its next turn; an idle target applies it immediately. Use "providerId$modelId" or a bare modelId; list models with the team://models resource. Team Lead only. Returns applied:"failed" with reason when the combination is rejected.',
     inputSchema: {
       type: "object",
       properties: {
@@ -23899,7 +23912,8 @@ function memberPaths(teamDir, memberId) {
     runDir,
     currentFile: path9.join(runDir, "current.json"),
     drainMarkerFile: path9.join(runDir, "drain-requested.json"),
-    modelPendingFile: path9.join(memberDir, "model-pending.json")
+    modelPendingFile: path9.join(memberDir, "model-pending.json"),
+    modelFailedFile: path9.join(memberDir, "model-failed.json")
   };
 }
 function turnFile(runDir, turnId) {
@@ -24003,6 +24017,18 @@ function readStopBudget(paths) {
 }
 function writeStopBudget(paths, budget) {
   writeJsonAtomic(paths.stopBudgetFile, budget);
+}
+function readModelFailed(paths) {
+  return readJson(paths.modelFailedFile);
+}
+function writeModelFailed(paths, record2) {
+  writeJsonAtomic(paths.modelFailedFile, record2);
+}
+function clearModelFailed(paths) {
+  try {
+    fs10.unlinkSync(paths.modelFailedFile);
+  } catch {
+  }
 }
 
 // src/provider/procgroup.ts
@@ -25373,6 +25399,17 @@ var ResumePerTurnProvider = class {
       });
     }
     const spawnCwd = bred?.workspacePath ?? this.cwd;
+    if (bred !== null && appliedSelection !== void 0) {
+      if (bred.appliedModel !== void 0) {
+        clearModelFailed(paths);
+      } else {
+        this.writeModelFailure(
+          paths,
+          appliedSelection,
+          explicitSelection !== void 0 ? "\u6307\u5B9A\u7684\u6A21\u578B\u4E0D\u53EF\u7528\u4E8E\u6210\u5458\uFF08registry \u4E0D\u8BC6\u522B\uFF09" : "Lead \u6A21\u578B\u4E0D\u53EF\u7528\u4E8E\u6210\u5458\uFF08registry \u4E0D\u8BC6\u522B\uFF09"
+        );
+      }
+    }
     const origin = {
       teamId: this.opts.teamId,
       memberId: args.memberId,
@@ -25712,8 +25749,11 @@ var ResumePerTurnProvider = class {
     return this.lookupLeadModelSelection();
   }
   /**
-   * stage-8 Round C · mid-life 改模型：空闲 → 立即应用（成功改 origin）；运行中或即时失败 →
-   * 落 pending（下一轮 launchTurn 前兜底应用）。目标会话未落定 → 抛错。
+   * stage-8 Round C · mid-life 改模型（GitHub #6 修订：单次尝试语义）：
+   * - 空闲 → 立即应用；成功改 origin 并清失败记录；**失败返回 {applied:"failed", reason}**，
+   *   写 model-failed.json（供成员行/弹窗展示），**不写 pending**（不再每轮静默重试）。
+   * - 运行中 → 真排队 {applied:"next-turn"}；下一轮 launchTurn 前置一次应用（失败即终态）。
+   * 目标会话未落定 → 抛错。
    */
   async setMemberModel(args) {
     const paths = memberPaths(this.teamDir, args.memberId);
@@ -25745,15 +25785,9 @@ var ResumePerTurnProvider = class {
       this.recordModelSelection(paths, origin, selection);
       return { applied: "now" };
     }
-    this.writeModelPending(paths, selection);
-    this.log({
-      ts: iso(this.now()),
-      kind: "model-set-pending",
-      teamId: this.opts.teamId,
-      memberId: args.memberId,
-      reason: result.reason ?? "apply-failed"
-    });
-    return { applied: "next-turn" };
+    const reason = result.reason ?? "model was rejected by the host";
+    this.writeModelFailure(paths, selection, reason);
+    return { applied: "failed", reason };
   }
   // ---------------------------------------------------------------- hook 回执（Lead 投递 landed 依据）
   /** hook 注入成功后落回执（hooks 进程与协调者双写者安全：O_APPEND+fsync）。 */
@@ -25973,9 +26007,44 @@ var ResumePerTurnProvider = class {
   writeModelPending(paths, selection) {
     writeJsonAtomic(paths.modelPendingFile, { modelSelection: selection, requestedAt: iso(this.now()) });
   }
-  /** origin 回写（展示/审计；再读一次避免覆盖并发更新）。 */
+  /** origin 回写（展示/审计；再读一次避免覆盖并发更新）。成功应用即清失败记录（#6）。 */
   recordModelSelection(paths, origin, selection) {
     writeOrigin(paths, { ...readOrigin(paths) ?? origin, modelSelection: selection, modelSource: "explicit" });
+    clearModelFailed(paths);
+  }
+  /** 记录一次**终态**模型设置失败（供成员行诊断/面板弹窗；不排队、不重试）。 */
+  writeModelFailure(paths, selection, reason) {
+    writeModelFailed(paths, {
+      modelSelection: selection,
+      reason: compactReason(reason),
+      failedAt: iso(this.now())
+    });
+    this.log({
+      ts: iso(this.now()),
+      kind: "model-set-failed-terminal",
+      teamId: this.opts.teamId,
+      providerId: selection.providerId,
+      modelId: selection.modelId,
+      reason: compactReason(reason)
+    });
+  }
+  /**
+   * 成员行诊断（GitHub #6）：读 model-failed.json → 一条可读诊断。
+   * 无记录/损坏 → []（损坏不阻断 list_agents；失败信息已尽力而为）。
+   */
+  diagnosticsOf(memberId) {
+    const paths = memberPaths(this.teamDir, memberId);
+    let record2;
+    try {
+      record2 = readModelFailed(paths);
+    } catch {
+      return [];
+    }
+    if (record2 === void 0) return [];
+    const selection = parseModelSelection(record2.modelSelection);
+    if (selection === void 0) return [];
+    const reason = compactReason(typeof record2.reason === "string" ? record2.reason : "");
+    return [`\u6A21\u578B\u8BBE\u7F6E\u672A\u751F\u6548\uFF1A${selection.providerId}/${selection.modelId}${reason.length > 0 ? `\uFF08${reason}\uFF09` : ""}`];
   }
   /** 下一轮拉起前应用 pending（成功删标记并同步 origin；失败保留标记，不阻塞轮次）。 */
   async applyPendingModelSelection(paths, sessionId, workspacePath, memberId) {
@@ -25989,7 +26058,14 @@ var ResumePerTurnProvider = class {
     }
     const applied = this.withReasoningDefault(selection);
     const result = await this.applySelectionNow(sessionId, workspacePath, applied, memberId);
-    if (!result.applied) return;
+    if (!result.applied) {
+      try {
+        fs18.unlinkSync(paths.modelPendingFile);
+      } catch {
+      }
+      this.writeModelFailure(paths, applied, result.reason ?? "model was rejected by the host");
+      return;
+    }
     try {
       fs18.unlinkSync(paths.modelPendingFile);
     } catch {
@@ -26055,6 +26131,13 @@ function iso(ms) {
 }
 function errText2(err) {
   return err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+}
+function compactReason(reason) {
+  const firstLine = reason.split(/\n/)[0] ?? "";
+  const firstSentence = firstLine.split(/(?<=[。！？.!?])\s*/)[0] ?? firstLine;
+  const text = firstSentence.trim();
+  if (text.length === 0) return "";
+  return text.length > 80 ? `${text.slice(0, 79)}\u2026` : text;
 }
 function sameModelSelection(a, b) {
   return a.providerId === b.providerId && a.modelId === b.modelId && (a.reasoningLevel ?? "") === (b.reasoningLevel ?? "");
@@ -26278,13 +26361,6 @@ var PanelViewService = class {
 };
 
 // src/panel/detail.ts
-function resolveDetailMode(mode) {
-  if (mode === void 0) return "summary";
-  if (mode !== "summary" && mode !== "full") {
-    throw new TeamError("TEAM_INVALID_ARGUMENT", 'param "mode" must be "summary" or "full"');
-  }
-  return mode;
-}
 var DETAIL_DEFAULT_LIMIT = 100;
 var DETAIL_MAX_LIMIT = 200;
 var DETAIL_PAGE_BYTES = 256 * 1024;
@@ -26429,11 +26505,10 @@ function normalizeLimit(limit) {
   return Math.min(limit, DETAIL_MAX_LIMIT);
 }
 function buildDetail(deps, args, readOriginSession) {
-  const mode = resolveDetailMode(args.mode);
   const { memberId, sessionId } = resolveMemberSessionId(deps, args.target, readOriginSession);
   const stream = synthesizeDetailStream(deps, sessionId, memberId);
   const sourceTotal = stream.items.length;
-  const projected = mode === "summary" ? projectSummary(stream.items) : stream.items;
+  const projected = projectSummary(stream.items);
   const { page, total, truncated } = pageDetail(projected, {
     ...args.cursor !== void 0 ? { cursor: args.cursor } : {},
     ...args.limit !== void 0 ? { limit: args.limit } : {}
@@ -26441,7 +26516,6 @@ function buildDetail(deps, args, readOriginSession) {
   return {
     sessionId,
     memberId,
-    mode,
     page,
     ...truncated ? { truncated: true } : {},
     total,
@@ -26499,14 +26573,12 @@ async function buildDetailCall(deps, args, meta) {
   const reader = deps.reader ?? new TranscriptReader();
   const cursor = typeof args.cursor === "number" ? args.cursor : void 0;
   const limit = typeof args.limit === "number" ? args.limit : void 0;
-  const mode = resolveDetailMode(args.mode);
   return buildDetail(
     { teamDir: paths.teamDir, teamId: identity.teamId, state: loaded.state, reader },
     {
       target: args.target,
       ...cursor !== void 0 ? { cursor } : {},
-      ...limit !== void 0 ? { limit } : {},
-      mode
+      ...limit !== void 0 ? { limit } : {}
     },
     (memberId) => resolveMemberSession(paths.teamDir, deps.dataRoot, memberId)
   );
@@ -26534,6 +26606,23 @@ function requireActiveMember(state, memberId) {
     throw new TeamError("TEAM_MEMBER_NOT_FOUND", `active teammate "${memberId}" not found`);
   }
   return { id: member.id, name: member.name };
+}
+function failedApplyOf(teamDir, memberId) {
+  let record2;
+  try {
+    record2 = readModelFailed(memberPaths(teamDir, memberId));
+  } catch {
+    return void 0;
+  }
+  if (record2 === void 0) return void 0;
+  const selection = parseModelSelection(record2.modelSelection);
+  if (selection === void 0) return void 0;
+  return {
+    modelId: selection.modelId,
+    ...selection.providerId !== void 0 ? { providerId: selection.providerId } : {},
+    ...selection.reasoningLevel !== void 0 ? { reasoningLevel: selection.reasoningLevel } : {},
+    reason: typeof record2.reason === "string" ? record2.reason : ""
+  };
 }
 function currentModelOf(deps, teamDir, dataRoot, memberId) {
   const origin = readOrigin(memberPaths(teamDir, memberId));
@@ -26572,12 +26661,14 @@ async function buildModelOptions(deps, args, meta) {
   }
   const ctx = await loadPanelMemberContext(deps, meta);
   const member = requireActiveMember(ctx.state, args.memberId);
+  const failedApply = failedApplyOf(ctx.teamDir, member.id);
+  const observed = currentModelOf(deps, ctx.teamDir, deps.dataRoot, member.id);
   return {
     kind: "modelOptions",
     memberId: member.id,
     memberName: member.name,
     catalog,
-    current: currentModelOf(deps, ctx.teamDir, deps.dataRoot, member.id)
+    current: { ...observed, ...failedApply !== void 0 ? { failedApply } : {} }
   };
 }
 async function applyMemberModel(deps, args, meta) {
@@ -26606,7 +26697,12 @@ async function applyMemberModel(deps, args, meta) {
     ...hasModel ? { model: args.model } : {},
     ...hasLevel ? { thoughtLevel: args.thoughtLevel } : {}
   });
-  return { kind: "modelSet", applied: applied.applied, memberId: member.id };
+  return {
+    kind: "modelSet",
+    applied: applied.applied,
+    memberId: member.id,
+    ...applied.reason !== void 0 ? { reason: applied.reason } : {}
+  };
 }
 
 // src/panel/companion-server.ts
@@ -27078,7 +27174,7 @@ var TOOLS = [
   },
   {
     name: "team_panel_call",
-    description: "\u9762\u677F\u56DE\u73AF\u5DE5\u5177\uFF08app \u4E13\u7528\uFF09\uFF1A\u9762\u677F\u7ECF callServerTool \u8C03\u7528\u3002label-only = \u5FC3\u8DF3/\u8BA1\u6570\uFF08H12 \u4FDD\u6D3B\u8F7D\u4F53\uFF09\uFF1Baction=refresh = \u5168\u91CF\u89C6\u56FE\u5E27\uFF1Baction=detail + target = \u6210\u5458\u4F1A\u8BDD\u67E5\u770B\u89C6\u56FE\uFF08T5.7\uFF0Ccursor/limit \u5206\u9875\uFF09\uFF1Baction=modelOptions\uFF08memberId \u53EF\u9009\uFF09= \u6A21\u578B\u76EE\u5F55 + \u6210\u5458\u5F53\u524D\u751F\u6548\u503C\uFF1Baction=setMemberModel\uFF08memberId + model/thoughtLevel\uFF09= \u53D7\u63A7\u6210\u5458\u6A21\u578B\u53D8\u66F4\uFF08stage-8\uFF09\u3002detail \u9ED8\u8BA4\u6309\u8F6E\u6458\u8981\uFF08summary\uFF0Cmode \u7F3A\u7701\uFF09\uFF0Cfull \u4E3A\u5BA1\u8BA1\u5168\u91CF\u3002",
+    description: "\u9762\u677F\u56DE\u73AF\u5DE5\u5177\uFF08app \u4E13\u7528\uFF09\uFF1A\u9762\u677F\u7ECF callServerTool \u8C03\u7528\u3002label-only = \u5FC3\u8DF3/\u8BA1\u6570\uFF08H12 \u4FDD\u6D3B\u8F7D\u4F53\uFF09\uFF1Baction=refresh = \u5168\u91CF\u89C6\u56FE\u5E27\uFF1Baction=detail + target = \u6210\u5458\u4F1A\u8BDD\u67E5\u770B\u89C6\u56FE\uFF08T5.7\uFF0Ccursor/limit \u5206\u9875\uFF09\uFF1Baction=modelOptions\uFF08memberId \u53EF\u9009\uFF09= \u6A21\u578B\u76EE\u5F55 + \u6210\u5458\u5F53\u524D\u751F\u6548\u503C\uFF1Baction=setMemberModel\uFF08memberId + model/thoughtLevel\uFF09= \u53D7\u63A7\u6210\u5458\u6A21\u578B\u53D8\u66F4\uFF08stage-8\uFF09\u3002detail \u6309\u8F6E\u6458\u8981\uFF08\u4EC5\u7B80\u6D01\u4E00\u79CD\u5F62\u6001\uFF1A\u7528\u6237\u6307\u4EE4 + \u52A8\u4F5C\u7EC4 + \u6BCF\u8F6E\u7ED3\u8BBA\uFF09\u3002",
     visibility: ["app"],
     inputSchema: {
       type: "object",
@@ -27092,11 +27188,6 @@ var TOOLS = [
         target: { type: "string", description: "detail \u76EE\u6807\u6210\u5458 id\uFF08\u6216\u6210\u5458\u540D\uFF1Blead \u4EA6\u53EF\uFF09" },
         cursor: { type: "number", description: "detail seq \u6E38\u6807\uFF08\u8FD4\u56DE seq < cursor \u7684\u6700\u8FD1\u4E00\u9875\uFF1B\u7F3A\u7701 = \u672B\u9875/\u6700\u8FD1\u4E0A\u4E0B\u6587\uFF09" },
         limit: { type: "number", description: "detail \u9875\u5927\u5C0F\uFF08\u9ED8\u8BA4 100\uFF0C\u4E0A\u9650 200\uFF09" },
-        mode: {
-          type: "string",
-          enum: ["summary", "full"],
-          description: "detail \u89C6\u56FE\u6A21\u5F0F\uFF1Asummary=\u6309\u8F6E\u6B21\u6458\u8981\uFF08\u7F3A\u7701\uFF09\uFF0Cfull=\u5168\u91CF\u8F6C\u5F55"
-        },
         memberId: { type: "string", description: "\u6A21\u578B\u8BBE\u7F6E\u76EE\u6807\u6210\u5458 id\uFF08modelOptions/setMemberModel\uFF09" },
         model: {
           type: "string",
@@ -27212,7 +27303,12 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
         };
         break;
       case "modelSet":
-        body = { ok: true, applied: result.applied, memberId: result.memberId };
+        body = {
+          ok: true,
+          applied: result.applied,
+          memberId: result.memberId,
+          ...result.reason !== void 0 ? { reason: result.reason } : {}
+        };
         break;
       case "error":
         body = {

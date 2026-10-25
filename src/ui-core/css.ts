@@ -285,6 +285,8 @@ h3 .count {
 }
 .settings-state.error { color: var(--at-error-text); }
 .settings-notice { font-size: 11px; color: var(--at-state-ongoing); }
+/* GitHub #6：终态失败提示用错误色（与「已应用 / 下一轮生效」中性提示区分） */
+.settings-notice.error { color: var(--at-error-text); }
 .settings-foot { display: flex; justify-content: flex-end; gap: 8px; }
 .settings-btn {
   background: none;

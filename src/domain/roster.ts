@@ -52,6 +52,8 @@ export interface MemberPresentation {
   modelOf(memberId: string): string | undefined;
   /** Lead 会话模型实查（可选；真 provider 实现，缺省回落 deps.leadModel）。 */
   leadModelOf?(): string | undefined;
+  /** 成员附加诊断（可选；如模型设置终态失败。GitHub #6：失败必须在成员行可见）。 */
+  diagnosticsOf?(memberId: string): string[];
 }
 
 export interface RosterDeps {
@@ -351,6 +353,12 @@ export class TeamRoster {
                 ? "running"
                 : "inactive";
       const model = presentation?.modelOf(member.id) ?? this.deps.leadModel; // 回退链：成员 → Lead → 缺省
+      // 诊断 = 域侧创建失败原因 + 呈现侧附加诊断（如模型设置未生效；#6 三面可见之一）。
+      const extraDiagnostics = presentation?.diagnosticsOf?.(member.id) ?? [];
+      const diagnostics = [
+        ...(member.error !== undefined ? [member.error] : []),
+        ...extraDiagnostics,
+      ];
       rows.push({
         target: member.name,
         role: "teammate",
@@ -359,7 +367,7 @@ export class TeamRoster {
         provider: member.provider,
         context: member.context,
         ...(model !== undefined ? { model } : {}),
-        diagnostics: member.error !== undefined ? [member.error] : [],
+        diagnostics,
       });
     }
     return { members: rows };

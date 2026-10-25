@@ -44,6 +44,8 @@ function fakeBreeder(result: { applied: boolean; reason?: string } = { applied: 
 }
 
 let kit: ProviderKit | null = null;
+/** 可变的培育器结果（同一 provider 实例内切换成功/失败，验证清除语义）。 */
+let breederVerdict: { applied: boolean; reason?: string };
 const restoreFns: Array<() => void> = [];
 let breeder: ReturnType<typeof fakeBreeder>;
 
@@ -156,17 +158,100 @@ describe("setMemberModel · 三态", () => {
     await waitFor(() => !kit!.provider.isAlive(SPAWN.memberId), 8_000);
   });
 
-  it("即时应用失败 → 落 pending（applied:next-turn）", async () => {
-    await replaceBreeder({ applied: false, reason: "app-server unreachable" });
+  it("GitHub #6：空闲即时失败 → applied:failed + reason，不写 pending，落 model-failed", async () => {
+    await replaceBreeder({ applied: false, reason: "Reasoning level is required" });
     await spawnMember();
-    const selection: MemberModelSelection = { providerId: "p-fail", modelId: "m-fail" };
-    await expect(kit!.provider.setMemberModel({ memberId: SPAWN.memberId, modelSelection: selection })).resolves.toEqual({
-      applied: "next-turn",
+    const selection: MemberModelSelection = { providerId: "p-fail", modelId: "m-fail", reasoningLevel: "max" };
+    await expect(
+      kit!.provider.setMemberModel({ memberId: SPAWN.memberId, modelSelection: selection }),
+    ).resolves.toEqual({ applied: "failed", reason: "Reasoning level is required" });
+    const paths = memberPaths(kit!.provider.teamDir, SPAWN.memberId);
+    // 不排队：pending 不存在（旧行为的无限重试源头）
+    expect(fs.existsSync(paths.modelPendingFile)).toBe(false);
+    // 失败记录落盘，成员行诊断立即可见
+    expect(JSON.parse(fs.readFileSync(paths.modelFailedFile, "utf8"))).toMatchObject({
+      modelSelection: selection,
+      reason: "Reasoning level is required",
     });
-    const pendingFile = memberPaths(kit!.provider.teamDir, SPAWN.memberId).modelPendingFile;
-    expect(JSON.parse(fs.readFileSync(pendingFile, "utf8"))).toMatchObject({ modelSelection: selection });
-    // origin 未改（尚未生效）
-    expect(readOrigin(memberPaths(kit!.provider.teamDir, SPAWN.memberId))?.modelSelection).toBeUndefined();
+    expect(kit!.provider.diagnosticsOf(SPAWN.memberId)).toEqual([
+      "模型设置未生效：p-fail/m-fail（Reasoning level is required）",
+    ]);
+    // origin 未改（未生效就不记）
+    expect(readOrigin(paths)?.modelSelection).toBeUndefined();
+  });
+
+  it("GitHub #6：失败后成功一次即清除 model-failed（不留陈旧告警）", async () => {
+    breederVerdict = { applied: false, reason: "rejected once" };
+    await replaceBreeder(breederVerdict);
+    await spawnMember();
+    const selection: MemberModelSelection = { providerId: "p-ok", modelId: "m-ok" };
+    await expect(
+      kit!.provider.setMemberModel({ memberId: SPAWN.memberId, modelSelection: selection }),
+    ).resolves.toMatchObject({ applied: "failed" });
+    const paths = memberPaths(kit!.provider.teamDir, SPAWN.memberId);
+    expect(fs.existsSync(paths.modelFailedFile)).toBe(true);
+
+    // 第二次尝试成功（同一 provider 实例；培育器结果对象可变 → 直接翻转 verdict）
+    breederVerdict.applied = true;
+    delete breederVerdict.reason;
+    await expect(
+      kit!.provider.setMemberModel({ memberId: SPAWN.memberId, modelSelection: selection }),
+    ).resolves.toEqual({ applied: "now" });
+    expect(fs.existsSync(paths.modelFailedFile)).toBe(false);
+    expect(kit!.provider.diagnosticsOf(SPAWN.memberId)).toEqual([]);
+  });
+
+  it("GitHub #6：无失败记录 → diagnosticsOf 空；损坏记录 → 空（不阻断 list_agents）", async () => {
+    await spawnMember();
+    const paths = memberPaths(kit!.provider.teamDir, SPAWN.memberId);
+    expect(kit!.provider.diagnosticsOf(SPAWN.memberId)).toEqual([]);
+    fs.writeFileSync(paths.modelFailedFile, "{broken");
+    expect(kit!.provider.diagnosticsOf(SPAWN.memberId)).toEqual([]);
+    fs.writeFileSync(paths.modelFailedFile, JSON.stringify({ modelSelection: { modelId: "only" }, reason: "x" }));
+    expect(kit!.provider.diagnosticsOf(SPAWN.memberId)).toEqual([]);
+  });
+
+  it("GitHub #6：宿主未给原因 → 落默认原因（诊断仍可读，不留空括号）", async () => {
+    breederVerdict = { applied: false };
+    await replaceBreeder(breederVerdict);
+    await spawnMember();
+    await expect(
+      kit!.provider.setMemberModel({
+        memberId: SPAWN.memberId,
+        modelSelection: { providerId: "p-silent", modelId: "m-silent" },
+      }),
+    ).resolves.toEqual({ applied: "failed", reason: "model was rejected by the host" });
+    expect(kit!.provider.diagnosticsOf(SPAWN.memberId)).toEqual([
+      "模型设置未生效：p-silent/m-silent（model was rejected by the host）",
+    ]);
+  });
+
+  it("GitHub #6：失败记录 reason 为空 → 诊断不带空括号", async () => {
+    await spawnMember();
+    const paths = memberPaths(kit!.provider.teamDir, SPAWN.memberId);
+    fs.mkdirSync(path.dirname(paths.modelFailedFile), { recursive: true });
+    fs.writeFileSync(
+      paths.modelFailedFile,
+      JSON.stringify({
+        modelSelection: { providerId: "p-empty", modelId: "m-empty" },
+        reason: "",
+        failedAt: new Date().toISOString(),
+      }),
+    );
+    expect(kit!.provider.diagnosticsOf(SPAWN.memberId)).toEqual(["模型设置未生效：p-empty/m-empty"]);
+  });
+
+  it("GitHub #6：reason 精简（首句 + ≤80 字符）", async () => {
+    const longReason = `${"x".repeat(120)}. second sentence`;
+    await replaceBreeder({ applied: false, reason: longReason });
+    await spawnMember();
+    await kit!.provider.setMemberModel({
+      memberId: SPAWN.memberId,
+      modelSelection: { providerId: "p-long", modelId: "m-long" },
+    });
+    const [diagnostic] = kit!.provider.diagnosticsOf(SPAWN.memberId);
+    expect(diagnostic).toBe(`模型设置未生效：p-long/m-long（${"x".repeat(79)}…）`);
+    expect(diagnostic.length).toBeLessThan(120);
   });
 
   it("thoughtLevel-only：以成员现有选择为基底（origin 记录 → 合并强度）", async () => {
@@ -233,20 +318,51 @@ describe("pending 兜底 · 下一轮拉起前应用", () => {
     expect(kit!.logs.some((r) => r.kind === "model-pending-applied")).toBe(true);
   });
 
-  it("pending 应用失败 → 标记保留（下一轮再试），轮次照常拉起", async () => {
-    await replaceBreeder({ applied: false, reason: "still offline" });
+  it("GitHub #6：pending 前置应用失败 → 终态（删标记 + 落 model-failed），轮次照常拉起", async () => {
+    await replaceBreeder({ applied: false, reason: "Provider Registry 中不存在 Model" });
     await spawnMember();
     const paths = memberPaths(kit!.provider.teamDir, SPAWN.memberId);
     const selection: MemberModelSelection = { providerId: "p-retry", modelId: "m-retry" };
     // 直接落 pending（模拟上一轮运行中写入）
-    fs.writeFileSync(paths.modelPendingFile, JSON.stringify({ modelSelection: selection, requestedAt: new Date().toISOString() }));
+    fs.writeFileSync(
+      paths.modelPendingFile,
+      JSON.stringify({ modelSelection: selection, requestedAt: new Date().toISOString() }),
+    );
     const msg = framedText("lead", "retry-body");
     await expect(
       kit!.provider.deliver({ memberId: SPAWN.memberId, framedMessage: msg.framedJson, messageId: msg.messageId }),
     ).resolves.toBe("accepted");
-    expect(breeder.applyCalls).toHaveLength(1);
-    expect(fs.existsSync(paths.modelPendingFile)).toBe(true);
+    expect(breeder.applyCalls).toHaveLength(1); // 单次尝试
+    // 终态：标记删除（不再每轮重试）+ 失败记录落盘 + 诊断可见
+    expect(fs.existsSync(paths.modelPendingFile)).toBe(false);
+    expect(fs.existsSync(paths.modelFailedFile)).toBe(true);
+    expect(kit!.provider.diagnosticsOf(SPAWN.memberId)).toEqual([
+      "模型设置未生效：p-retry/m-retry（Provider Registry 中不存在 Model）",
+    ]);
     expect(readOrigin(paths)?.modelSelection).toBeUndefined();
+  });
+
+  it("GitHub #6：pending 前置应用成功 → 清 pending + 清 model-failed + 更新 origin", async () => {
+    await spawnMember();
+    const paths = memberPaths(kit!.provider.teamDir, SPAWN.memberId);
+    fs.writeFileSync(paths.modelFailedFile, JSON.stringify({
+      modelSelection: { providerId: "p-old", modelId: "m-old" },
+      reason: "old failure",
+      failedAt: new Date().toISOString(),
+    }));
+    const selection: MemberModelSelection = { providerId: "p-fine", modelId: "m-fine" };
+    fs.writeFileSync(
+      paths.modelPendingFile,
+      JSON.stringify({ modelSelection: selection, requestedAt: new Date().toISOString() }),
+    );
+    const msg = framedText("lead", "ok-body");
+    await expect(
+      kit!.provider.deliver({ memberId: SPAWN.memberId, framedMessage: msg.framedJson, messageId: msg.messageId }),
+    ).resolves.toBe("accepted");
+    expect(fs.existsSync(paths.modelPendingFile)).toBe(false);
+    expect(fs.existsSync(paths.modelFailedFile)).toBe(false);
+    expect(kit!.provider.diagnosticsOf(SPAWN.memberId)).toEqual([]);
+    expect(readOrigin(paths)).toMatchObject({ modelSelection: selection, modelSource: "explicit" });
   });
 
   it("损坏的 pending 标记 → 记日志并跳过（不阻塞轮次）", async () => {

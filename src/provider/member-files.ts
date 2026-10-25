@@ -83,6 +83,16 @@ export interface StopBudget {
   blocks: number;
 }
 
+/**
+ * 模型设置终态失败记录（GitHub #6）：设置被宿主拒绝且不再重试时落盘，供成员行诊断
+ * （list_agents / 面板成员卡）与面板弹窗展示。成功应用即删（不留陈旧告警）。
+ */
+export interface ModelFailedRecord {
+  modelSelection: MemberModelSelection;
+  reason: string;
+  failedAt: string;
+}
+
 export interface MemberPaths {
   memberDir: string;
   originFile: string;
@@ -93,6 +103,8 @@ export interface MemberPaths {
   drainMarkerFile: string;
   /** mid-life 模型修改的待应用标记（下一轮拉起前应用；成功即删）。 */
   modelPendingFile: string;
+  /** 模型设置**终态失败**记录（GitHub #6：失败必须可见；成功应用即删）。 */
+  modelFailedFile: string;
 }
 
 export function memberPaths(teamDir: string, memberId: string): MemberPaths {
@@ -107,6 +119,7 @@ export function memberPaths(teamDir: string, memberId: string): MemberPaths {
     currentFile: path.join(runDir, "current.json"),
     drainMarkerFile: path.join(runDir, "drain-requested.json"),
     modelPendingFile: path.join(memberDir, "model-pending.json"),
+    modelFailedFile: path.join(memberDir, "model-failed.json"),
   };
 }
 
@@ -242,4 +255,22 @@ export function readStopBudget(paths: MemberPaths): StopBudget | undefined {
 
 export function writeStopBudget(paths: MemberPaths, budget: StopBudget): void {
   writeJsonAtomic(paths.stopBudgetFile, budget);
+}
+
+/** 读模型设置失败记录（不存在 → undefined；损坏 → 抛错，由调用方决定降级）。 */
+export function readModelFailed(paths: MemberPaths): ModelFailedRecord | undefined {
+  return readJson<ModelFailedRecord>(paths.modelFailedFile);
+}
+
+export function writeModelFailed(paths: MemberPaths, record: ModelFailedRecord): void {
+  writeJsonAtomic(paths.modelFailedFile, record);
+}
+
+/** 删除失败记录（幂等；成功应用后调用，避免陈旧告警）。 */
+export function clearModelFailed(paths: MemberPaths): void {
+  try {
+    fs.unlinkSync(paths.modelFailedFile);
+  } catch {
+    /* 不存在/删除失败均不影响主流程 */
+  }
 }

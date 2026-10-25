@@ -9,6 +9,7 @@ import { TeamClient, isCoordinatorUnavailable } from "../../../src/coord/client.
 import { teamMethodNames, WAIT_AGENT_GRACE_MS } from "../../../src/coord/methods.js";
 import { load } from "../../../src/coord/replay.js";
 import { TeamError } from "../../../src/domain/errors.js";
+import { MockProvider } from "../../../src/provider/mock-provider.js";
 
 const TEAM = "sess_real_host_lead";
 
@@ -168,6 +169,26 @@ describe("真实装配 · 方法表口径（进程内直执行路径）", () => 
           modelSelection: { providerId: "p", modelId: "m", options: { reasoningLevel: "high" } },
         }),
       ).resolves.toEqual({ applied: "now" });
+    } finally {
+      await host.close();
+    }
+  });
+
+  it("GitHub #6：member.set_model 失败结果（applied:failed + reason）经方法表原样返回", async () => {
+    const teamId = "sess_set_model_failed";
+    const provider = new MockProvider();
+    const host = await TeamCoordinatorHost.open({ dataRoot: root, teamId, provider });
+    try {
+      await host.dispatch("member.spawn", { session_id: teamId, name: "worker", description: "d", prompt: "p" });
+      const memberId = [...provider.teamChildren.keys()][0]!;
+      provider.programWith({ modelSetResults: ["failed"] });
+      await expect(
+        host.dispatch("member.set_model", {
+          session_id: teamId,
+          member_id: "worker",
+          modelSelection: { providerId: "p", modelId: "m" },
+        }),
+      ).resolves.toEqual({ applied: "failed", reason: `mock rejected model for ${memberId}` });
     } finally {
       await host.close();
     }

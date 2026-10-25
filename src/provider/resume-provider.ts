@@ -30,6 +30,9 @@ import {
   writeStopBudget,
   writeJsonAtomic,
   readJson,
+  readModelFailed,
+  writeModelFailed,
+  clearModelFailed,
   type OriginRecord,
   type TurnRecord,
   type MemberPaths,
@@ -411,6 +414,22 @@ export class ResumePerTurnProvider implements TeammateProvider {
     }
     // 培育器可能从会话库解析出 Lead 的真实目录；轮次/探针必须使用同一目录。
     const spawnCwd = bred?.workspacePath ?? this.cwd;
+
+    // GitHub #6：spawn 时模型没生效也要可见。继承降级（Lead 条目/usage 都不可用）写固定说明；
+    // 显式指定失败同样落记录（用户意图未被满足，不能静默）。origin 仍只记实际生效者。
+    if (bred !== null && appliedSelection !== undefined) {
+      if (bred.appliedModel !== undefined) {
+        clearModelFailed(paths);
+      } else {
+        this.writeModelFailure(
+          paths,
+          appliedSelection,
+          explicitSelection !== undefined
+            ? "指定的模型不可用于成员（registry 不识别）"
+            : "Lead 模型不可用于成员（registry 不识别）",
+        );
+      }
+    }
 
     const origin: OriginRecord = {
       teamId: this.opts.teamId,
@@ -812,14 +831,17 @@ export class ResumePerTurnProvider implements TeammateProvider {
   }
 
   /**
-   * stage-8 Round C · mid-life 改模型：空闲 → 立即应用（成功改 origin）；运行中或即时失败 →
-   * 落 pending（下一轮 launchTurn 前兜底应用）。目标会话未落定 → 抛错。
+   * stage-8 Round C · mid-life 改模型（GitHub #6 修订：单次尝试语义）：
+   * - 空闲 → 立即应用；成功改 origin 并清失败记录；**失败返回 {applied:"failed", reason}**，
+   *   写 model-failed.json（供成员行/弹窗展示），**不写 pending**（不再每轮静默重试）。
+   * - 运行中 → 真排队 {applied:"next-turn"}；下一轮 launchTurn 前置一次应用（失败即终态）。
+   * 目标会话未落定 → 抛错。
    */
   async setMemberModel(args: {
     memberId: string;
     modelSelection?: MemberModelSelection;
     thoughtLevel?: string;
-  }): Promise<{ applied: "now" | "next-turn" }> {
+  }): Promise<{ applied: "now" | "next-turn" | "failed"; reason?: string }> {
     const paths = memberPaths(this.teamDir, args.memberId);
     const origin = readOrigin(paths);
     if (origin === undefined || origin.sessionId === null) {
@@ -852,15 +874,10 @@ export class ResumePerTurnProvider implements TeammateProvider {
       this.recordModelSelection(paths, origin, selection);
       return { applied: "now" };
     }
-    this.writeModelPending(paths, selection);
-    this.log({
-      ts: iso(this.now()),
-      kind: "model-set-pending",
-      teamId: this.opts.teamId,
-      memberId: args.memberId,
-      reason: result.reason ?? "apply-failed",
-    });
-    return { applied: "next-turn" };
+    // 终态失败：立即告知原因，并落失败记录让成员行/弹窗可见；不排队、不重试。
+    const reason = result.reason ?? "model was rejected by the host";
+    this.writeModelFailure(paths, selection, reason);
+    return { applied: "failed", reason };
   }
 
   // ---------------------------------------------------------------- hook 回执（Lead 投递 landed 依据）
@@ -1118,13 +1135,54 @@ export class ResumePerTurnProvider implements TeammateProvider {
     writeJsonAtomic(paths.modelPendingFile, { modelSelection: selection, requestedAt: iso(this.now()) });
   }
 
-  /** origin 回写（展示/审计；再读一次避免覆盖并发更新）。 */
+  /** origin 回写（展示/审计；再读一次避免覆盖并发更新）。成功应用即清失败记录（#6）。 */
   private recordModelSelection(
     paths: MemberPaths,
     origin: OriginRecord,
     selection: MemberModelSelection,
   ): void {
     writeOrigin(paths, { ...(readOrigin(paths) ?? origin), modelSelection: selection, modelSource: "explicit" });
+    clearModelFailed(paths);
+  }
+
+  /** 记录一次**终态**模型设置失败（供成员行诊断/面板弹窗；不排队、不重试）。 */
+  private writeModelFailure(
+    paths: MemberPaths,
+    selection: MemberModelSelection,
+    reason: string,
+  ): void {
+    writeModelFailed(paths, {
+      modelSelection: selection,
+      reason: compactReason(reason),
+      failedAt: iso(this.now()),
+    });
+    this.log({
+      ts: iso(this.now()),
+      kind: "model-set-failed-terminal",
+      teamId: this.opts.teamId,
+      providerId: selection.providerId,
+      modelId: selection.modelId,
+      reason: compactReason(reason),
+    });
+  }
+
+  /**
+   * 成员行诊断（GitHub #6）：读 model-failed.json → 一条可读诊断。
+   * 无记录/损坏 → []（损坏不阻断 list_agents；失败信息已尽力而为）。
+   */
+  diagnosticsOf(memberId: string): string[] {
+    const paths = memberPaths(this.teamDir, memberId);
+    let record;
+    try {
+      record = readModelFailed(paths);
+    } catch {
+      return [];
+    }
+    if (record === undefined) return [];
+    const selection = parseModelSelection(record.modelSelection);
+    if (selection === undefined) return [];
+    const reason = compactReason(typeof record.reason === "string" ? record.reason : "");
+    return [`模型设置未生效：${selection.providerId}/${selection.modelId}${reason.length > 0 ? `（${reason}）` : ""}`];
   }
 
   /** 下一轮拉起前应用 pending（成功删标记并同步 origin；失败保留标记，不阻塞轮次）。 */
@@ -1145,7 +1203,17 @@ export class ResumePerTurnProvider implements TeammateProvider {
     // 旧 pending 文件可能没有 reasoningLevel（E-1b 之前写入）→ 应用前补同一缺省链。
     const applied = this.withReasoningDefault(selection);
     const result = await this.applySelectionNow(sessionId, workspacePath, applied, memberId);
-    if (!result.applied) return; // 保留标记：下一轮再试
+    if (!result.applied) {
+      // 单次尝试（GitHub #6）：失败即终态——删 pending（不再每轮重试）+ 落失败记录供诊断；
+      // 轮次继续用旧模型跑（不阻塞成员）。
+      try {
+        fs.unlinkSync(paths.modelPendingFile);
+      } catch {
+        /* best-effort */
+      }
+      this.writeModelFailure(paths, applied, result.reason ?? "model was rejected by the host");
+      return;
+    }
     try {
       fs.unlinkSync(paths.modelPendingFile);
     } catch {
@@ -1224,6 +1292,15 @@ function iso(ms: number): string {
 
 function errText(err: unknown): string {
   return err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+}
+
+/** 诊断/落盘用原因精简：取首句（含中英文句末/换行），超 80 字符截断加省略号。 */
+function compactReason(reason: string): string {
+  const firstLine = reason.split(/\n/)[0] ?? "";
+  const firstSentence = firstLine.split(/(?<=[。！？.!?])\s*/)[0] ?? firstLine;
+  const text = firstSentence.trim();
+  if (text.length === 0) return "";
+  return text.length > 80 ? `${text.slice(0, 79)}…` : text;
 }
 
 /** 三元组等价（继承链去重；reasoningLevel 缺省与显式空串视为同档）。 */

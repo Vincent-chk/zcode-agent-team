@@ -271,6 +271,9 @@ describe("ResumePerTurnProvider · 模型继承（Round B）", () => {
         modelSelection: { providerId: "usage-prov", modelId: "usage-model", reasoningLevel: "max" },
         modelSource: "inherited",
       });
+      // 兜底生效 = 成功路径 → 不产生失败诊断
+      expect(kit.provider.diagnosticsOf("m-fallback")).toEqual([]);
+      expect(fs.existsSync(memberPaths(kit.provider.teamDir, "m-fallback").modelFailedFile)).toBe(false);
     } finally {
       await kit.cleanup();
     }
@@ -304,6 +307,11 @@ describe("ResumePerTurnProvider · 模型继承（Round B）", () => {
       const origin = readOrigin(memberPaths(kit.provider.teamDir, "m-both-fail"));
       expect(origin?.modelSelection).toBeUndefined();
       expect(origin?.modelSource).toBeUndefined();
+      // GitHub #6：spawn 继承降级也必须可见（成员行诊断 + model-failed 落盘）
+      expect(kit.provider.diagnosticsOf("m-both-fail")).toEqual([
+        "模型设置未生效：entry-prov/entry-model（Lead 模型不可用于成员（registry 不识别））",
+      ]);
+      expect(fs.existsSync(memberPaths(kit.provider.teamDir, "m-both-fail").modelFailedFile)).toBe(true);
     } finally {
       await kit.cleanup();
     }
@@ -419,6 +427,31 @@ describe("ResumePerTurnProvider · 模型继承（Round B）", () => {
         modelSelection: { providerId: "usage-prov", modelId: "usage-model", reasoningLevel: "high" },
         modelSource: "inherited",
       });
+    } finally {
+      await kit.cleanup();
+    }
+  });
+
+  it("GitHub #6：显式指定失败 → 也落 model-failed（用户意图未被满足不能静默）", async () => {
+    const breeder = fakeBreeder(
+      { anchorSessionId: "sess_anchor_exf", childSessionId: CHILD, elapsedMs: 1 },
+      { primary: "fail" },
+    );
+    const kit = buildProviderKit({ sessionIsolation: "child", breeder });
+    try {
+      await kit.provider.startContinuable({
+        teamId: kit.teamId,
+        memberId: "m-explicit-fail",
+        name: "exf",
+        description: "d",
+        firstPrompt: "做一件事",
+        context: "fresh",
+        modelSelection: { providerId: "bad-prov", modelId: "bad-model" },
+      });
+      expect(kit.provider.diagnosticsOf("m-explicit-fail")).toEqual([
+        "模型设置未生效：bad-prov/bad-model（指定的模型不可用于成员（registry 不识别））",
+      ]);
+      expect(readOrigin(memberPaths(kit.provider.teamDir, "m-explicit-fail"))?.modelSelection).toBeUndefined();
     } finally {
       await kit.cleanup();
     }

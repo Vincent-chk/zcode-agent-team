@@ -87,7 +87,7 @@ describe("renderTranscript（进程内）", () => {
     expect(JSON.parse(out).page.items).toEqual([]);
   });
 
-  it("mode 透传：缺省 summary 投影 / full 全量（响应回显 mode/sourceTotal）", async () => {
+  it("固定摘要投影：多段 assistant 文本只留最后非空 + sourceTotal", async () => {
     let seq = 2;
     const insertAssistantText = (text: string): void => {
       const now = Date.now() + seq * 1000;
@@ -105,18 +105,10 @@ describe("renderTranscript（进程内）", () => {
     const loaded = await load(teamDir, TEAM);
 
     const summary = JSON.parse(renderTranscript({ teamDir, teamId: TEAM, loaded, member: MEMBER_ID, json: true, dbPath }));
-    expect(summary.mode).toBe("summary");
     expect(summary.sourceTotal).toBe(3);
     expect(summary.total).toBe(2); // user + 最后一条非空结论
     expect(summary.page.items.map((i: { text?: string }) => i.text)).toEqual(["hello unit", "最终稿"]);
-
-    const full = JSON.parse(
-      renderTranscript({ teamDir, teamId: TEAM, loaded, member: MEMBER_ID, json: true, dbPath, mode: "full" }),
-    );
-    expect(full.mode).toBe("full");
-    expect(full.sourceTotal).toBe(3);
-    expect(full.total).toBe(3);
-    expect(full.page.items.map((i: { text?: string }) => i.text)).toEqual(["hello unit", "中间稿", "最终稿"]);
+    expect(summary.mode).toBeUndefined(); // 双模式已取消
   });
 
   it("非成员 → TeamError（由 main 单行化，本层原样抛）", async () => {

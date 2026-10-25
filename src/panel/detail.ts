@@ -1,11 +1,11 @@
 // T5.7 成员会话查看视图 · detail 合成器（契约 = stage-1《接口草案》§5 冻结草案）。
-// 请求：{action:"detail", target:<memberId>, cursor?, limit?=100, mode?:"summary"|"full"}
-// 响应：{sessionId, memberId, mode, page:{items:[{seq, ts, role, kind, text?, tool?,
+// 请求：{action:"detail", target:<memberId>, cursor?, limit?=100}
+// 响应：{sessionId, memberId, page:{items:[{seq, ts, role, kind, text?, tool?,
 //        tools?, count?, framed?}], nextCursor?}, truncated?, total, sourceTotal}
-// 〔视图修订 2026-10-25〕mode 双态：缺省 summary（按轮摘要），full = 全量转录（行为与
-// 修订前逐字一致）；items.kind 增 "toolGroup"（按轮动作组，携带 count + tools 逐条载荷）；
-// 响应回显 mode 并新增 sourceTotal（投影前原始条数）。summary 的 total/seq/nextCursor 与
-// 256KiB 预算均基于投影后条目；**跨模式 seq 不通用**（切换模式必须重置 cursor 回末页）。
+// 〔视图修订 2026-10-25·二次〕双模式取消：detail 仅按轮摘要（用户指令 + toolGroup +
+// 每轮结论）；全量转录不进视图。items.kind 增 "toolGroup"（按轮动作组，携带 count +
+// tools 逐条载荷），响应新增 sourceTotal（投影前原始条数）；total/seq/nextCursor 与
+// 256KiB 预算均基于投影后条目。
 // items 合成 = db.sqlite message/part 只读导出（时间序）+ events.jsonl/delivered（经
 // 重放态 state.messages/delivered）回填 framed 徽标（H14：hook 注入不落 transcript part
 // → 团队消息以徽标标注在**其落库的首条 real_user 文本 item**上，不改写原文）。
@@ -18,18 +18,6 @@
 import { TeamError } from "../domain/errors.js";
 import type { TeamState } from "../domain/projection.js";
 import type { TranscriptReader, DetailPartRow } from "../provider/transcript.js";
-
-/** detail 视图模式（〔视图修订 2026-10-25〕缺省 summary）。 */
-export type DetailMode = "summary" | "full";
-
-/** mode 校验（缺省 summary；非字符串/不在枚举 → 契约逐字错误）。 */
-export function resolveDetailMode(mode: unknown): DetailMode {
-  if (mode === undefined) return "summary";
-  if (mode !== "summary" && mode !== "full") {
-    throw new TeamError("TEAM_INVALID_ARGUMENT", 'param "mode" must be "summary" or "full"');
-  }
-  return mode;
-}
 
 /** toolGroup 组内逐条工具（载荷形态同 toolCall item；text 已按 2000 字符截断）。 */
 export interface DetailToolEntry {
@@ -66,14 +54,12 @@ export interface DetailPage {
 export interface DetailResult {
   sessionId: string;
   memberId: string;
-  /** 视图模式回显（summary = 按轮摘要，full = 全量转录）。 */
-  mode: DetailMode;
   page: DetailPage;
   /** 单页载荷超 256KiB 截断页尾（H15a 预算保护）。 */
   truncated?: boolean;
-  /** 当前模式合成流总条数（分页定位；summary = 投影后条数）。 */
+  /** 投影后条目总数（分页定位）。 */
   total: number;
-  /** 投影前原始条目数（summary 计数文案 `n | 共 sourceTotal 条转录` 的数据源）。 */
+  /** 投影前原始条目数（计数文案 `n | 共 sourceTotal 条转录` 的数据源）。 */
   sourceTotal: number;
 }
 
@@ -312,14 +298,13 @@ export function normalizeLimit(limit: unknown): number {
 /** detail 请求全链（team_panel_call 与 team-ctl transcript 共用入口）。 */
 export function buildDetail(
   deps: DetailDeps,
-  args: { target: string; cursor?: number; limit?: number; mode?: DetailMode },
+  args: { target: string; cursor?: number; limit?: number },
   readOriginSession: (memberId: string) => string | null | undefined,
 ): DetailResult {
-  const mode = resolveDetailMode(args.mode);
   const { memberId, sessionId } = resolveMemberSessionId(deps, args.target, readOriginSession);
   const stream = synthesizeDetailStream(deps, sessionId, memberId);
   const sourceTotal = stream.items.length;
-  const projected = mode === "summary" ? projectSummary(stream.items) : stream.items;
+  const projected = projectSummary(stream.items);
   const { page, total, truncated } = pageDetail(projected, {
     ...(args.cursor !== undefined ? { cursor: args.cursor } : {}),
     ...(args.limit !== undefined ? { limit: args.limit } : {}),
@@ -327,7 +312,6 @@ export function buildDetail(
   return {
     sessionId,
     memberId,
-    mode,
     page,
     ...(truncated ? { truncated: true } : {}),
     total,
@@ -338,11 +322,9 @@ export function buildDetail(
 /** team-ctl transcript 的纯文本渲染（CLI 对等，F12；同一合成流，不写第二实现）。 */
 export function renderDetailText(result: DetailResult, memberName: string): string {
   const lines: string[] = [];
-  const count =
-    result.mode === "summary"
-      ? `${result.total} items (summary of ${result.sourceTotal})`
-      : `${result.total} items`;
-  lines.push(`member ${memberName} (${result.memberId}) · session ${result.sessionId} · ${count}`);
+  lines.push(
+    `member ${memberName} (${result.memberId}) · session ${result.sessionId} · ${result.total} items (summary of ${result.sourceTotal})`,
+  );
   for (const item of result.page.items) {
     const time = item.ts.slice(11, 19);
     if (item.kind === "toolCall") {

@@ -113,8 +113,9 @@ export function buildTeamMethodTable(deps: MethodTableDeps): Map<string, TeamMet
 
   /**
    * stage-8 Round C · mid-life 改模型（对话通道）：Lead-only（工具描述即此口径）→ 目标成员
-   * 必须 active → provider.setMemberModel（立即/pending 由 provider 决定）。
-   * member_id 接受成员 id 或 target 名（backend 传工具面的 target 名）。
+   * 必须 active → provider.setMemberModel。
+   * 返回 {applied:"now"|"next-turn"|"failed", reason?}（GitHub #6：failed 是终态失败——空闲成员
+   * 立即失败不排队；next-turn 仅在目标运行中时出现）。member_id 接受成员 id 或 target 名。
    */
   const memberSetModel: TeamMethodHandler = async (raw) => {
     const p = asParams(raw, "member.set_model");

@@ -24,7 +24,7 @@ const USAGE = `team-ctl — Agent Teams 运维/排障工具
   team-ctl inject-event <teamDir> --sample invalid-member --team <id>
                                                       注入非法 member 事件样例（重放 → failure 终态）
   team-ctl call <teamDir> <method> [params-json]      经 socket 调协调者（无协调者 → 可读错误）
-  team-ctl transcript <teamDir> <member> [--json] [--cursor <seq>] [--limit <n>] [--mode summary|full] [--team <id>]
+  team-ctl transcript <teamDir> <member> [--json] [--cursor <seq>] [--limit <n>] [--team <id>]
                                                       成员会话查看流（T5.7 CLI 对等；与面板 detail 同一合成）
   team-ctl widget <teamDir> [--out <file.html>] [--theme light|dark] [--lang zh|en] [--standalone]
                                                       ::visualize 快照卡片片段 / standalone 静态页（T5.3 CLI 降级链）
@@ -205,11 +205,6 @@ async function cmdTranscript(rest: string[]): Promise<number> {
     process.stderr.write("team-ctl transcript: --limit 必须是安全整数\n");
     return 2;
   }
-  const modeFlag = takeFlag(rest, "--mode");
-  if (modeFlag !== undefined && modeFlag !== "summary" && modeFlag !== "full") {
-    process.stderr.write("team-ctl transcript: --mode 仅支持 summary|full\n");
-    return 2;
-  }
   const out = renderTranscript({
     teamDir,
     teamId,
@@ -218,7 +213,6 @@ async function cmdTranscript(rest: string[]): Promise<number> {
     json: rest.includes("--json"),
     ...(cursor !== undefined ? { cursor } : {}),
     ...(limit !== undefined ? { limit } : {}),
-    ...(modeFlag !== undefined ? { mode: modeFlag } : {}),
   });
   process.stdout.write(out + "\n");
   return 0;

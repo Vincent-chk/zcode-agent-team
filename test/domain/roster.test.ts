@@ -342,6 +342,27 @@ describe("Roster · listMembers / interrupt（F13/F14）", () => {
     expect(runtime.roster.listMembers(LEAD).members[0]?.model).toBe("m-observed");
   });
 
+  it("GitHub #6：presentation.diagnosticsOf 的诊断追加到成员行（Lead 伪行不受影响）", async () => {
+    const { runtime, provider } = buildKit();
+    await runtime.roster.spawnTeammate(LEAD, { name: "worker", description: "d", prompt: "p" });
+    const memberId = [...provider.teamChildren.keys()][0]!;
+    provider.programWith({
+      memberDiagnostics: { [memberId]: ["模型设置未生效：p/x（Reasoning level is required）"] },
+    });
+    const { members } = runtime.roster.listMembers(LEAD);
+    expect(members[0]).toMatchObject({ target: "lead", diagnostics: [] });
+    expect(members.find((m) => m.target === "worker")?.diagnostics).toEqual([
+      "模型设置未生效：p/x（Reasoning level is required）",
+    ]);
+  });
+
+  it("GitHub #6：呈现侧无 diagnosticsOf（旧桩）→ 仅域侧诊断，不报错", async () => {
+    const { runtime } = buildKit();
+    await runtime.roster.spawnTeammate(LEAD, { name: "worker", description: "d", prompt: "p" });
+    const { members } = runtime.roster.listMembers(LEAD);
+    expect(members.find((m) => m.target === "worker")?.diagnostics).toEqual([]);
+  });
+
   it("Lead 行模型：leadModelOf 无结果 → leadModel 配置；都没有 → 缺省", () => {
     const configured = buildKit({ leadModel: "m-config" });
     expect(configured.runtime.roster.listMembers(LEAD).members[0]?.model).toBe("m-config");

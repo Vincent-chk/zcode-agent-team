@@ -5369,13 +5369,6 @@ function extractText(partData) {
 }
 
 // src/panel/detail.ts
-function resolveDetailMode(mode) {
-  if (mode === void 0) return "summary";
-  if (mode !== "summary" && mode !== "full") {
-    throw new TeamError("TEAM_INVALID_ARGUMENT", 'param "mode" must be "summary" or "full"');
-  }
-  return mode;
-}
 var DETAIL_DEFAULT_LIMIT = 100;
 var DETAIL_MAX_LIMIT = 200;
 var DETAIL_PAGE_BYTES = 256 * 1024;
@@ -5520,11 +5513,10 @@ function normalizeLimit(limit) {
   return Math.min(limit, DETAIL_MAX_LIMIT);
 }
 function buildDetail(deps, args, readOriginSession) {
-  const mode = resolveDetailMode(args.mode);
   const { memberId, sessionId } = resolveMemberSessionId(deps, args.target, readOriginSession);
   const stream = synthesizeDetailStream(deps, sessionId, memberId);
   const sourceTotal = stream.items.length;
-  const projected = mode === "summary" ? projectSummary(stream.items) : stream.items;
+  const projected = projectSummary(stream.items);
   const { page, total, truncated } = pageDetail(projected, {
     ...args.cursor !== void 0 ? { cursor: args.cursor } : {},
     ...args.limit !== void 0 ? { limit: args.limit } : {}
@@ -5532,7 +5524,6 @@ function buildDetail(deps, args, readOriginSession) {
   return {
     sessionId,
     memberId,
-    mode,
     page,
     ...truncated ? { truncated: true } : {},
     total,
@@ -5541,8 +5532,9 @@ function buildDetail(deps, args, readOriginSession) {
 }
 function renderDetailText(result, memberName) {
   const lines = [];
-  const count = result.mode === "summary" ? `${result.total} items (summary of ${result.sourceTotal})` : `${result.total} items`;
-  lines.push(`member ${memberName} (${result.memberId}) \xB7 session ${result.sessionId} \xB7 ${count}`);
+  lines.push(
+    `member ${memberName} (${result.memberId}) \xB7 session ${result.sessionId} \xB7 ${result.total} items (summary of ${result.sourceTotal})`
+  );
   for (const item of result.page.items) {
     const time = item.ts.slice(11, 19);
     if (item.kind === "toolCall") {
@@ -5582,7 +5574,8 @@ function memberPaths(teamDir, memberId) {
     runDir,
     currentFile: path7.join(runDir, "current.json"),
     drainMarkerFile: path7.join(runDir, "drain-requested.json"),
-    modelPendingFile: path7.join(memberDir, "model-pending.json")
+    modelPendingFile: path7.join(memberDir, "model-pending.json"),
+    modelFailedFile: path7.join(memberDir, "model-failed.json")
   };
 }
 function readJson(file) {
@@ -6021,6 +6014,8 @@ h3 .count {
 }
 .settings-state.error { color: var(--at-error-text); }
 .settings-notice { font-size: 11px; color: var(--at-state-ongoing); }
+/* GitHub #6\uFF1A\u7EC8\u6001\u5931\u8D25\u63D0\u793A\u7528\u9519\u8BEF\u8272\uFF08\u4E0E\u300C\u5DF2\u5E94\u7528 / \u4E0B\u4E00\u8F6E\u751F\u6548\u300D\u4E2D\u6027\u63D0\u793A\u533A\u5206\uFF09 */
+.settings-notice.error { color: var(--at-error-text); }
 .settings-foot { display: flex; justify-content: flex-end; gap: 8px; }
 .settings-btn {
   background: none;
@@ -6384,6 +6379,7 @@ var MEMBER_SETTINGS_DICT = {
     "settings.saving": "\u6B63\u5728\u5E94\u7528\u2026",
     "settings.applied": "\u5DF2\u5E94\u7528",
     "settings.nextTurn": "\u5DF2\u4FDD\u5B58\uFF0C\u4E0B\u4E00\u8F6E\u751F\u6548",
+    "settings.failedApply": "\u4E0A\u6B21\u8BBE\u7F6E\u672A\u751F\u6548\uFF1A{model}\uFF08{reason}\uFF09",
     "settings.loading": "\u6B63\u5728\u52A0\u8F7D\u6A21\u578B\u2026",
     "settings.error": "\u6A21\u578B\u8BBE\u7F6E\u4E0D\u53EF\u7528\uFF1A{message}",
     "settings.emptyCatalog": "\u6A21\u578B\u76EE\u5F55\u4E3A\u7A7A\uFF08\u53EF\u5728\u9AD8\u7EA7\u6A21\u5F0F\u5237\u65B0\uFF09",
@@ -6416,6 +6412,7 @@ var MEMBER_SETTINGS_DICT = {
     "settings.saving": "Applying\u2026",
     "settings.applied": "Applied",
     "settings.nextTurn": "Saved; applies on the next turn",
+    "settings.failedApply": "Last change did not apply: {model} ({reason})",
     "settings.loading": "Loading models\u2026",
     "settings.error": "Model settings unavailable: {message}",
     "settings.emptyCatalog": "Model catalog is empty (use Refresh in Advanced)",
@@ -6674,8 +6671,7 @@ function renderTranscript(input) {
       {
         target: input.member,
         ...input.cursor !== void 0 ? { cursor: input.cursor } : {},
-        ...input.limit !== void 0 ? { limit: input.limit } : {},
-        ...input.mode !== void 0 ? { mode: input.mode } : {}
+        ...input.limit !== void 0 ? { limit: input.limit } : {}
       },
       (memberId) => resolveMemberSession(input.teamDir, dataRootOf(input.teamDir), memberId)
     );
@@ -7058,7 +7054,7 @@ var USAGE = `team-ctl \u2014 Agent Teams \u8FD0\u7EF4/\u6392\u969C\u5DE5\u5177
   team-ctl inject-event <teamDir> --sample invalid-member --team <id>
                                                       \u6CE8\u5165\u975E\u6CD5 member \u4E8B\u4EF6\u6837\u4F8B\uFF08\u91CD\u653E \u2192 failure \u7EC8\u6001\uFF09
   team-ctl call <teamDir> <method> [params-json]      \u7ECF socket \u8C03\u534F\u8C03\u8005\uFF08\u65E0\u534F\u8C03\u8005 \u2192 \u53EF\u8BFB\u9519\u8BEF\uFF09
-  team-ctl transcript <teamDir> <member> [--json] [--cursor <seq>] [--limit <n>] [--mode summary|full] [--team <id>]
+  team-ctl transcript <teamDir> <member> [--json] [--cursor <seq>] [--limit <n>] [--team <id>]
                                                       \u6210\u5458\u4F1A\u8BDD\u67E5\u770B\u6D41\uFF08T5.7 CLI \u5BF9\u7B49\uFF1B\u4E0E\u9762\u677F detail \u540C\u4E00\u5408\u6210\uFF09
   team-ctl widget <teamDir> [--out <file.html>] [--theme light|dark] [--lang zh|en] [--standalone]
                                                       ::visualize \u5FEB\u7167\u5361\u7247\u7247\u6BB5 / standalone \u9759\u6001\u9875\uFF08T5.3 CLI \u964D\u7EA7\u94FE\uFF09
@@ -7226,11 +7222,6 @@ async function cmdTranscript(rest) {
     process.stderr.write("team-ctl transcript: --limit \u5FC5\u987B\u662F\u5B89\u5168\u6574\u6570\n");
     return 2;
   }
-  const modeFlag = takeFlag(rest, "--mode");
-  if (modeFlag !== void 0 && modeFlag !== "summary" && modeFlag !== "full") {
-    process.stderr.write("team-ctl transcript: --mode \u4EC5\u652F\u6301 summary|full\n");
-    return 2;
-  }
   const out = renderTranscript({
     teamDir,
     teamId,
@@ -7238,8 +7229,7 @@ async function cmdTranscript(rest) {
     member,
     json: rest.includes("--json"),
     ...cursor !== void 0 ? { cursor } : {},
-    ...limit !== void 0 ? { limit } : {},
-    ...modeFlag !== void 0 ? { mode: modeFlag } : {}
+    ...limit !== void 0 ? { limit } : {}
   });
   process.stdout.write(out + "\n");
   return 0;

@@ -53,8 +53,10 @@ export interface MockProviderProgram {
   leadModel?: string;
   /** Lead 当前结构化选择（backend 裸 id 消歧的可编程返回）。 */
   leadModelSelection?: MemberModelSelection;
-  /** setMemberModel 结果序列（循环取用；缺省全 "now"）。 */
-  modelSetResults?: Array<"now" | "next-turn" | "throw">;
+  /** setMemberModel 结果序列（循环取用；缺省全 "now"）。"failed" 走 GitHub #6 终态失败。 */
+  modelSetResults?: Array<"now" | "next-turn" | "failed" | "throw">;
+  /** 成员诊断桩（diagnosticsOf 返回值；GitHub #6 成员行可见性测试）。 */
+  memberDiagnostics?: Record<string, string[]>;
 }
 
 export class MockProvider implements TeammateProvider, ReconciliationSource, TargetInspector {
@@ -70,7 +72,7 @@ export class MockProvider implements TeammateProvider, ReconciliationSource, Tar
   modelSetCalls: Array<{ memberId: string; modelSelection?: MemberModelSelection; thoughtLevel?: string }> = [];
   private program: MockProviderProgram = {};
   private deliverScript: Array<"accepted" | "queued" | "throw" | "lost"> = [];
-  private modelSetScript: Array<"now" | "next-turn" | "throw"> = [];
+  private modelSetScript: Array<"now" | "next-turn" | "failed" | "throw"> = [];
 
   programWith(program: MockProviderProgram): this {
     this.program = program;
@@ -280,12 +282,17 @@ export class MockProvider implements TeammateProvider, ReconciliationSource, Tar
     return this.program.leadModelSelection;
   }
 
-  /** mid-life 改模型桩（不落盘；按脚本返回 now/next-turn/throw）。 */
+  /** 成员附加诊断桩（MemberPresentation.diagnosticsOf；缺省空）。 */
+  diagnosticsOf(memberId: string): string[] {
+    return this.program.memberDiagnostics?.[memberId] ?? [];
+  }
+
+  /** mid-life 改模型桩（不落盘；按脚本返回 now/next-turn/failed/throw）。 */
   async setMemberModel(args: {
     memberId: string;
     modelSelection?: MemberModelSelection;
     thoughtLevel?: string;
-  }): Promise<{ applied: "now" | "next-turn" }> {
+  }): Promise<{ applied: "now" | "next-turn" | "failed"; reason?: string }> {
     this.modelSetCalls.push({
       memberId: args.memberId,
       ...(args.modelSelection !== undefined ? { modelSelection: args.modelSelection } : {}),
@@ -293,6 +300,9 @@ export class MockProvider implements TeammateProvider, ReconciliationSource, Tar
     });
     const verdict = this.modelSetScript.length > 0 ? this.modelSetScript.shift()! : "now";
     if (verdict === "throw") throw new Error(`mock setMemberModel failure for ${args.memberId}`);
+    if (verdict === "failed") {
+      return { applied: "failed", reason: `mock rejected model for ${args.memberId}` };
+    }
     if (verdict === "now" && args.modelSelection !== undefined) {
       const child = this.teamChildren.get(args.memberId);
       if (child !== undefined) child.modelSelection = args.modelSelection;

@@ -261,12 +261,13 @@ export class TeamToolBackend {
 
   /**
    * member_set_model（02 §9.13）：target 存在性（active）先校验 → model 规格按目录消歧 →
-   * host.dispatch 到协调者（provider.setMemberModel 决定 now/next-turn）。
+   * host.dispatch 到协调者（provider.setMemberModel 决定 now/next-turn/failed；GitHub #6：
+   * failed 附带宿主原文 reason，工具层原样透出，不包装成「下一轮生效」）。
    */
   async setMemberModel(
     identity: ResolvedIdentity,
     args: { target: unknown; model?: unknown; thoughtLevel?: unknown },
-  ): Promise<{ applied: "now" | "next-turn" }> {
+  ): Promise<{ applied: "now" | "next-turn" | "failed"; reason?: string }> {
     const target = args.target;
     return this.withHost(identity.teamId, async (host) => {
       const modelSelection = this.resolveModelArgs(identity, args.model, args.thoughtLevel);
@@ -285,7 +286,7 @@ export class TeamToolBackend {
         ...(modelSelection === undefined && args.thoughtLevel !== undefined
           ? { thoughtLevel: args.thoughtLevel }
           : {}),
-      })) as { applied: "now" | "next-turn" };
+      })) as { applied: "now" | "next-turn" | "failed"; reason?: string };
     });
   }
 

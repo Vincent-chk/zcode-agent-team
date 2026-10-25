@@ -393,6 +393,20 @@ async function applySettings(): Promise<void> {
       ...(selection.thoughtLevel !== undefined ? { thoughtLevel: selection.thoughtLevel } : {}),
     });
     if (!settingsSequencer.isCurrent(seq)) return;
+    if (body.applied === "failed") {
+      // GitHub #6：宿主拒绝该组合 → 立即显示原因，不刷新成「已生效」，也不提示下一轮。
+      settingsState = {
+        kind: "error",
+        memberId,
+        name,
+        message:
+          typeof body.reason === "string" && body.reason.length > 0
+            ? body.reason
+            : "member model change was rejected",
+      };
+      renderSettings();
+      return;
+    }
     applied = body.applied === "next-turn" ? "next-turn" : "now";
     const refreshed = await callPanelBody({ action: "modelOptions", memberId });
     if (!settingsSequencer.isCurrent(seq)) return;

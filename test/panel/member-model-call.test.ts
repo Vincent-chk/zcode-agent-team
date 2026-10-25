@@ -13,7 +13,7 @@ import { teamPaths } from "../../src/coord/paths.js";
 import { PanelViewService } from "../../src/panel/view-service.js";
 import { handlePanelCall, type PanelCallResult } from "../../src/panel/panel-call.js";
 import { TranscriptReader } from "../../src/provider/transcript.js";
-import { memberPaths, writeOrigin, type OriginRecord } from "../../src/provider/member-files.js";
+import { memberPaths, writeOrigin, writeModelFailed, type OriginRecord } from "../../src/provider/member-files.js";
 import { createTestDb, insertSessionEntry } from "../provider/kit.js";
 import type { ModelCatalog } from "../../src/provider/model-catalog.js";
 import type { TeamLimits } from "../../src/domain/config.js";
@@ -242,6 +242,44 @@ describe("modelOptions", () => {
     expect(empty).toMatchObject({ kind: "error", code: "TEAM_INVALID_ARGUMENT" });
   });
 
+  it("GitHub #6：终态失败记录 → current.failedApply（模型/档位/原因）", async () => {
+    const memberId = await spawn("alice");
+    writeModelFailed(memberPaths(teamDir(), memberId), {
+      modelSelection: { providerId: "prov-a", modelId: "model-a", reasoningLevel: "max" },
+      reason: "Reasoning level is required",
+      failedAt: new Date().toISOString(),
+    });
+    const result = await modelOptions(memberId);
+    expect(result.current?.failedApply).toEqual({
+      modelId: "model-a",
+      providerId: "prov-a",
+      reasoningLevel: "max",
+      reason: "Reasoning level is required",
+    });
+    // 当前生效值仍是实际生效的旧值（失败不改 origin）
+    expect(result.current?.source).toBe("cli-default");
+  });
+
+  it("GitHub #6：形状无效的失败记录（缺 providerId）→ 不出现 failedApply", async () => {
+    const memberId = await spawn("alice");
+    writeModelFailed(memberPaths(teamDir(), memberId), {
+      modelSelection: { modelId: "only-model" } as never,
+      reason: "x",
+      failedAt: new Date().toISOString(),
+    });
+    expect((await modelOptions(memberId)).current?.failedApply).toBeUndefined();
+  });
+
+  it("GitHub #6：损坏的失败记录 → 不出现 failedApply，也不阻断目录", async () => {
+    const memberId = await spawn("alice");
+    const failedFile = memberPaths(teamDir(), memberId).modelFailedFile;
+    fs.mkdirSync(path.dirname(failedFile), { recursive: true });
+    fs.writeFileSync(failedFile, "{broken");
+    const result = await modelOptions(memberId);
+    expect(result.current?.failedApply).toBeUndefined();
+    expect(result.catalog.providers).toHaveLength(1);
+  });
+
   it("目录透传不夹带凭据（白名单投影的调用约定）", async () => {
     const result = await modelOptions();
     const text = JSON.stringify(result.catalog);
@@ -270,6 +308,18 @@ describe("setMemberModel", () => {
     expect(await setModel({ memberId, model: "prov-a$model-a" })).toMatchObject({
       kind: "modelSet",
       applied: "next-turn",
+    });
+  });
+
+  it("GitHub #6：provider 终态失败 → 原样透出 applied:failed + reason（不包装成 next-turn）", async () => {
+    const memberId = await spawn("alice");
+    provider.programWith({ modelSetResults: ["failed"] });
+    const result = await setModel({ memberId, model: "prov-a$model-a" });
+    expect(result).toMatchObject({
+      kind: "modelSet",
+      applied: "failed",
+      memberId,
+      reason: `mock rejected model for ${memberId}`,
     });
   });
 
