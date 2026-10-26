@@ -4,7 +4,7 @@
 // 与「未持久接收」（TEAM_PROVISIONING_CONFLICT）区分：本错误 = 明确不可继承的原因。
 // 0.4.1：可判出具体选择的失败（官方套餐/目录外/应用被拒）附带 selection——统一失败
 // 记录路径（model-failed.json）用它做「相同选择暂停自动重试」的判定键；解析不出
-// （三源全空）时无选择可记，仅抛错透出。
+// （三源全空）时无具体选择，仍记录失败原因与重试状态。
 
 import type { MemberModelSelection } from "./model-selection.js";
 
@@ -52,10 +52,10 @@ export function selectionSignature(selection: MemberModelSelection): string {
  * 应用失败分类（0.4.1 重试控制）：基础设施/时序类 = transient（退避重试）；
  * 其余（宿主明确拒绝该模型、注册表不存在等）= deterministic（相同选择暂停自动重试）。
  * 判据来自 app-server 客户端与 breeder 的已知错误文本形态（timeout/ready/spawn/exited/
- * ENOENT/EACCES/closed/socket）。
+ * ENOENT/EACCES/closed/socket）；execFile 非零退出透传的消息以 `Command failed:` 开头。
  */
 export function classifyApplyFailure(reason: string): "deterministic" | "transient" {
-  return /timeout|did not become ready|timed out|spawn|exited|ENOENT|EACCES|ECONNREFUSED|EPIPE|socket hang up|client (is )?closed/i.test(
+  return /^Command failed:|timeout|did not become ready|timed out|spawn|exited|ENOENT|EACCES|ECONNREFUSED|EPIPE|socket hang up|client (is )?closed/i.test(
     reason,
   )
     ? "transient"

@@ -44,6 +44,20 @@ describe("Roster · 名字校验与预留（F08）", () => {
       'teammate name "worker" was already used in this Team',
     );
   });
+
+  it("已重名且模型预检报错 → TEAM_MEMBER_NAME_TAKEN 优先", async () => {
+    const { runtime, store, provider } = buildKit();
+    await runtime.roster.spawnTeammate(LEAD, { name: "worker", description: "d", prompt: "p" });
+    provider.programWith({ preflightError: new Error("Lead model unavailable") });
+
+    await expectTeamError(
+      runtime.roster.spawnTeammate(LEAD, { name: "worker", description: "d", prompt: "p" }),
+      "TEAM_MEMBER_NAME_TAKEN",
+      'teammate name "worker" was already used in this Team',
+    );
+    expect(store.state().members).toHaveLength(1);
+    expect(provider.startCalls).toBe(1);
+  });
 });
 
 describe("Roster · spawn 全流程顺序（F09）", () => {
@@ -207,6 +221,20 @@ describe("Roster · 限额与权限（F10/F11）", () => {
       "TEAM_MEMBER_LIMIT",
       "Team member limit 1 reached",
     );
+  });
+
+  it("满员且模型预检报错 → TEAM_MEMBER_LIMIT 优先", async () => {
+    const { runtime, store, provider } = buildKit({ limits: { maxMembers: 1 } });
+    await runtime.roster.spawnTeammate(LEAD, { name: "w1", description: "d", prompt: "p" });
+    provider.programWith({ preflightError: new Error("Lead model unavailable") });
+
+    await expectTeamError(
+      runtime.roster.spawnTeammate(LEAD, { name: "w2", description: "d", prompt: "p" }),
+      "TEAM_MEMBER_LIMIT",
+      "Team member limit 1 reached",
+    );
+    expect(store.state().members).toHaveLength(1);
+    expect(provider.startCalls).toBe(1);
   });
 
   it("非 Lead spawn → TEAM_LEAD_REQUIRED 逐字；非成员 → TEAM_NOT_MEMBER 逐字；处置中 → is disposing", async () => {

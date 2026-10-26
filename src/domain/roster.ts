@@ -139,15 +139,7 @@ export class TeamRoster {
     const providerName = requiredText("provider", context === "fork" ? providers.fork : providers.fresh, 200);
     const childId = (this.deps.newId ?? defaultNewId)();
 
-    // 步骤 1b（0.4.1）：模型继承预检——Lead 模型不可继承（官方套餐/目录外/解析不出）在
-    // **登记成员之前**失败：不增加成员数量、不占用成员名、不创建隐藏子会话（修正 Lead
-    // 模型后原名可重用）。供给阶段仍复检（startContinuable 内），处理预检后配置漂移。
-    // 无预检能力的 provider（MockProvider/legacy）跳过。
-    if (providerHasModelPreflight(this.deps.provider)) {
-      this.deps.provider.preflightMemberModel();
-    }
-
-    // 步骤 2：事务内重读 + 限额 + provisioning 落盘（store.append = flush 完成）
+    // 步骤 2：事务内重读 + 限额 + 模型预检 + provisioning 落盘（store.append = flush 完成）
     await this.deps.store.transact(async () => {
       const fresh = this.loadState();
       if (fresh.members.some((m) => m.name === name)) {
@@ -155,6 +147,13 @@ export class TeamRoster {
       }
       if (fresh.members.length >= this.deps.limits.maxMembers) {
         throw new TeamError("TEAM_MEMBER_LIMIT", `Team member limit ${this.deps.limits.maxMembers} reached`);
+      }
+      // 0.4.1：模型继承预检——Lead 模型不可继承（官方套餐/目录外/解析不出）在
+      // 登记成员之前失败：不增加成员数量、不占用成员名、不创建隐藏子会话（修正 Lead
+      // 模型后原名可重用）。供给阶段仍复检（startContinuable 内），处理预检后配置漂移。
+      // 无预检能力的 provider 跳过。
+      if (providerHasModelPreflight(this.deps.provider)) {
+        this.deps.provider.preflightMemberModel();
       }
       await this.deps.store.append({
         type: "team/member",

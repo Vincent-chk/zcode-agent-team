@@ -160,6 +160,76 @@ function recordHostSelection(
 }
 
 describe("ResumePerTurnProvider · sessionIsolation=child", () => {
+  it.each(["custom", "official"] as const)(
+    "培育期间 Lead 切到 %s 模型，首轮启动前重新核对最新选择",
+    async (target) => {
+      const behavior = { dbPath: "" };
+      const breeder = fakeBreeder(
+        { anchorSessionId: "sess_anchor_switch", childSessionId: CHILD, elapsedMs: 1 },
+        behavior,
+      );
+      const kit = buildProviderKit({ sessionIsolation: "child", breeder, modelCatalog: () => SUPPORTED_CATALOG });
+      behavior.dbPath = kit.dbPath;
+      const createChild = breeder.createChild.bind(breeder);
+      breeder.createChild = async (input) => {
+        const result = await createChild(input);
+        insertSubmissionMessage(kit.dbPath, {
+          sessionId: kit.teamId,
+          providerId: target === "official" ? "account:plan" : "second-prov",
+          modelId: target === "official" ? "official-model" : "second-model",
+          reasoningLevel: "high",
+          timeCreated: 1_700_000_100_000,
+        });
+        return result;
+      };
+      try {
+        insertSubmissionMessage(kit.dbPath, {
+          sessionId: kit.teamId, providerId: "first-prov", modelId: "first-model",
+          reasoningLevel: "low", timeCreated: 1_700_000_000_000,
+        });
+        const started = kit.provider.startContinuable({
+          teamId: kit.teamId, memberId: "m-switch", name: "switch", description: "d",
+          firstPrompt: "做一件事", context: "fresh",
+        });
+        if (target === "official") {
+          await expect(started).rejects.toThrow(/官方套餐模型/);
+          expect(listTurns(memberPaths(kit.provider.teamDir, "m-switch").runDir)).toEqual([]);
+        } else {
+          expect((await started).accepted).toBe(true);
+          expect(breeder.applyCalls).toEqual([
+            { sessionId: CHILD, selection: { providerId: "second-prov", modelId: "second-model", reasoningLevel: "high" } },
+          ]);
+          expect(readOrigin(memberPaths(kit.provider.teamDir, "m-switch"))?.modelSelection).toEqual({
+            providerId: "second-prov", modelId: "second-model", reasoningLevel: "high",
+          });
+        }
+      } finally {
+        await kit.cleanup();
+      }
+    },
+  );
+
+  it("一次继承判定使用同一目录快照校验模型并补默认档位", async () => {
+    let reads = 0;
+    const kit = buildProviderKit({
+      sessionIsolation: "child",
+      modelCatalog: () => ({ providers: [{
+        providerId: "p", name: "p", kind: "k", enabled: true,
+        models: [{ id: "m", enabled: true, reasoning: {
+          variants: ["low", "high"], defaultVariant: reads++ === 0 ? "low" : "high",
+        } }],
+      }] }),
+    });
+    try {
+      insertSubmissionMessage(kit.dbPath, {
+        sessionId: kit.teamId, providerId: "p", modelId: "m", timeCreated: 1_700_000_000_000,
+      });
+      expect(kit.provider.leadModelSelectionOf()).toEqual({ providerId: "p", modelId: "m", reasoningLevel: "low" });
+    } finally {
+      await kit.cleanup();
+    }
+  });
+
   it("首轮 argv 含 --resume <child>；origin 记录隔离字段", async () => {
     const breeder = fakeBreeder({ anchorSessionId: "sess_anchor_x", childSessionId: CHILD, elapsedMs: 12 });
     const kit = buildProviderKit({
@@ -957,6 +1027,51 @@ describe("ResumePerTurnProvider · 0.4.1 一致性判断（宿主实际状态优
     }
   });
 
+  it.each(["missing", "invalid"] as const)(
+    "宿主选模条目 %s、历史 usage=A=Lead → 重新应用后再续跑",
+    async (entryState) => {
+      const { kit, breeder } = await setupSyncKit();
+      try {
+        const { DatabaseSync } = await import("node:sqlite");
+        const db = new DatabaseSync(kit.dbPath);
+        try {
+          if (entryState === "missing") {
+            db.prepare("DELETE FROM session_entry WHERE session_id = ?").run(CHILD);
+          } else {
+            db.prepare("UPDATE session_entry SET data = ? WHERE session_id = ?").run(
+              JSON.stringify({ modelSelection: {} }), CHILD,
+            );
+          }
+        } finally {
+          db.close();
+        }
+        insertModelUsage(kit.dbPath, {
+          sessionId: CHILD,
+          providerId: "prov-a",
+          modelId: "model-a",
+          variant: "max",
+          startedAt: 1_700_000_000_000,
+        });
+
+        expect(await deliverOnce(kit, `team-message-${entryState}-entry`)).toBe("accepted");
+        expect(breeder.applyCalls).toEqual([
+          { sessionId: CHILD, selection: { providerId: "prov-a", modelId: "model-a", reasoningLevel: "max" } },
+        ]);
+        const { TranscriptReader } = await import("../../src/provider/transcript.js");
+        const reader = new TranscriptReader({ dbPath: kit.dbPath });
+        try {
+          expect(reader.latestModelSelection(CHILD)).toEqual({
+            providerId: "prov-a", modelId: "model-a", reasoningLevel: "max",
+          });
+        } finally {
+          reader.close();
+        }
+      } finally {
+        await kit.cleanup();
+      }
+    },
+  );
+
   it("宿主实际状态无法确认（entry/usage 皆无）且 origin=A=Lead → 重新应用（不凭 origin 放行）", async () => {
     const { kit, breeder } = await setupSyncKit();
     try {
@@ -1067,8 +1182,52 @@ describe("ResumePerTurnProvider · 0.4.1 失败可见性与重试控制", () => 
       }
       expect(breeder.applyCalls).toHaveLength(1); // 6 秒内只尝试一次（原缺陷 = 4 次）
       const suppressed = kit.logs.filter((l) => l.kind === "model-sync-suppressed");
-      expect(suppressed.length).toBe(3);
+      expect(suppressed).toEqual([]);
+      expect(kit.logs.filter((l) => l.kind === "model-sync-failed")).toHaveLength(1);
     } finally {
+      await kit.cleanup();
+    }
+  });
+
+  it("RPC 期间已排队的消息纳入同次失败，后续同批重投不解锁", async () => {
+    const { kit, breeder, deliver, switchLeadToB } = await setupFailKit({
+      applyReason: "model prov-b/model-b is not available",
+    });
+    const pending = [{
+      messageId: "team-message-batch-first",
+      framedJson: JSON.stringify([{ type: "text", text: "Team message from lead:" }, { type: "text", text: "先到消息" }]),
+    }];
+    kit.provider.bind({ onBoundary: () => undefined, pendingLookup: () => pending });
+    let markApplyStarted!: () => void;
+    let releaseApply!: () => void;
+    const applyStarted = new Promise<void>((resolve) => { markApplyStarted = resolve; });
+    const applyReleased = new Promise<void>((resolve) => { releaseApply = resolve; });
+    const originalApply = breeder.applyModelSelection.bind(breeder);
+    breeder.applyModelSelection = async (input) => {
+      const result = await originalApply(input);
+      markApplyStarted();
+      await applyReleased;
+      return result;
+    };
+    try {
+      switchLeadToB();
+      const failed = expect(deliver("team-message-batch-first")).rejects.toThrow(/无法同步/);
+      await applyStarted;
+      pending.push({
+        messageId: "team-message-batch-during-rpc",
+        framedJson: JSON.stringify([{ type: "text", text: "Team message from lead:" }, { type: "text", text: "RPC 等待中到达" }]),
+      });
+      releaseApply();
+      await failed;
+
+      expect(readModelFailed(memberPaths(kit.provider.teamDir, "m-f2"))!.messageIds).toEqual([
+        "team-message-batch-first",
+        "team-message-batch-during-rpc",
+      ]);
+      expect(await deliver("team-message-batch-first")).toBe("queued");
+      expect(breeder.applyCalls).toHaveLength(1);
+    } finally {
+      releaseApply();
       await kit.cleanup();
     }
   });
@@ -1401,7 +1560,7 @@ describe("host 装配 · 0.4.1 后台补投失败与定时扫描抑制（全路�
       await new Promise((r) => setTimeout(r, 2_600));
       await new Promise((r) => setTimeout(r, 2_200));
       expect(breeder.applyCalls).toHaveLength(applyAfterFirst);
-      expect(kit.logs.filter((l) => l.kind === "model-sync-suppressed").length).toBeGreaterThan(0);
+      expect(kit.logs.filter((l) => l.kind === "model-sync-suppressed")).toEqual([]);
 
       // Lead 换回可用模型（A；成员宿主实际状态本来就是 A）→ 下一次扫描恢复交付：
       // 验证一致 = 零额外 setModel、失败记录/诊断清除、消息 delivered、恰一次执行

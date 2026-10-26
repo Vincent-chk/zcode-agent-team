@@ -76,6 +76,7 @@ export function insertSessionEntry(
   args: { sessionId: string; data: unknown; type?: string; id?: string; timeCreated?: number },
 ): void {
   const db = new DatabaseSync(dbPath);
+  db.exec("PRAGMA busy_timeout = 2000");
   try {
     const type = args.type ?? "runtime/model_selection";
     const ts = args.timeCreated ?? Date.now();
@@ -107,6 +108,7 @@ export function insertModelUsage(
   },
 ): void {
   const db = new DatabaseSync(dbPath);
+  db.exec("PRAGMA busy_timeout = 2000");
   try {
     const startedAt = args.startedAt ?? Date.now();
     db.prepare(
@@ -139,6 +141,7 @@ export function insertSubmissionMessage(
   },
 ): void {
   const db = new DatabaseSync(dbPath);
+  db.exec("PRAGMA busy_timeout = 2000");
   try {
     db.prepare(
       "INSERT INTO message (id, session_id, time_created, time_updated, data, sequence) VALUES (?,?,?,?,?,?)",

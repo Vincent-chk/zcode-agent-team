@@ -20996,7 +20996,7 @@ function selectionSignature(selection) {
   return `${selection.providerId}$${selection.modelId}$${selection.reasoningLevel ?? ""}`;
 }
 function classifyApplyFailure(reason) {
-  return /timeout|did not become ready|timed out|spawn|exited|ENOENT|EACCES|ECONNREFUSED|EPIPE|socket hang up|client (is )?closed/i.test(
+  return /^Command failed:|timeout|did not become ready|timed out|spawn|exited|ENOENT|EACCES|ECONNREFUSED|EPIPE|socket hang up|client (is )?closed/i.test(
     reason
   ) ? "transient" : "deterministic";
 }
@@ -21061,9 +21061,6 @@ var TeamRoster = class {
     const context = args.context ?? "fresh";
     const providerName = requiredText("provider", context === "fork" ? providers.fork : providers.fresh, 200);
     const childId = (this.deps.newId ?? defaultNewId)();
-    if (providerHasModelPreflight(this.deps.provider)) {
-      this.deps.provider.preflightMemberModel();
-    }
     await this.deps.store.transact(async () => {
       const fresh = this.loadState();
       if (fresh.members.some((m) => m.name === name)) {
@@ -21071,6 +21068,9 @@ var TeamRoster = class {
       }
       if (fresh.members.length >= this.deps.limits.maxMembers) {
         throw new TeamError("TEAM_MEMBER_LIMIT", `Team member limit ${this.deps.limits.maxMembers} reached`);
+      }
+      if (providerHasModelPreflight(this.deps.provider)) {
+        this.deps.provider.preflightMemberModel();
       }
       await this.deps.store.append({
         type: "team/member",
@@ -25275,7 +25275,7 @@ var ResumePerTurnProvider = class {
       resume: bred !== null,
       cwd: spawnCwd,
       // createChild 刚把继承选择应用进子会话（0.4.1 验收：首轮不重复应用同一选择）。
-      modelJustApplied: bred?.appliedModel !== void 0
+      modelJustApplied: bred?.appliedModel
     });
     this.startWatcher();
     try {
@@ -25631,9 +25631,14 @@ var ResumePerTurnProvider = class {
     const turnId = nextTurnId(args.paths.runDir);
     const stdoutFile = path17.join(args.paths.runDir, `${turnId}.out`);
     const turnCwd = args.cwd ?? this.cwd;
-    if (args.modelJustApplied !== true) {
-      await this.syncMemberModel(args.paths, args.memberId, args.sessionId, turnCwd, args.messageIds);
-    }
+    await this.syncMemberModel(
+      args.paths,
+      args.memberId,
+      args.sessionId,
+      turnCwd,
+      args.messageIds,
+      args.modelJustApplied
+    );
     const scriptArgs = [
       ...this.zcode.argvPrefix,
       "-p",
@@ -25746,10 +25751,6 @@ var ResumePerTurnProvider = class {
       excludeSessionIds: this.claimedSessionsExcluding(origin.memberId)
     }) ?? null;
   }
-  /** 档位缺省（已有则不覆盖）：目录 defaultVariant → "max"（E-1b 统一落点）。 */
-  withReasoningDefault(selection) {
-    return applyReasoningDefault(this.modelCatalog(), selection);
-  }
   /**
    * Lead 最新**已确认**模型选择（0.4.0 三源判定；成员跟随 Lead 的唯一解析入口）。
    *
@@ -25802,12 +25803,12 @@ var ResumePerTurnProvider = class {
         latest
       );
     }
-    return this.withReasoningDefault(latest);
+    return applyReasoningDefault(catalog, latest);
   }
   /**
    * 每轮执行前同步（0.4.0；0.4.1 修正一致性判断与重试控制）：
    * Lead 最新已确认选择 ≠ 成员**宿主实际**选择 → setModel 后再启动本轮。
-   * - 一致性判断以宿主会话实际状态为准（session_entry → main_turn usage 实查）；
+   * - 一致性判断以宿主会话实际选模条目为准；历史调用不能证明下次恢复的选择。
    *   origin.modelSelection 只是辅助记录（setModel 成功后 origin 更新前崩溃 → 宿主为准，
    *   不能因 origin 相同就放行）。实际状态无法确认（首轮前无任何记录）→ 重新应用 Lead
    *   选择（宁多一次 setModel，不带着未确认的模型开跑）。
@@ -25818,7 +25819,7 @@ var ResumePerTurnProvider = class {
    *
    * `trigger`：本轮携带的待投递消息 id（失败记录里做「新消息解锁重试」判定；首轮 = []）。
    */
-  async syncMemberModel(paths, memberId, sessionId, workspacePath, triggerMessageIds = []) {
+  async syncMemberModel(paths, memberId, sessionId, workspacePath, triggerMessageIds = [], justApplied) {
     if (this.sessionIsolation !== "child" || sessionId === null) return;
     let lead;
     try {
@@ -25828,13 +25829,6 @@ var ResumePerTurnProvider = class {
         const selection = err.selection;
         const gate2 = this.retryGate(paths, selection, triggerMessageIds);
         if (!gate2.allow) {
-          this.log({
-            ts: iso(this.now()),
-            kind: "model-sync-suppressed",
-            teamId: this.opts.teamId,
-            memberId,
-            reason: gate2.reason
-          });
           throw new ModelSyncSuppressedError(err.message, selection);
         }
         this.recordModelFailure(paths, memberId, err, triggerMessageIds);
@@ -25842,7 +25836,7 @@ var ResumePerTurnProvider = class {
       throw err;
     }
     if (lead === void 0) return;
-    const observed = this.reader.latestModelSelection(sessionId) ?? this.reader.latestMainTurnUsage(sessionId)?.selection;
+    const observed = justApplied ?? this.reader.latestModelSelection(sessionId);
     if (observed !== void 0 && sameModelSelection(observed, lead)) {
       this.clearFailureIfVerified(paths);
       const originNow = readOrigin(paths);
@@ -25854,13 +25848,6 @@ var ResumePerTurnProvider = class {
     const origin = readOrigin(paths);
     const gate = this.retryGate(paths, lead, triggerMessageIds);
     if (!gate.allow) {
-      this.log({
-        ts: iso(this.now()),
-        kind: "model-sync-suppressed",
-        teamId: this.opts.teamId,
-        memberId,
-        reason: gate.reason
-      });
       throw new ModelSyncSuppressedError(
         `\u6210\u5458 "${memberId}" \u4E0E Lead \u6A21\u578B\uFF08${lead.providerId}/${lead.modelId}\uFF09\u4E0D\u4E00\u81F4\uFF0C\u4E0A\u4E00\u6B21\u540C\u6B65\u5931\u8D25\u5C1A\u672A\u5230\u91CD\u8BD5\u65F6\u673A\uFF1A${gate.reason}`,
         lead
@@ -25914,14 +25901,13 @@ var ResumePerTurnProvider = class {
     const known = new Set(record2.messageIds ?? []);
     const hasNewMessage = triggerMessageIds.some((id) => !known.has(id));
     if (hasNewMessage) {
-      return { allow: true, reason: "", record: record2 };
+      return { allow: true, reason: "" };
     }
     const kind = record2.kind ?? "deterministic";
     if (kind === "deterministic") {
       return {
         allow: false,
-        reason: `\u76F8\u540C\u9009\u62E9\u7684\u540C\u6B65\u5DF2\u88AB\u786E\u5B9A\u6027\u62D2\u7EDD\uFF08${record2.reason}\uFF09\uFF0C\u7B49\u5F85 Lead \u5207\u6362\u53EF\u7528\u6A21\u578B\u6216\u65B0\u6D88\u606F\u540E\u91CD\u8BD5`,
-        record: record2
+        reason: `\u76F8\u540C\u9009\u62E9\u7684\u540C\u6B65\u5DF2\u88AB\u786E\u5B9A\u6027\u62D2\u7EDD\uFF08${record2.reason}\uFF09\uFF0C\u7B49\u5F85 Lead \u5207\u6362\u53EF\u7528\u6A21\u578B\u6216\u65B0\u6D88\u606F\u540E\u91CD\u8BD5`
       };
     }
     const attempts = record2.attempts ?? 1;
@@ -25929,18 +25915,16 @@ var ResumePerTurnProvider = class {
     if (nextAt !== void 0 && this.now() < nextAt) {
       return {
         allow: false,
-        reason: `\u4E34\u65F6\u6545\u969C\u9000\u907F\u4E2D\uFF08\u7B2C ${attempts} \u6B21\u5C1D\u8BD5\u5DF2\u5931\u8D25\uFF09\uFF0C${Math.ceil((nextAt - this.now()) / 1e3)}s \u540E\u81EA\u52A8\u91CD\u8BD5`,
-        record: record2
+        reason: `\u4E34\u65F6\u6545\u969C\u9000\u907F\u4E2D\uFF08\u7B2C ${attempts} \u6B21\u5C1D\u8BD5\u5DF2\u5931\u8D25\uFF09\uFF0C${Math.ceil((nextAt - this.now()) / 1e3)}s \u540E\u81EA\u52A8\u91CD\u8BD5`
       };
     }
     if (attempts > this.modelRetryBackoffMs.length) {
       return {
         allow: false,
-        reason: `\u4E34\u65F6\u6545\u969C\u5DF2\u8FDE\u7EED\u5931\u8D25 ${attempts - 1} \u6B21\uFF08\u9000\u907F\u5E8F\u5217\u8017\u5C3D\uFF09\uFF0C\u505C\u6B62\u81EA\u52A8\u91CD\u8BD5\uFF1B\u7B49\u5F85 Lead \u5207\u6362\u6A21\u578B\u6216\u65B0\u6D88\u606F`,
-        record: record2
+        reason: `\u4E34\u65F6\u6545\u969C\u5DF2\u8FDE\u7EED\u5931\u8D25 ${attempts - 1} \u6B21\uFF08\u9000\u907F\u5E8F\u5217\u8017\u5C3D\uFF09\uFF0C\u505C\u6B62\u81EA\u52A8\u91CD\u8BD5\uFF1B\u7B49\u5F85 Lead \u5207\u6362\u6A21\u578B\u6216\u65B0\u6D88\u606F`
       };
     }
-    return { allow: true, reason: "", record: record2 };
+    return { allow: true, reason: "" };
   }
   /**
    * 统一失败记录路径（0.4.1）：解析失败（throwOnUnusable 抛出的 ModelInheritanceError）与
@@ -25961,6 +25945,11 @@ var ResumePerTurnProvider = class {
     const kind = kindOverride ?? classifySelectionFailure(err.message);
     const attempts = sameTarget && kind === "transient" ? (previous?.attempts ?? 1) + 1 : 1;
     const backoff = kind === "transient" ? this.modelRetryBackoffMs[attempts - 1] : void 0;
+    const messageIds = /* @__PURE__ */ new Set([
+      ...sameTarget ? previous?.messageIds ?? [] : [],
+      ...triggerMessageIds,
+      ...this.pendingLookup !== null ? this.pendingLookup(memberId).map((item) => item.messageId) : []
+    ]);
     const record2 = {
       ...selection !== void 0 ? { modelSelection: selection } : {},
       reason: compactReason(reasonOverride ?? err.message),
@@ -25969,11 +25958,7 @@ var ResumePerTurnProvider = class {
       attempts,
       ...backoff !== void 0 ? { nextAttemptAt: now2 + backoff } : {},
       ...signature !== void 0 ? { leadSignature: signature } : {},
-      // 触发消息 id 并集（同目标累计；新消息解锁判定用）。
-      ...(() => {
-        const merged = /* @__PURE__ */ new Set([...sameTarget ? previous?.messageIds ?? [] : [], ...triggerMessageIds]);
-        return merged.size > 0 ? { messageIds: [...merged] } : {};
-      })()
+      ...messageIds.size > 0 ? { messageIds: [...messageIds] } : {}
     };
     writeModelFailed(paths, record2);
     this.log({

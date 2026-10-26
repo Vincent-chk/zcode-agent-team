@@ -509,7 +509,7 @@ export class ResumePerTurnProvider implements TeammateProvider {
       resume: bred !== null,
       cwd: spawnCwd,
       // createChild 刚把继承选择应用进子会话（0.4.1 验收：首轮不重复应用同一选择）。
-      modelJustApplied: bred?.appliedModel !== undefined,
+      modelJustApplied: bred?.appliedModel,
     });
     this.startWatcher();
 
@@ -937,10 +937,9 @@ export class ResumePerTurnProvider implements TeammateProvider {
     resume: boolean;
     cwd?: string;
     /**
-     * createChild 刚成功应用了继承模型（首轮）：跳过轮前同步（验收口径「首轮已由
-     * createChild 正确设置模型 → 不重复应用同一选择」）。仅 startContinuable 传 true。
+     * createChild 刚成功应用的选择。首轮仍复核最新 Lead，仅相同选择免重复 RPC。
      */
-    modelJustApplied?: boolean;
+    modelJustApplied?: MemberModelSelection;
   }): Promise<TurnRecord> {
     const turnId = nextTurnId(args.paths.runDir);
     const stdoutFile = path.join(args.paths.runDir, `${turnId}.out`);
@@ -948,10 +947,10 @@ export class ResumePerTurnProvider implements TeammateProvider {
     // 0.4.0 执行前同步（每轮唯一入口，覆盖续跑/恢复）：Lead 最新已确认选择与成员
     // 宿主实际选择不一致 → 先 setModel 再启动本轮；失败 = 抛错阻止本轮（绝不带着旧模型
     // 或宿主缺省悄悄开跑）。Lead 已切官方套餐同样阻止并报错——「同步失败即明确报告」。
-    // 0.4.1：携带本轮消息 id（失败记录做「新消息解锁重试」判定）；首轮由 createChild 定模时跳过。
-    if (args.modelJustApplied !== true) {
-      await this.syncMemberModel(args.paths, args.memberId, args.sessionId, turnCwd, args.messageIds);
-    }
+    // 携带本轮消息 id 与首轮刚应用的选择；培育期间 Lead 换模时仍需同步或明确阻止。
+    await this.syncMemberModel(
+      args.paths, args.memberId, args.sessionId, turnCwd, args.messageIds, args.modelJustApplied,
+    );
     const scriptArgs = [
       ...this.zcode.argvPrefix,
       "-p",
@@ -1071,11 +1070,6 @@ export class ResumePerTurnProvider implements TeammateProvider {
     );
   }
 
-  /** 档位缺省（已有则不覆盖）：目录 defaultVariant → "max"（E-1b 统一落点）。 */
-  private withReasoningDefault(selection: MemberModelSelection): MemberModelSelection {
-    return applyReasoningDefault(this.modelCatalog(), selection);
-  }
-
   /**
    * Lead 最新**已确认**模型选择（0.4.0 三源判定；成员跟随 Lead 的唯一解析入口）。
    *
@@ -1130,13 +1124,13 @@ export class ResumePerTurnProvider implements TeammateProvider {
         latest,
       );
     }
-    return this.withReasoningDefault(latest);
+    return applyReasoningDefault(catalog, latest);
   }
 
   /**
    * 每轮执行前同步（0.4.0；0.4.1 修正一致性判断与重试控制）：
    * Lead 最新已确认选择 ≠ 成员**宿主实际**选择 → setModel 后再启动本轮。
-   * - 一致性判断以宿主会话实际状态为准（session_entry → main_turn usage 实查）；
+   * - 一致性判断以宿主会话实际选模条目为准；历史调用不能证明下次恢复的选择。
    *   origin.modelSelection 只是辅助记录（setModel 成功后 origin 更新前崩溃 → 宿主为准，
    *   不能因 origin 相同就放行）。实际状态无法确认（首轮前无任何记录）→ 重新应用 Lead
    *   选择（宁多一次 setModel，不带着未确认的模型开跑）。
@@ -1153,6 +1147,7 @@ export class ResumePerTurnProvider implements TeammateProvider {
     sessionId: string | null,
     workspacePath: string,
     triggerMessageIds: readonly string[] = [],
+    justApplied?: MemberModelSelection,
   ): Promise<void> {
     if (this.sessionIsolation !== "child" || sessionId === null) return;
     let lead: MemberModelSelection | undefined;
@@ -1166,13 +1161,6 @@ export class ResumePerTurnProvider implements TeammateProvider {
         const selection = err.selection;
         const gate = this.retryGate(paths, selection, triggerMessageIds);
         if (!gate.allow) {
-          this.log({
-            ts: iso(this.now()),
-            kind: "model-sync-suppressed",
-            teamId: this.opts.teamId,
-            memberId,
-            reason: gate.reason,
-          });
           throw new ModelSyncSuppressedError(err.message, selection);
         }
         this.recordModelFailure(paths, memberId, err, triggerMessageIds);
@@ -1182,13 +1170,12 @@ export class ResumePerTurnProvider implements TeammateProvider {
     // 档位缺省链已在 resolveLeadInheritance 内应用；此处防御性兜底（undefined 时不动作）
     if (lead === undefined) return;
 
-    // 0.4.1 一致性判断：宿主实际状态优先（entry = setModel/--resume 的生效锚点；
-    // main_turn usage = 实际调用证据）。origin.modelSelection 只是辅助记录——宿主实际
+    // entry 是 --resume 的生效锚点；首轮可复用 createChild 刚成功应用的实际选择。
+    // 历史 usage 与 origin 都不能证明下轮选择；条目缺失时重新应用，避免误用宿主缺省。
+    // origin.modelSelection 只是辅助记录——宿主实际
     // 选择无法确认时（observed=undefined，如刚恢复），即便 origin 记过同一选择也重新
     // 应用（宁多一次 setModel，不带着未确认状态放行），故此处不做 origin 短路。
-    const observed =
-      this.reader.latestModelSelection(sessionId) ??
-      this.reader.latestMainTurnUsage(sessionId)?.selection;
+    const observed = justApplied ?? this.reader.latestModelSelection(sessionId);
     if (observed !== undefined && sameModelSelection(observed, lead)) {
       // 宿主实际状态已确认与 Lead 一致 = 验证成功 → 清除旧失败提示（修复4），不打扰宿主。
       this.clearFailureIfVerified(paths);
@@ -1212,13 +1199,6 @@ export class ResumePerTurnProvider implements TeammateProvider {
     // ModelInheritanceError 原样上抛（send_message 调用方看到明确错误）。
     const gate = this.retryGate(paths, lead, triggerMessageIds);
     if (!gate.allow) {
-      this.log({
-        ts: iso(this.now()),
-        kind: "model-sync-suppressed",
-        teamId: this.opts.teamId,
-        memberId,
-        reason: gate.reason,
-      });
       throw new ModelSyncSuppressedError(
         `成员 "${memberId}" 与 Lead 模型（${lead.providerId}/${lead.modelId}）不一致，上一次同步失败尚未到重试时机：${gate.reason}`,
         lead,
@@ -1266,7 +1246,7 @@ export class ResumePerTurnProvider implements TeammateProvider {
     paths: MemberPaths,
     lead: MemberModelSelection | undefined,
     triggerMessageIds: readonly string[],
-  ): { allow: boolean; reason: string; record?: ModelFailedRecord } {
+  ): { allow: boolean; reason: string } {
     let record: ModelFailedRecord | undefined;
     try {
       record = readModelFailed(paths);
@@ -1281,14 +1261,13 @@ export class ResumePerTurnProvider implements TeammateProvider {
     const known = new Set(record.messageIds ?? []);
     const hasNewMessage = triggerMessageIds.some((id) => !known.has(id));
     if (hasNewMessage) {
-      return { allow: true, reason: "", record }; // 用户再次明确发送 → 解锁（尝试会刷新记录）
+      return { allow: true, reason: "" }; // 用户再次明确发送 → 解锁（尝试会刷新记录）
     }
     const kind = record.kind ?? "deterministic"; // 0.4.0 旧记录 → 保守按确定性处理
     if (kind === "deterministic") {
       return {
         allow: false,
         reason: `相同选择的同步已被确定性拒绝（${record.reason}），等待 Lead 切换可用模型或新消息后重试`,
-        record,
       };
     }
     const attempts = record.attempts ?? 1;
@@ -1297,17 +1276,15 @@ export class ResumePerTurnProvider implements TeammateProvider {
       return {
         allow: false,
         reason: `临时故障退避中（第 ${attempts} 次尝试已失败），${Math.ceil((nextAt - this.now()) / 1000)}s 后自动重试`,
-        record,
       };
     }
     if (attempts > this.modelRetryBackoffMs.length) {
       return {
         allow: false,
         reason: `临时故障已连续失败 ${attempts - 1} 次（退避序列耗尽），停止自动重试；等待 Lead 切换模型或新消息`,
-        record,
       };
     }
-    return { allow: true, reason: "", record };
+    return { allow: true, reason: "" };
   }
 
   /**
@@ -1344,6 +1321,12 @@ export class ResumePerTurnProvider implements TeammateProvider {
     // 退避闸：transient 且还有下一档 → now + backoff[attempts-1]；其余 = 不再自动尝试。
     const backoff =
       kind === "transient" ? this.modelRetryBackoffMs[attempts - 1] : undefined;
+    // 失败前已排队的消息属于同次失败，不能在后续补投时冒充显式新消息解锁。
+    const messageIds = new Set([
+      ...(sameTarget ? previous?.messageIds ?? [] : []),
+      ...triggerMessageIds,
+      ...(this.pendingLookup !== null ? this.pendingLookup(memberId).map((item) => item.messageId) : []),
+    ]);
     const record: ModelFailedRecord = {
       ...(selection !== undefined ? { modelSelection: selection } : {}),
       reason: compactReason(reasonOverride ?? err.message),
@@ -1352,11 +1335,7 @@ export class ResumePerTurnProvider implements TeammateProvider {
       attempts,
       ...(backoff !== undefined ? { nextAttemptAt: now + backoff } : {}),
       ...(signature !== undefined ? { leadSignature: signature } : {}),
-      // 触发消息 id 并集（同目标累计；新消息解锁判定用）。
-      ...(() => {
-        const merged = new Set([...(sameTarget ? previous?.messageIds ?? [] : []), ...triggerMessageIds]);
-        return merged.size > 0 ? { messageIds: [...merged] } : {};
-      })(),
+      ...(messageIds.size > 0 ? { messageIds: [...messageIds] } : {}),
     };
     writeModelFailed(paths, record);
     this.log({

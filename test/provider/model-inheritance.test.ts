@@ -1,4 +1,5 @@
-// model-inheritance 纯函数单测（0.4.1）：错误类型、指纹、失败分类。
+// model-inheritance 单测（0.4.1）：错误类型、指纹、失败分类（含真实进程退出形态）。
+import { execFile } from "node:child_process";
 import { describe, expect, it } from "vitest";
 import {
   ModelInheritanceError,
@@ -39,6 +40,17 @@ describe("selectionSignature（相同选择判定键）", () => {
 });
 
 describe("classifyApplyFailure（宿主应用失败分类）", () => {
+  it("app-server 客户端透传的真实非零进程退出错误 → transient", async () => {
+    const reason = await new Promise<string>((resolve, reject) => {
+      execFile(process.execPath, ["-e", "process.exit(1)"], (err) => {
+        if (err === null) reject(new Error("expected the child process to exit nonzero"));
+        else resolve(err.message);
+      });
+    });
+    expect(reason).toMatch(/^Command failed:/);
+    expect(classifyApplyFailure(reason)).toBe("transient");
+  });
+
   it("基础设施/时序类 → transient", () => {
     for (const reason of [
       "app-server rpc timeout: session/setModel",

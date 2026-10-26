@@ -2,7 +2,7 @@
 
 本项目是给 **ZCode** 使用的团队协作插件：当前会话充当 Lead，插件创建可持续复用的 teammate 子会话，提供共享任务板、成员消息和团队状态面板。成员共享项目工作目录；团队数据写入插件数据目录。
 
-本文用于理解现有实现、定位源码和选择验证入口。基线为 **2026-10-25、版本 0.3.2、源码提交 `7e24db8`**；源码之后的变更应同步更新对应条目。本文属于源码仓库工程文档，不进入插件发布包。
+本文用于理解现有实现、定位源码和选择验证入口。基线为 **2026-10-26、版本 0.4.1、源码提交 `98947bd`，加本轮未提交的 0.4.2 本地候选补丁**；候选补丁的验证结果另计，提交后的变更应同步更新对应条目。本文属于源码仓库工程文档，不进入插件发布包。
 
 ## 1. 阅读入口
 
@@ -89,7 +89,7 @@ flowchart TD
 | [src/provider](../src/provider/) | `transcript`、`fork-context`、`model-catalog`、`model-selection` | 宿主转录读取、fork 上下文、模型目录和选择解析 |
 | [src/hooks.ts](../src/hooks.ts)、[src/hooks/inbox.ts](../src/hooks/inbox.ts) | hook 入口与收件箱纯逻辑 | 角色与策略注入、Stop block 预算、消息回执 |
 | [src/panel](../src/panel/) | `view-service`、`panel-call`、`detail`、两个页面入口、`companion-server` | 数据帧、面板回环、会话摘要及可选本地 HTTP 服务 |
-| [src/ui-core](../src/ui-core/) | `tokens`、`dict`、`render`、`detail-render`、`member-settings`、`widget` | 桌面面板、伴生页与卡片共用的主题、词典和渲染 |
+| [src/ui-core](../src/ui-core/) | `tokens`、`dict`、`render`、`detail-render`、`widget` | 桌面面板、伴生页与卡片共用的主题、词典和渲染 |
 | [src/cli](../src/cli/)、[src/sidebar](../src/sidebar/) | `main`、`ui`、`state`、`sidebar-audit`、`tasks-index` | 运维 CLI 和宿主任务索引的受限归档操作 |
 | [src/daemon.ts](../src/daemon.ts)、[src/shared.ts](../src/shared.ts) | 进程入口与公共 IO 辅助 | MCP 资源、日志、配置、Node 自检与装配 |
 
@@ -140,7 +140,7 @@ daemon 启动并不立即恢复所有团队。恢复发生在团队 host 被打�
 
 `spawn_teammate → registry/handlers → backend → host 方法表 → TeamRoster.spawnTeammate → ResumePerTurnProvider.startContinuable`。
 
-域层先校验名称和名额，追加 `provisioning` 成员事件；provider 再解析模型、经 app-server 培育隐藏 `selection_side_chat` 子会话，写入 origin 和轮次记录，然后启动 headless 首轮。首条任务被持久接收后，成员供给定案为 `active`；创建失败则记录 `failed` 并处理清理。**成员 active 不要求首轮任务已经做完**。
+域层先校验名称，再在原事务内重读状态、校验重名和名额，模型预检通过后才追加 `provisioning` 成员事件；provider 供给时再解析模型、经 app-server 培育隐藏 `selection_side_chat` 子会话，写入 origin 和轮次记录，然后启动 headless 首轮。首条任务被持久接收后，成员供给定案为 `active`；创建失败则记录 `failed` 并处理清理。**成员 active 不要求首轮任务已经做完**。
 
 每轮使用 `zcode -p --resume <childSession> --json --mode yolo --surface terminal --disallowed-tools Task`，由独立进程组承载；helper 确认孵化、写入 PID 后立即退出，provider watcher 再根据进程活性和转录探针定案轮次。app-server 用于会话供给和模型设置，实际工作轮次由 headless CLI 执行。
 
@@ -193,12 +193,14 @@ deleted 不占任务限额、不出现在普通 list 中，get 仍可读取；�
 
 Lead 模型解析为**三源按时间戳取最新**：① 真实用户提交消息时宿主写入的 `modelSelection` 快照（输入框切换在提交瞬间生效，不受宿主 issue #7「选模条目不刷新」影响）；② `session_entry(runtime/model_selection)`（`/model` 命令刷新，`time_updated` 参与比较）；③ `model_usage` 中 `query_source='main_turn'` 的最近实际调用（严格排除 compact/标题/subagent/workflow 等辅助行）。解析后按目录分类：官方 `account:*` / `builtin:*` 套餐或目录外组合 = 不可继承；空目录 = 无法分类（守卫：不过滤，宿主 setModel 终审）。
 
-**失败绝不静默**：解析不出 / 官方套餐 / 目录外 / setModel 被拒 → 创建时抛错（不落成员）、续跑时阻止该轮启动，并以可读原因报告用户；不再有「回退宿主缺省冒充继承成功」的降级路径。同步有变化才发 `session/setModel`（生效锚点 = 会话库条目，headless `--resume` 每轮恢复）；运行中成员本轮不打断，下一轮开始时同步；急需切换用 `interrupt_agent` 结束当前轮再续跑。`origin.json` 只记实际生效的选择（`modelSource` 恒 `inherited`）。
+**失败绝不静默**：解析不出 / 官方套餐 / 目录外 / setModel 被拒 → 创建前预检拒绝时不落成员；登记后的供给或首轮复核失败则记录 `failed`；续跑时阻止该轮启动，并以可读原因报告用户；不再有「回退宿主缺省冒充继承成功」的降级路径。同步有变化才发 `session/setModel`（生效锚点 = 会话库条目，headless `--resume` 每轮恢复）；运行中成员本轮不打断，下一轮开始时同步；急需切换用 `interrupt_agent` 结束当前轮再续跑。`origin.json` 只记实际生效的选择（`modelSource` 恒 `inherited`）。
 
-**0.4.1 修复轮**（跟随机制可靠性，无契约/工具面变更）：
-- **一致性判断以宿主实际状态为准**：轮前比对源 = 成员会话 `session_entry` → `main_turn usage` 实查，`origin.modelSelection` 只是辅助记录（不凭 origin 相同放行）；实际状态无法确认时重新应用 Lead 选择；确认一致时顺带修复落后的 origin；仅档位变化同样识别同步；首轮 createChild 已定模则 launchTurn 跳过（零冗余 setModel）。
-- **创建前预检**：provider `preflightMemberModel()` 在 roster 写入 provisioning 事件**之前**执行——不可继承时不增加成员、不占名、不建隐藏子会话，修正 Lead 模型后原名可重用；供给阶段仍复检（漂移防御）。
-- **失败可见 + 重试有节制**：解析失败与应用失败统一落 `model-failed.json`（`kind`/`attempts`/`nextAttemptAt`/`leadSignature`/`messageIds`）。确定性拒绝（套餐/目录外/明确不支持）暂停相同选择的自动重试；临时故障（timeout/spawn/ENOENT/app-server 未就绪）按 5s/15s/30s 退避、最多自动重试 3 次；**Lead 换模或用户再发新消息即解锁**。拦截 = `ModelSyncSuppressedError` → deliver 按 `queued` 滞留（消息保留、不误标 delivered、不重复 setModel）。失败记录变化经 `bind(onModelFailureChanged)` → `roster.notifyStatusChanged` 立即刷新成员展示；成功同步或宿主实际状态确认一致即清除旧失败记录与诊断。
+**0.4.1 修复轮与本轮 0.4.2 候选补丁**（跟随机制可靠性，无契约/工具面变更；以下按候选补丁描述）：
+
+- **一致性判断以宿主实际选模条目为准（0.4.2）**：续跑/恢复仅以成员会话 `session_entry` 判断下次 `--resume` 的选择；历史 `main_turn usage` 只能证明过去调用，不能证明下次恢复的模型，`origin.modelSelection` 也只是辅助记录。条目缺失或无效时重新应用 Lead 选择；确认一致时顺带修复落后的 origin；仅档位变化同样触发同步。
+- **首轮仍复核最新 Lead（0.4.2）**：`launchTurn` 重新解析 Lead 最新已确认选择；仅当它与 `createChild` 刚成功应用的选择相同时免重复 RPC。培育期间 Lead 换模或调档位，首轮同步新选择后再启动；最新选择不可继承则阻止首轮。
+- **创建前预检（0.4.1 引入，0.4.2 调整顺序）**：provider `preflightMemberModel()` 在原事务的重名/限额检查之后、写入 provisioning 事件**之前**执行，保留原错误优先级；不可继承时不增加成员、不占名、不建隐藏子会话，修正 Lead 模型后原名可重用；供给阶段仍复检（漂移防御）。
+- **失败可见 + 重试有节制（0.4.1 引入）**：解析失败与应用失败统一落 `model-failed.json`（`kind`/`attempts`/`nextAttemptAt`/`leadSignature`/`messageIds`）。确定性拒绝（套餐/目录外/明确不支持）暂停相同选择的自动重试；临时故障（timeout/spawn/ENOENT/app-server 未就绪）按 5s/15s/30s 退避、最多自动重试 3 次；**Lead 换模或失败后用户再发新消息可触发重新尝试，成功后恢复交付**。0.4.2 将失败前已排队的消息纳入同次失败，旧批次重投不会解锁。拦截 = `ModelSyncSuppressedError` → deliver 按 `queued` 滞留（消息保留、不误标 delivered、不重复 setModel）。失败记录变化经 `bind(onModelFailureChanged)` → `roster.notifyStatusChanged` 立即刷新成员展示；成功同步或宿主实际状态确认一致即清除旧失败记录与诊断。
 
 宿主输入框切模型不刷新会话选模条目仍是 issue #7 限制，但 0.4.0 的三源判定以提交快照弥补：你切换后提交一条新消息，成员下一轮即跟上。
 
@@ -338,9 +340,9 @@ node scripts/release.mjs --check-only
 |---|---|
 | 领域状态、CAS、依赖与写域 | `test/domain/`，尤其 `taskboard`、`task-graph`、`task-view` |
 | 单写者、重放、checkpoint、接任 | `test/coord/`，尤其 `unit-journal`、`unit-replay`、`dual-writer`、`replay-checkpoint-utf8` |
-| 工具注册、身份、输入输出、保活 | `test/mcp/`，尤其 `tools-snapshot`、`identity`、`model-tools`、`wait-keepalive` |
+| 工具注册、身份、输入输出、保活 | `test/mcp/`，尤其 `tools-snapshot`、`identity`、`contract`、`wait-keepalive` |
 | 成员轮次、隐藏会话、恢复 | `test/provider/`，尤其 `resume-provider`、`session-breeder`、`session-isolation`、`lifecycle-real` |
-| 模型目录、继承、失败可见性 | `test/provider/model-catalog.test.ts`、`model-selection.test.ts`、`member-set-model.test.ts`、`test/panel/member-model-call.test.ts` |
+| 模型目录、继承、失败可见性 | `test/provider/model-catalog.test.ts`、`model-selection.test.ts`、`model-inheritance.test.ts`、`session-isolation.test.ts`、`transcript.test.ts` |
 | hooks、面板帧、详情、CLI | `test/hooks/`、`test/panel/`、`test/ui-core/`、`test/cli/` |
 | daemon 协议装配 | `scripts/smoke-daemon.mjs`；先 build |
 | UI 几何、语言、主题、摘要 | `scripts/visual-regress.mjs`、`scripts/f10-companion.mjs`；需 Chromium |
@@ -348,7 +350,11 @@ node scripts/release.mjs --check-only
 | 崩溃、升级、性能 | `scripts/crash-matrix.mjs`、`upgrade-drill.mjs`、`perf-baseline.mjs` |
 | 权限和文件边界、策略文本一致性 | `scripts/security-audit.mjs`、`text-audit.mjs` |
 
-Vitest 文件级串行，单用例默认超时 15 秒。覆盖率门槛为 statements / lines / functions 各 90%，branches 85%；`.mjs` 和浏览器入口等不在该统计面内。`npm test` 使用 mock / fake-zcode / fake-app-server 与临时数据，部分 CLI 测试会重建 dist；它与真实登录态、模型、桌面交互验收的覆盖范围不同。
+Vitest 文件级串行，单用例默认超时 15 秒。覆盖率门槛为 statements / lines / functions 各 90%，branches 85%，按纳入统计代码的总计判断（含 MockProvider），不代表每个模块分别达标；`.mjs` 和浏览器入口等不在该统计面内。`npm test` 使用 mock / fake-zcode / fake-app-server 与临时数据，部分 CLI 测试会重建 dist；它与真实登录态、模型、桌面交互验收的覆盖范围不同。
+
+本轮 **0.4.2 本地候选**于 2026-10-26 完成最终验收：全量覆盖率运行 **72 文件 / 849 用例全部通过**（exit 0，174.72s）；聚合覆盖率 statements **91.61%**、branches **85.15%**、functions **92.55%**、lines **93.40%**。视觉 **76** 项全通过、零漂移，伴生矩阵 **17** 项、文本审计 **23** 项全通过；build、check、release-check 均通过。以上是本地候选验证，未安装或发布。
+
+0.4.1 的既有 [v6 脚本](../../zcode-agent-team-plan/stage-8-model-config/e2e-real-model-041.mjs)与[结果报告](../../zcode-agent-team-plan/stage-8-model-config/e2e-real-model-041-evidence.json)记录六场景 `ALL_PASS`，属于**真实模型调用集成验收，切模事件由测试脚本注入，不包含真实输入框或 `/model` UI 交互**。它验证了注入记录后的成员执行、恢复与交付链路，不能替代桌面切模交互验收；两份材料位于本仓库之外。
 
 在成员运行环境中执行测试时，需先去除会污染身份和策略测试的团队环境变量。颜色测试还在模块初始化时读取 NO_COLOR / FORCE_COLOR，外部着色开关会干扰其预期，测试时一并清除：
 
@@ -391,14 +397,14 @@ release 默认会安装锁定依赖、构建、按白名单装配 staging、过�
 | 位置 | 旧表述或历史信息 | 当前实现 |
 |---|---|---|
 | 架构说明进程段 | daemon 启动即全量恢复 | backend 按团队首调惰性打开 host，再重放和恢复 |
-| 架构说明模型设置流程与降级表 | 即时失败也 pending，下一轮重试 | 0.3.1 起单次失败终态；只因当前轮次运行而延后，后续失败也删 pending |
-| 架构说明模型目录 | 只写 config.json 与其 mtime | Registry 为主、config.json 回退，两个源的 mtime + size 缓存 |
+| 架构说明模型设置流程与降级表 | 即时失败也 pending，下一轮重试 | 0.4.0 已删除成员独立配置与 model-pending 队列；0.4.1 同步失败按确定性拒绝暂停、临时故障有限退避处理 |
+| 架构说明模型目录 | 只写 config.json 与其 mtime | Registry 为主、config.json 回退；当前继承链同步读取目录，mtime 缓存读器仅保留为辅助工具 |
 | 架构说明总览图 | 将 logs/meta 画在团队目录内 | logs/meta 属数据根；lead/state.json 仍是有效的唤醒辅助状态 |
 | 旧 socket 路径简写 | `/tmp/at-<hash>.sock` | `os.tmpdir()/agent-team-sockets/at-<hash>.sock` 私有子目录 |
 | 产品内 team-coordination skill、manifest interrupt 描述及部分源码注释 | 历史上 8→10→9 数度变化 | **当前契约 = 9 工具（`interrupt:false` 时 8）**；0.4.0 注销 `member_set_model`（成员模型唯一路线 = 每轮跟随 Lead） |
 | README 工具表 | wait_agent 标为 Lead 使用 | 执行层仅检查成员资格，所有团队成员可调用 |
 | README 实验开关名称 | `TEAM_LEAD_WAKE=cli` | 当前源码实际读取 `TEAM_WAKE_LEAD=1` |
-| 测试手册数量 | 历史上 75 文件、872/878 用例 | **0.4.0 起 70 文件 / 787 用例**（CHANGELOG 0.4.0 记录；实际以当次测试输出为准） |
+| 测试手册数量 | 历史上 75 文件、872/878 用例；0.4.0 为 70 文件 / 787 用例；0.4.1 为 72 文件 / 840 用例 | **本轮 0.4.2 候选实测 72 文件 / 849 用例全部通过**；对应当前未提交补丁，后续结果以当次运行输出为准 |
 | CHANGELOG 0.3.0 双模式说明 | summary/full 和 --mode | 这是历史版本行为；0.3.2 已移除 full 与 mode 参数 |
 | 某些旧描述把 transcript 当全量流 | CLI transcript 可取完整记录 | 当前 CLI 同面板为摘要；原始记录需查轮次输出、事件日志或宿主会话库 |
 
