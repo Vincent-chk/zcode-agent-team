@@ -1,4 +1,4 @@
-// T5.5 伴生面板页（浏览器 iife → dist/ui/team-companion.html；高保真「原交互对照载体」）。
+// T5.5 伴生面板页（浏览器 iife → runtime/ui/team-companion.html；高保真「原交互对照载体」）。
 // 与 MCP Apps 面板同源组件层（COMPONENT_CSS + renderPanelBody + detail-render），差异 = 载体：
 //  - 数据 = SSE 订阅（全量视图广播口径；contentKey 去抖同构，服务端实现）；
 //  - 下钻 = POST（refresh/detail，面板回环同语义，只读）；

@@ -1,5 +1,5 @@
 // Hook 收件箱（T4.3）：pending 派生（重放−回执）、三通道模板逐字、Stop 预算 ≤3/run、
-// 角色解析与 teammate 认领；入口级（dist 形态 bundle）三通道输出 + 回执落盘。
+// 角色解析与 teammate 认领；入口级（runtime 形态 bundle）三通道输出 + 回执落盘。
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -176,7 +176,7 @@ function runHook(input: Record<string, unknown>, env: Record<string, string>): P
   });
 }
 
-describe("hook 入口（dist 形态真进程）", () => {
+describe("hook 入口（runtime 形态真进程）", () => {
   it("UserPromptSubmit：pending → additionalContext 注入 + 回执落盘（F07 冷路径）", async () => {
     await bundleHooks();
     writeEvents([msgEvent("m1", "alpha", "ups-body")]);

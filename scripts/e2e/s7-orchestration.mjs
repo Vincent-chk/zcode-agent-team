@@ -1,7 +1,7 @@
 // S7 编排旅程剧本（stage-6.5 D26 / F-O8；真模型）：单条自然目标 prompt（零插件触发词）→
 // Lead 在 orchestrator 注入下自主建队/建任务/分配/等待/汇总 —— **脚本全程零代调**（区别于 S1
 // 的控制面手法），宿主自起 daemon；断言锚定 events.jsonl / meta-log.jsonl / 产物文件 / 最终投影。
-// 运行前置：dist 已构建、插件已 dev-install、本机模型可用；TEAM_LEAD_MODE=orchestrator 显式注入
+// 运行前置：runtime 已构建、插件已 dev-install、本机模型可用；TEAM_LEAD_MODE=orchestrator 显式注入
 // （hook env 优先 → 确定性，不依赖 daemon 落盘时序）。
 import fs from "node:fs";
 import os from "node:os";

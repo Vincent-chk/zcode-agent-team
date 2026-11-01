@@ -30,13 +30,14 @@ const PACKAGE_NAME = "agent-team";
 // 包内白名单（T7.1 + R7.4 + stage-7 T7.2 用户手册）。src/test/scripts/poc/coverage/node_modules 等一律不进入。
 const PACKAGE_ENTRIES = [
   ".zcode-plugin/plugin.json",
-  "dist",
+  "runtime",
   "skills",
   "commands",
   "hooks",
   ".mcp.json",
   "LICENSE",
   "README.md",
+  "README_CN.md",
   "THIRD-PARTY-NOTICES.md",
   "CHANGELOG.md",
   "docs/使用手册.md",
@@ -48,16 +49,17 @@ const PACKAGE_DOC_PREFIXES = ["docs/使用手册.md", "docs/assets/manual/"];
 
 const REQUIRED_FILES = [
   ".zcode-plugin/plugin.json",
-  "dist/team-daemon.mjs",
-  "dist/team-hooks.mjs",
-  "dist/team-ctl.mjs",
-  "dist/ui/team-panel.html",
+  "runtime/team-daemon.mjs",
+  "runtime/team-hooks.mjs",
+  "runtime/team-ctl.mjs",
+  "runtime/ui/team-panel.html",
   "skills/team-coordination/SKILL.md",
   "commands/team.md",
   "hooks/hooks.json",
   ".mcp.json",
   "LICENSE",
   "README.md",
+  "README_CN.md",
   "THIRD-PARTY-NOTICES.md",
   "docs/使用手册.md",
 ];
@@ -313,10 +315,10 @@ async function verifyPackageLayout(dir, plugin, files) {
   for (const s of surfaces) {
     if (!s.resourceUri?.startsWith("ui://")) fail(`surface ${s.id} has no ui:// resourceUri`);
     const base = s.resourceUri.split("/").pop();
-    const expected = `dist/ui/${base}`;
+    const expected = `runtime/ui/${base}`;
     if (!files.includes(expected)) fail(`ui surface ${s.id} resource ${s.resourceUri} not found at ${expected}`);
   }
-  const panel = await fsp.readFile(path.join(dir, "dist/ui/team-panel.html"));
+  const panel = await fsp.readFile(path.join(dir, "runtime/ui/team-panel.html"));
   if (panel.byteLength > 4 * 1024 * 1024) fail(`team-panel.html exceeds 4MiB: ${panel.byteLength}`);
   if (!panel.includes(Buffer.from("<script"))) fail("team-panel.html has no inline script");
 

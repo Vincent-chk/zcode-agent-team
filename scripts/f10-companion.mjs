@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// T5.5/F10 伴生面板交互矩阵（Playwright 驱动 dist/ui/team-companion.html）：
+// T5.5/F10 伴生面板交互矩阵（Playwright 驱动 runtime/ui/team-companion.html）：
 //  - hover 150±20ms 开；离开 trigger 120±20ms 关（进入面板取消关闭）；
 //  - 点击 pin + 焦点入面板；已开再点 → 焦点进面板；
 //  - Escape（焦点在面板内）→ 关闭且焦点还给触发器；
@@ -17,7 +17,7 @@ import { fileURLToPath } from "node:url";
 const proj = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const { chromium } = await import(path.join(proj, "node_modules", "playwright-core", "index.mjs"));
 
-const PAGE_HTML = fs.readFileSync(path.join(proj, "dist", "ui", "team-companion.html"), "utf8");
+const PAGE_HTML = fs.readFileSync(path.join(proj, "runtime", "ui", "team-companion.html"), "utf8");
 
 const ORIGIN = "http://127.0.0.1:45999";
 const TOKEN = "f10-test-token";

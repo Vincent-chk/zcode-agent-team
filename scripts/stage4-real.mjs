@@ -1,6 +1,6 @@
 // stage-4 真实模型验收（F01/F02/F06/F06b/F07/F09/F11/F13/F16/F17 + V01/V03 证据；U01 剧本面）
-// 路径全部走生产形态：真 zcode -p 会话（Lead + teammate 轮次）+ 真插件 daemon（dist/team-daemon.mjs
-// 经 MCP stdio）+ 真 hook（dist/team-hooks.mjs，由宿主在真会话中触发）。
+// 路径全部走生产形态：真 zcode -p 会话（Lead + teammate 轮次）+ 真插件 daemon（runtime/team-daemon.mjs
+// 经 MCP stdio）+ 真 hook（runtime/team-hooks.mjs，由宿主在真会话中触发）。
 // 数据根 = 实装插件数据根（~/.zcode/cli/plugins/data/agent-team@inline）——teammate 自带 daemon 与
 // 身份解析依赖共享根（生产同构）；本脚本产出一个团队目录（teams/<leadId>/），为验收数据。
 // 用法：node scripts/stage4-real.mjs [--ws <dir>] [--out <evidenceDir>] [--skip <场景,...>]
@@ -15,7 +15,7 @@ import { DatabaseSync } from "node:sqlite";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const proj = path.resolve(__dirname, "..");
 const ZCODE = "/Applications/ZCode.app/Contents/Resources/glm/zcode.cjs";
-const DAEMON = path.join(proj, "dist/team-daemon.mjs");
+const DAEMON = path.join(proj, "runtime/team-daemon.mjs");
 const DATA_ROOT = path.join(os.homedir(), ".zcode/cli/plugins/data/agent-team@inline");
 const DB = path.join(os.homedir(), ".zcode/cli/db/db.sqlite");
 
@@ -53,7 +53,7 @@ if (!fs.existsSync(ZCODE)) {
   process.exit(2);
 }
 if (!fs.existsSync(DAEMON)) {
-  process.stdout.write("dist/team-daemon.mjs 缺失——先 npm run build\n");
+  process.stdout.write("runtime/team-daemon.mjs 缺失——先 npm run build\n");
   process.exit(2);
 }
 

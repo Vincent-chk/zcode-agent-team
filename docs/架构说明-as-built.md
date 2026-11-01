@@ -9,7 +9,7 @@
                     │                                                                        │
  用户 ──对话──▶ Lead 会话（模型）                                                             │
                     │   ├─ 工具调用（MCP stdio）──▶ team-daemon（每会话按需拉起）             │
-                    │   ├─ SessionStart/Stop/UserPromptSubmit hook ──▶ dist/team-hooks.mjs    │
+                    │   ├─ SessionStart/Stop/UserPromptSubmit hook ──▶ runtime/team-hooks.mjs │
                     │   └─ MCP Apps surface「智能体团队」◀─ ui://agent-team/team-panel.html   │
                     │                                                                        │
                     └───────────────┬────────────────────────────────────────────────────────┘

@@ -17,7 +17,7 @@ import { MockProvider } from "../../src/provider/mock-provider.js";
 import type { TeamLimits } from "../../src/domain/config.js";
 
 const PROJ = path.resolve(import.meta.dirname, "../..");
-const DAEMON = path.join(PROJ, "dist", "team-daemon.mjs");
+const DAEMON = path.join(PROJ, "runtime", "team-daemon.mjs");
 const LIMITS: TeamLimits = {
   maxMembers: 8,
   maxTasks: 256,
@@ -140,7 +140,7 @@ describe("保活机制（wire 层：真实 stdio daemon 报文）", () => {
   }
 
   beforeAll(async () => {
-    expect(fs.existsSync(DAEMON), "dist/team-daemon.mjs 缺失——先 npm run build").toBe(true);
+    expect(fs.existsSync(DAEMON), "runtime/team-daemon.mjs 缺失——先 npm run build").toBe(true);
     root = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "at-s3-wire-"));
     pending = new Map();
     nextId = 1;

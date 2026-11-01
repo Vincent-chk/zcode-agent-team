@@ -1,5 +1,5 @@
 node_modules/
-dist/ui/panel.js
+runtime/ui/panel.js
 *.log
 .DS_Store
 ._*

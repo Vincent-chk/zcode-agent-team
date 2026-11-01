@@ -1,8 +1,8 @@
 # Third-Party Notices
 
-agent-team 的构建产物内联了下列第三方软件（esbuild bundle 进 `dist/team-daemon.mjs`、
-`dist/team-hooks.mjs`、`dist/team-ctl.mjs`、`dist/ui/team-panel.html` 与
-`dist/ui/team-companion.html`）。各组件保留其原始许可证；本文件随发布包分发。
+agent-team 的构建产物内联了下列第三方软件（esbuild bundle 进 `runtime/team-daemon.mjs`、
+`runtime/team-hooks.mjs`、`runtime/team-ctl.mjs`、`runtime/ui/team-panel.html` 与
+`runtime/ui/team-companion.html`）。各组件保留其原始许可证；本文件随发布包分发。
 
 | Package | Version | License | Copyright |
 |---|---|---|---|

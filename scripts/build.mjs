@@ -6,15 +6,15 @@ import path from "node:path";
 
 const root = path.dirname(fileURLToPath(import.meta.url)); // scripts/
 const proj = path.resolve(root, "..");
-const dist = path.join(proj, "dist");
+const runtime = path.join(proj, "runtime");
 
-await mkdir(path.join(dist, "ui"), { recursive: true });
+await mkdir(path.join(runtime, "ui"), { recursive: true });
 
 // 1) daemon + hooks + team-ctl（node 单文件）
 for (const [entry, out] of [
-  ["src/daemon.ts", "dist/team-daemon.mjs"],
-  ["src/hooks.ts", "dist/team-hooks.mjs"],
-  ["src/cli/main.ts", "dist/team-ctl.mjs"],
+  ["src/daemon.ts", "runtime/team-daemon.mjs"],
+  ["src/hooks.ts", "runtime/team-hooks.mjs"],
+  ["src/cli/main.ts", "runtime/team-ctl.mjs"],
 ]) {
   await build({
     entryPoints: [path.join(proj, entry)],
@@ -28,9 +28,9 @@ for (const [entry, out] of [
   });
 }
 
-// 1b) 独立子进程资产（dist/team-daemon.mjs 同目录 sibling）
-await copyFile(path.join(proj, "src/provider/detach-helper.mjs"), path.join(dist, "detach-helper.mjs"));
-await copyFile(path.join(proj, "src/provider/app-server-bridge.mjs"), path.join(dist, "app-server-bridge.mjs"));
+// 1b) 独立子进程资产（runtime/team-daemon.mjs 同目录 sibling）
+await copyFile(path.join(proj, "src/provider/detach-helper.mjs"), path.join(runtime, "detach-helper.mjs"));
+await copyFile(path.join(proj, "src/provider/app-server-bridge.mjs"), path.join(runtime, "app-server-bridge.mjs"));
 
 // 2) panel + companion（浏览器 iife）
 for (const [entry, out] of [
@@ -39,7 +39,7 @@ for (const [entry, out] of [
 ]) {
   await build({
     entryPoints: [path.join(proj, entry)],
-    outfile: path.join(dist, "ui", out),
+    outfile: path.join(runtime, "ui", out),
     bundle: true,
     platform: "browser",
     format: "iife",
@@ -52,7 +52,7 @@ for (const [entry, out] of [
 // 3) 内联进 HTML（ui:// 资源要求自包含，≤4MiB）。
 // 面板 JS（src/panel/main.ts）自建全部 DOM 并注入样式（ui-core/tokens+css 同源层，
 // 令牌映射见 docs/token-map.md）；HTML 壳只承载 <script>——零硬编码色（V12 扫描面最小）。
-const js = await readFile(path.join(dist, "ui", "panel.js"), "utf8");
+const js = await readFile(path.join(runtime, "ui", "panel.js"), "utf8");
 const html = `<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -66,16 +66,16 @@ ${js}
 </script>
 </body>
 </html>`;
-await writeFile(path.join(dist, "ui", "team-panel.html"), html);
+await writeFile(path.join(runtime, "ui", "team-panel.html"), html);
 const htmlBytes = Buffer.byteLength(html, "utf8");
-console.log("panel html written:", path.join(dist, "ui", "team-panel.html"), (htmlBytes / 1024).toFixed(1) + "KiB");
+console.log("panel html written:", path.join(runtime, "ui", "team-panel.html"), (htmlBytes / 1024).toFixed(1) + "KiB");
 if (htmlBytes > 4 * 1024 * 1024) {
   console.error("FAIL: panel html exceeds 4MiB ui:// resource limit");
   process.exit(1);
 }
 
 // 4) 伴生面板页（T5.5 可选高保真；companion-server 以 __dirname/ui/team-companion.html 供页）
-const companionJs = await readFile(path.join(dist, "ui", "companion.js"), "utf8");
+const companionJs = await readFile(path.join(runtime, "ui", "companion.js"), "utf8");
 const companionHtml = `<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -89,5 +89,5 @@ ${companionJs}
 </script>
 </body>
 </html>`;
-await writeFile(path.join(dist, "ui", "team-companion.html"), companionHtml);
+await writeFile(path.join(runtime, "ui", "team-companion.html"), companionHtml);
 console.log("companion html written:", (Buffer.byteLength(companionHtml, "utf8") / 1024).toFixed(1) + "KiB");

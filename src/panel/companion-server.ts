@@ -24,7 +24,7 @@ export interface CompanionServerDeps {
   view: PanelViewService;
   /** handlePanelCall 依赖（reader/bumpCounter/now/warn；view/dataRoot/bootTimeMs 由本模块补全）。 */
   panelCall: Pick<PanelCallDeps, "bootTimeMs" | "reader" | "bumpCounter" | "now" | "warn">;
-  /** 伴生页面 HTML 文件（构建产物 dist/ui/team-companion.html；daemon 以 __dirname 注入）。 */
+  /** 伴生页面 HTML 文件（构建产物 runtime/ui/team-companion.html；daemon 以 __dirname 注入）。 */
   pageFile: string;
   /** 当前锚定会话（team://view 同口径：最近活跃 callTool 的 _meta.session_id）。 */
   anchoredSession: () => string | null;

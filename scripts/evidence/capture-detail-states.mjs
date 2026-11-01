@@ -13,7 +13,7 @@ const outDir = process.argv.includes("--out")
 fs.mkdirSync(outDir, { recursive: true });
 const { chromium } = await import(path.join(proj, "node_modules", "playwright-core", "index.mjs"));
 
-const PAGE = fs.readFileSync(path.join(proj, "dist", "ui", "team-companion.html"), "utf8");
+const PAGE = fs.readFileSync(path.join(proj, "runtime", "ui", "team-companion.html"), "utf8");
 const ORIGIN = "http://127.0.0.1:46991";
 const TOKEN = "u04-token";
 const frame = {

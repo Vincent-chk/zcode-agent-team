@@ -384,8 +384,8 @@ for (const f of ["css.ts", "render.ts", "widget.ts", "icons.ts"]) {
     failures += 1;
   }
 }
-// 面板 HTML 壳（dist 产物）扫描：只含 <script>（壳零样式）
-const panelHtml = fs.readFileSync(path.join(proj, "dist", "ui", "team-panel.html"), "utf8");
+// 面板 HTML 壳（runtime 产物）扫描：只含 <script>（壳零样式）
+const panelHtml = fs.readFileSync(path.join(proj, "runtime", "ui", "team-panel.html"), "utf8");
 const shellOnly = panelHtml.replace(/<script>[\s\S]*<\/script>/, "");
 if (colorRe.test(shellOnly)) {
   console.error("FAIL V12: hardcoded color in panel html shell");

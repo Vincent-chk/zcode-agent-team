@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
-const DAEMON = path.resolve(import.meta.dirname, "..", "dist", "team-daemon.mjs");
+const DAEMON = path.resolve(import.meta.dirname, "..", "runtime", "team-daemon.mjs");
 const DATA = fs.mkdtempSync(path.join("/tmp", "agent-team-smoke-"));
 
 const proc = spawn("node", [DAEMON], {

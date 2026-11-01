@@ -1,7 +1,7 @@
 // F08 · 策略三层注入（stage-3 T3.3 机制层）。〔对齐轮修订 2026-10-17〕文本换版 0.2.1-alpha.5（冻结包 06 §3.1）。
 // ① 定版文本保真：POLICY_TEXT = 冻结包 06 §3.1 逐字全文（含 D5 门控句删除、D4 两句替换、D3 插值），
 //   唯一 ZCode 适配 = D7 冻结替换句（断言：把替换句换回原句 → 与本文件独立转写的上游原文逐字节相等）；
-// ② 主通道：dist/team-hooks.mjs 在 SessionStart(startup|resume) 输出
+// ② 主通道：runtime/team-hooks.mjs 在 SessionStart(startup|resume) 输出
 //   hookSpecificOutput.additionalContext === SESSION_START_CONTEXT（含 F08 暗号行），
 //   并落 session-map hookRegistered=true（fail-loud 判定依据）；
 // ③ 辅通道：SKILL.md 含同文；④ 兜底：关键口径在工具 description 中；
@@ -32,7 +32,7 @@ import { readSessionRegistry, safeSessionKey, upsertSessionEntry } from "../../s
 import { readHostLeadModeOverride } from "../../src/shared.js";
 
 const PROJ = path.resolve(import.meta.dirname, "../..");
-const HOOKS = path.join(PROJ, "dist", "team-hooks.mjs");
+const HOOKS = path.join(PROJ, "runtime", "team-hooks.mjs");
 
 /** 上游 0.2.1-alpha.5 策略全文独立转写（冻结包 06 §3.1，含 D7 原句 FS_STALE_VERSION；用于保真断言）。 */
 const SPEC_POLICY_VERBATIM =
@@ -202,7 +202,7 @@ describe("主通道 · SessionStart hook 注入（startup/resume 双注入点）
   let dataRoot: string;
 
   beforeAll(() => {
-    expect(fs.existsSync(HOOKS), "dist/team-hooks.mjs 缺失——先 npm run build").toBe(true);
+    expect(fs.existsSync(HOOKS), "runtime/team-hooks.mjs 缺失——先 npm run build").toBe(true);
     dataRoot = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "at-s3-hook-"));
   });
 

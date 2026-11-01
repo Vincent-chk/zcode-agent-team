@@ -7,7 +7,7 @@ export default defineConfig({
   test: {
     include: ["test/**/*.test.ts"],
     // exFAT 外置卷会为每个文件生成 AppleDouble 元数据（._*），必须排除，否则被当作测试源
-    exclude: ["**/node_modules/**", "**/.git/**", "**/dist/**", "**/._*"],
+    exclude: ["**/node_modules/**", "**/.git/**", "**/runtime/**", "**/._*"],
     environment: "node",
     fileParallelism: false,
     testTimeout: 15_000,

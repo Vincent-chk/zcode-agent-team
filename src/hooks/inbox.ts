@@ -1,4 +1,4 @@
-// Hook 收件箱逻辑（T4.3；纯逻辑层，dist/team-hooks.mjs 入口编排）。
+// Hook 收件箱逻辑（T4.3；纯逻辑层，runtime/team-hooks.mjs 入口编排）。
 // Lead 侧三通道（D2/D12 内部适配层）：
 //   Stop              → pending 非空 → decision:block + reason（框架化消息逐字拼接；≤3 次/run）→ 回执；
 //   UserPromptSubmit  → pending 非空 → additionalContext 注入（无上限）→ 回执；

@@ -14,8 +14,8 @@ allowed-tools: Bash
    仍无法确定 → 直接输出 `Team 暂不可用`（en: `Team is unavailable`）并提示稍后重试。
 2. **读团队视图**：用 Bash 执行（teamDir 中会话 id 无需转义——`sess_<uuid>` 字符集安全）：
    `node <team-ctl> state <teamDir> --json`
-   - `<team-ctl>` = agent-team 插件安装目录下 `dist/team-ctl.mjs`（plugins.dirs 直载 = 仓库根；
-     市场安装 = `~/.zcode/cli/plugins/cache/**/agent-team*/dist/team-ctl.mjs`，用 ls/glob 定位）；
+   - `<team-ctl>` = agent-team 插件安装目录下 `runtime/team-ctl.mjs`（plugins.dirs 直载 = 仓库根；
+     市场安装 = `~/.zcode/cli/plugins/cache/**/agent-team*/runtime/team-ctl.mjs`，用 ls/glob 定位）；
    - `<teamDir>` = `$HOME/.zcode/cli/plugins/data/agent-team*/teams/<session_id>`（多副本时取
      与当前安装通道一致者；dev 兜底 = `$HOME/.zcode/agent-team-dev-data/teams/<session_id>`）；
    - state 失败/目录不存在 → 视为「尚无团队事件」：输出摘要 `成员 1（Lead）· 共享任务 0`。
@@ -38,7 +38,7 @@ allowed-tools: Bash
      `成员会话：node <team-ctl> transcript <teamDir> <member>（按轮摘要：用户指令 + 动作组 + 每轮结论）`；
      `高保真（可选）：TEAM_COMPANION=1 的 daemon 在场时 node <team-ctl> open-panel；或
       node <team-ctl> widget <teamDir> --standalone --out /tmp/team-panel.html 后浏览器打开`。
-   - **`<team-ctl>` 直接执行**：`dist/team-ctl.mjs` 自带自执行入口（`node <dist>/team-ctl.mjs …`
+   - **`<team-ctl>` 直接执行**：`runtime/team-ctl.mjs` 自带自执行入口（`node <runtime>/team-ctl.mjs …`
      可用）；`scripts/team-ctl.mjs` 薄启动器等价。两者任选，不要只导出不执行。
 5. **刷新语义**（用户问「怎么刷新」时回答）：MCP Apps 面板 = 自动实时（订阅推送 ≤1s）；
    ::visualize 卡片 = 手动（重跑 /team 重渲染）；CLI 摘要 = 随轮次（每次 /team 即最新）。

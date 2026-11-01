@@ -243,7 +243,7 @@ describe("F06b · Lead 投递（host 级：steerLead=false → 回执折叠 deli
         })) as { messageId: string };
         let board = await host.readBoard();
         expect(board.state.delivered).toHaveLength(0); // 无直达通道 → 滞留（内部 pending）
-        // 模拟 hook 注入成功后的回执（真实路径 = dist/team-hooks.mjs 落 receipts.jsonl）
+        // 模拟 hook 注入成功后的回执（真实路径 = runtime/team-hooks.mjs 落 receipts.jsonl）
         kit.provider.recordLeadReceipts([sent.messageId], "stop");
         await waitFor(async () => (await host.readBoard()).state.delivered.length === 1, 5000, 100);
         board = await host.readBoard();

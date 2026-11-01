@@ -1,7 +1,7 @@
 // F01 · tools/list 逐字节快照（stage-3 T3.5a）。
 // 两层：① 进程内 listTeamTools()（注册表原样）vs 期望生成器（02 §9 独立转写，test/mcp/
 // expected-tools.ts）——同一序列化器（JSON.stringify 无缩进）逐字节 diff = 0（9/9）；
-// ② wire 层：真实孵化 dist/team-daemon.mjs（stdio JSON-RPC）→ tools/list → 过滤 9 工具 →
+// ② wire 层：真实孵化 runtime/team-daemon.mjs（stdio JSON-RPC）→ tools/list → 过滤 9 工具 →
 // 同一序列化器逐字节 diff = 0（宿主实际看到的字节）。
 // 〔0.4.0〕member_set_model 注销、team://models 资源下线（成员模型唯一路线 = 跟随 Lead）。
 // 数据根 os.tmpdir()；孵化用 execFile 数组参数（Mimosa 纪律）。
@@ -15,7 +15,7 @@ import { TEAM_TOOL_DEFINITIONS, serializeToolsList, teamToolDefinitions, teamToo
 import { EXPECTED_TEAM_TOOLS, expectedToolsListJson } from "./expected-tools.js";
 
 const PROJ = path.resolve(import.meta.dirname, "../..");
-const DAEMON = path.join(PROJ, "dist", "team-daemon.mjs");
+const DAEMON = path.join(PROJ, "runtime", "team-daemon.mjs");
 
 const NINE = EXPECTED_TEAM_TOOLS.map((t) => t.name as string);
 
@@ -94,7 +94,7 @@ describe("F01 · schema 逐字节快照（wire 层：真实 stdio daemon）", ()
   }
 
   beforeAll(async () => {
-    expect(fs.existsSync(DAEMON), "dist/team-daemon.mjs 缺失——先 npm run build").toBe(true);
+    expect(fs.existsSync(DAEMON), "runtime/team-daemon.mjs 缺失——先 npm run build").toBe(true);
     root = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "at-s3-snapshot-"));
     home = path.join(root, "home");
     fs.mkdirSync(path.join(home, ".zcode", "v2"), { recursive: true });

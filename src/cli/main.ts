@@ -1,6 +1,6 @@
 // team-ctl 入口（stage-2 第四轮 C / T2.5 + stage-5 T5.3/T5.7）：state / tail / inject-event /
 // call / transcript / widget。
-// 薄启动器 scripts/team-ctl.mjs → dist/team-ctl.mjs（build.mjs 增入口）；本文件保持可单测。
+// 薄启动器 scripts/team-ctl.mjs → runtime/team-ctl.mjs（build.mjs 增入口）；本文件保持可单测。
 // 错误摘要单行化（无多行堆栈污染）；非 TTY / NO_COLOR 自动降级纯文本。
 import fs from "node:fs";
 import path from "node:path";
@@ -67,7 +67,7 @@ export async function main(argv: string[]): Promise<number> {
   }
 }
 
-// 直接执行 dist/team-ctl.mjs（/team 文档与 README 的路径）时自执行；被薄启动器
+// 直接执行 runtime/team-ctl.mjs（/team 文档与 README 的路径）时自执行；被薄启动器
 // scripts/team-ctl.mjs import 时不重复执行（argv[1] 指向启动器，不是本模块）。
 const invokedPath = process.argv[1];
 if (

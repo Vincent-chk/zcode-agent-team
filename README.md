@@ -1,271 +1,282 @@
-# 智能体团队（Agent Teams）
+# Agent Teams
 
-把「Lead + 多个 teammate」的协作方式带进 ZCode：Lead 在会话里创建队友、共享任务板、收发消息，并用 MCP Apps 面板实时看到团队状态。
+[中文](./README_CN.md)
 
-- 适用：需要并行拆活、希望把实现/审查/测试分给不同成员，或想把一段多步工作交给可复用的成员协作。
-- 角色：Lead = 当前会话（你正在对话的 agent）；teammate = 插件创建的独立子会话，与 Lead 共享同一工作目录。
-- 载体：桌面 = 「智能体团队」MCP Apps 面板（实时）；CLI = `/team` 文本摘要 + `team-ctl` 工具（可生成静态卡片）。
+Bring "Lead + multiple teammates" collaboration into ZCode: the Lead spawns teammates inside a conversation, shares a task board, exchanges messages, and watches live team status in an MCP Apps panel.
 
-> 宿主基线：本插件在 **ZCode Desktop 3.16.2 / CLI 0.17.0** 上完成终验（实测基线，非推测）；发布演练另在 Desktop 3.16.3 / CLI 0.17.0 复测通过。更低版本未验证，不在支持范围内。
+- Best for: parallel work you want to split up, handing implementation/review/testing to different members, or delegating a multi-step job to a reusable crew.
+- Roles: Lead = the current conversation (the agent you are talking to); teammates = independent child sessions created by the plugin, sharing the Lead's working directory.
+- Surfaces: Desktop = the "Agent Team" MCP Apps panel (live); CLI = the `/team` text summary + the `team-ctl` tool (can also render static cards).
 
-## 安装
+> Host baseline: finalized on **ZCode Desktop 3.16.2 / CLI 0.17.0** (measured, not guessed); the release drill was re-verified on Desktop 3.16.3 / CLI 0.17.0, and the desktop entry paths on Desktop 3.17.1. Lower versions are unverified and unsupported.
 
-### 桌面（插件市场 UI）
+## Install
 
-1. 打开 **插件市场 / Plugin Marketplace**。
-2. 点 **添加 / Add → 添加插件市场 / Add Plugin Marketplace**。
-3. 粘贴或选择市场根目录（**含 `marketplace.json` 的那一层**，不是插件子目录），点 **添加**。
-4. 切到 **个人 / Personal**，找到「智能体团队 / Agent Teams」，点 **安装**。
-5. 安装后可在 **设置 → 插件 / Settings → Plugins** 中确认与启用。
+### Desktop (Plugin Marketplace UI)
+
+1. Open **Plugin Marketplace** and find **Agent Teams** (category: developer tools).
+2. Click **Install**. Afterwards you can confirm and toggle it under **Settings → Plugins**.
 
 ### CLI
 
 ```bash
-zcode plugins marketplace add /path/to/market-root      # 市场根目录（含 marketplace.json）
-zcode plugins install agent-team@agent-team-release      # 换成你的市场名
-zcode plugins enable agent-team@agent-team-release
+zcode plugins install agent-team@zcode-plugins-official
+zcode plugins enable agent-team@zcode-plugins-official
 ```
 
-## 启用
+## Enable
 
-- 安装后默认启用；在 **设置 → 插件** 里可查看开关与配置。
-- 插件声明的 SessionStart / Stop / UserPromptSubmit hooks **随启用直接生效**，不需要信任授予或 hooks 开关（已在干净环境实测）。
-- 桌面默认权限模式下，agent-team 的 MCP 工具首次调用会弹「需要权限」确认；选择「允许（仅本次）」或「始终允许本项目」即可。这是宿主的工具权限，与 hook 无关。
+- Enabled by default after install; the switch and its configuration live in **Settings → Plugins**.
+- The declared SessionStart / Stop / UserPromptSubmit hooks take effect **as soon as the plugin is enabled** — no trust grant or hooks toggle is needed (verified in a clean environment).
+- In the desktop default permission mode, the first agent-team MCP tool call prompts for permission; choose "Allow once" or "Always allow for this project". This is the host's tool permission and unrelated to hooks.
 
-## 在会话中使用（怎么调用）
+## Using it in a conversation
 
-**面板入口：** 在已有会话右侧点 **「+」**：
-- 通用路径（官方 ZCode 3.17.1 实测）：**「查看所有插件」→「个人」→「智能体团队」→「打开」**。
-- 宿主在「新标签页」中提供「智能体团队」入口时（官方 3.17.1 尚未提供，需含该入口的宿主版本）：**「新标签页」→「智能体团队」→「打开」**，无需进入插件列表。
+**Panel entry:** click **"+"** on the right of an existing conversation:
+- Universal path (verified on official ZCode 3.17.1): **"All plugins" → "Personal" → "Agent Team" → "Open"**.
+- When the host provides an "Agent Team" item in "New tab" (official 3.17.1 does not yet include it; requires a host build with this entry): **"New tab" → "Agent Team" → "Open"** — no need to enter the plugin list.
 
-装好、启用后**不需要任何专门命令**：团队协作策略已由 SessionStart hook 自动注入会话上下文（D10），在新任务里直接对话即可。共有三个调用面，按需取用：
+After install and enable you need **no special command**: the teamwork policy is injected into the conversation context automatically by the SessionStart hook (D10). Just start a new task and describe your goal. There are three invocation surfaces:
 
-| 调用面 | 怎么触发 | 干什么 |
+| Surface | How to trigger | What it does |
 |---|---|---|
-| 自然语言对话（主通道） | 直接说目标 / 下指令 | 创建队友、分派任务、收发消息等全部操作；策略已自动注入，模型自己知道该用哪些团队工具 |
-| `/team` | 会话里输入 `/team` | 输出团队状态文本摘要 + 面板/命令入口（**只读**，不创建/修改任何数据） |
-| `/team-coordination` | 输入 `/team-coordination`（全名 `agent-team:team-coordination`） | 手动（重新）加载团队协作策略 skill；长会话策略丢失后恢复用 |
+| Natural language (main channel) | Just state a goal / give orders | Everything: spawning teammates, assigning tasks, messaging; the policy is auto-injected and the model knows which team tools to use |
+| `/team` | Type `/team` | Prints a text summary of team status + panel/command entries (**read-only**, creates/modifies nothing) |
+| `/team-coordination` | Type `/team-coordination` (full name `agent-team:team-coordination`) | Manually (re)load the teamwork policy skill; use when a very long session has lost it |
 
-### 1. 直接说目标（默认 orchestrator 模式）
+### 1. Just state the goal (default orchestrator mode)
 
-新建一个任务（**必须是新任务**——旧任务不会刷新插件能力），直接描述目标即可。默认 `leadMode: orchestrator` 下 Lead 会自主拆活、组队、分派并独立验收，不需要逐条指挥：
+Start a **new task** (old tasks do not refresh plugin capabilities) and describe the goal. With the default `leadMode: orchestrator`, the Lead decomposes the work, forms a team, assigns tasks and independently accepts them — no step-by-step steering needed:
 
 ```text
-帮我并行推进两件事：一边给 src/utils 补单元测试，一边审查 README 与 CHANGELOG 的措辞，完成后汇总。
+Push two things in parallel: one teammate adds unit tests for src/utils, another reviews the wording of README and CHANGELOG, then summarize.
 ```
 
-Lead 的动作链：创建队友 → 在共享任务板建任务并指定 owner → 等待各成员完成 → 独立复核（读 diff、跑测试）→ 验收通过后汇总给你（D26/D27）。
+The Lead's chain: spawn teammates → create tasks on the shared board with owners → wait for completion → independently verify (read diffs, run tests) → report back to you once accepted (D26/D27).
 
-### 2. 点名指挥（collaborator 模式 / 想精确控制时）
+### 2. Direct orders (collaborator mode / when you want precise control)
 
-把 `leadMode` 配置为 `collaborator` 后 Lead 等你指示再建队；任何时候想精确控制，也直接下指令：
-
-```text
-创建一个叫 reviewer 的队友，让它检查 README 前三段的错别字，然后汇总它的结论。
-```
+Set `leadMode` to `collaborator` and the Lead waits for your instruction before forming a team; at any time you can also just give explicit orders:
 
 ```text
-给 reviewer 发个消息：重点看中英文标点混用。
+Create a teammate named reviewer, have it check the first three paragraphs of README for typos, then summarize its findings.
 ```
 
 ```text
-列一下现在的成员和任务状态。
+Send reviewer a message: focus on mixed Chinese/English punctuation.
 ```
-
-模型会把这些话术映射到对应工具（`spawn_teammate` / `send_message` / `list_agents` / `team_task_list` …），你不需要记工具名。
-
-### 2.1 模型与思考强度（自动跟随 Lead，无需设置）
-
-**0.4.0 起，成员模型只有一条路线：自动跟随 Lead 的最新已确认模型与思考强度。** 没有单独的成员模型配置——面板没有齿轮弹窗，`spawn_teammate` 没有 `model` 参数，对话也不能「让某个成员换模型」。你只需要管好 Lead 自己用什么模型，成员每轮开始执行前会自动同步。
 
 ```text
-创建一个叫 reviewer 的队友，检查 README 前三段的错别字。
+List the current members and task statuses.
 ```
 
-- **同步时机**：成员每次开始执行前（首轮、后续消息唤醒、恢复团队）都先比对 Lead 最新选择（以宿主会话中的实际选择为准，0.4.1），有变化才应用，无变化零开销；运行中的成员等本轮跑完在下一轮开始时同步（不打断已有工作）。急需切换可先中断该成员，再发消息续跑。
-- **「已确认」的含义**：以你**实际提交消息时**的模型为准（宿主在保存消息时写入快照），并用会话选模记录（`/model` 命令）与主轮实际调用记录核对——三路取最新。仅在输入框里切了下拉但还没提交，不承诺同步。
-- **失败绝不静默、重试有节制（0.4.1）**：Lead 的模型无法被成员继承时（官方 coding plan、Provider 被删除/禁用、解析不出），创建/续跑会直接报错并说明原因，不会悄悄用别的模型开跑；失败原因在成员行诊断可见，待处理消息保留不丢。同一失败不会无限重试：确定性拒绝（套餐/目录外）暂停自动重试，临时故障（超时等）按 5s/15s/30s 退避最多自动重试 3 次；Lead 换回可用模型或你再发一条新消息即自动恢复交付，恢复成功后旧错误提示自动消失。
-- **创建前校验（0.4.1）**：Lead 模型不可继承时，`spawn_teammate` 在登记成员**之前**就报错——不产生 failed 成员、不占用成员名；修正 Lead 模型后原名可直接重用。
-- **不支持继承官方 coding plan（硬性边界）**：成员是独立 CLI 进程，宿主不向它下发订阅套餐（`account:*` / `builtin:*` Provider，如智谱 GLM 官方 coding plan）的凭据，因此**不支持直接继承官方 coding plan 模型配置**。Lead 正在用套餐模型时创建/续跑成员会报错；请先在 ZCode 中把 Lead 切换到自配的第三方模型（ZCode 设置 → 模型服务，添加你自己的 Provider + API Key）。
+The model maps these phrasings to the right tools (`spawn_teammate` / `send_message` / `list_agents` / `team_task_list` …); you never need to remember tool names.
 
-### 3. `/team` 看状态
+### 2.1 Model and reasoning effort (auto-follows the Lead, nothing to configure)
 
-会话里随时输入 `/team`：首行输出「成员 N · 共享任务 T」，随后逐行列出成员与任务（与面板词典同源同文案），并按运行环境附上面板/命令入口。刷新语义：桌面 MCP Apps 面板自动实时（订阅推送，无需手动刷新）；CLI 每次重跑 `/team` 即最新。
+**Since 0.4.0 there is exactly one path for member models: automatically follow the Lead's latest confirmed model and reasoning effort.** There is no per-member model configuration — no gear popup in the panel, no `model` parameter on `spawn_teammate`, and no "switch this member's model" instruction. You only manage the Lead's model; members sync before every turn.
 
-### 4. `/team-coordination` 重载策略
+```text
+Create a teammate named reviewer to check the first three paragraphs of README for typos.
+```
 
-策略的主通道是 hook 自动注入，通常无需手动加载。两种情况会用到这个 skill：
+- **When it syncs**: before each execution (first turn, wake-up by a new message, team resume) the member compares against the Lead's latest confirmed choice (resolved from the host's actual session state, 0.4.1); applied only on change, zero overhead otherwise. A running member syncs at its next turn start (never interrupted mid-turn); interrupt it first if you need an immediate switch.
+- **What "confirmed" means**: the model **at the moment you actually submit a message** (the host snapshots it when saving), cross-checked against the `/model` selection record and the main-turn call history — newest of the three wins. Merely toggling the dropdown without submitting is not guaranteed to sync.
+- **Failures are never silent; retries are bounded (0.4.1)**: when the Lead's model cannot be inherited (official coding plan, deleted/disabled Provider, unparseable state), spawning/resuming fails loudly with the reason — it never silently runs a different model. The failure shows in the member's diagnostics and pending messages are preserved. Deterministic rejections (plan/out-of-catalog) suspend auto-retry; transient faults (timeouts) back off 5s/15s/30s, at most 3 auto-retries. Switching the Lead back to a usable model — or sending a new message — resumes delivery and clears the stale error.
+- **Pre-spawn validation (0.4.1)**: when the Lead's model is not inheritable, `spawn_teammate` fails **before** registering the member — no failed member, no name consumed; after fixing the Lead's model the same name is reusable.
+- **Official coding plans cannot be inherited (hard boundary)**: members are independent CLI processes and the host does not hand subscription-plan credentials (`account:*` / `builtin:*` providers, e.g. GLM official coding plans) to them, so **inheriting an official coding-plan model is not supported**. Spawning/resuming while the Lead uses a plan model fails; switch the Lead to your own third-party model first (ZCode Settings → Model Services, add your own Provider + API key).
 
-- 超长会话中注入的策略可能被上下文压缩掉（D24）：输入 `/team-coordination`（或让模型「重新加载团队策略 skill」）即可恢复；
-- 想确认当前会话按团队纪律工作时，也可以点名加载。
+### 3. `/team` for status
 
-### 一次成功的样子
+Type `/team` any time: the first line reads "Members N · Shared tasks T", followed by one line per member and task (same wording as the panel dictionary), plus panel/command entries depending on the runtime. Refresh semantics: the desktop MCP Apps panel is live (subscription push, no manual refresh); on CLI every `/team` run is fresh.
 
-以「创建 reviewer 检查 README 错别字」为例：
+### 4. `/team-coordination` to reload the policy
 
-1. 会话里出现「智能体团队」面板（`spawn_teammate` 的结果携带面板打开提示，桌面上会定向打开），成员区显示 `lead`（当前会话）与 `reviewer`；
-2. `reviewer` 创建并开始工作，面板/任务板出现任务与状态变化；
-3. `reviewer` 完成后向 Lead 汇报，Lead（orchestrator 下先独立复核）汇总给你；
-4. `reviewer` 的会话是隐藏子会话，不会和 Lead 平级出现在左侧任务栏。
+The main channel is the automatic hook injection, so manual loading is rarely needed. Two cases:
 
-## 工具速查（模型可见 9 个；`interrupt:false` 时 8 个）
+- In very long sessions the injected policy may be compacted away (D24): type `/team-coordination` (or ask the model to "reload the teamwork policy skill") to restore it;
+- Or load it on demand when you want the session to follow team discipline.
 
-| 工具 | 谁用 | 作用 |
+### What a successful run looks like
+
+Using "create reviewer to check README typos" as the example:
+
+1. The "Agent Team" panel appears in the conversation (the `spawn_teammate` result carries a panel-open hint and the desktop opens it), showing `lead` (current session) and `reviewer`;
+2. `reviewer` starts working; tasks and statuses change on the panel/board;
+3. `reviewer` reports back; the Lead (in orchestrator mode, after independent verification) summarizes for you;
+4. `reviewer`'s session is a hidden child session — it never appears next to the Lead in the left task list.
+
+## Tool reference (9 model-visible tools; 8 with `interrupt:false`)
+
+| Tool | Who uses it | Purpose |
 |---|---|---|
-| `spawn_teammate` | Lead | 创建一个有名字的持久队友（`context: fresh\|fork`；模型自动跟随 Lead，无独立参数；orchestrator 模式下 Lead 会主动组队） |
-| `send_message` | 全体 | 给另一个成员发消息：运行中在最近回合边界送达；空闲则拉起/恢复一轮 |
-| `list_agents` | 全体 | 列出 Lead 与全部队友的 target 与可用状态（`inactive` = 当前无回合，不代表任务失败） |
-| `interrupt_agent` | Lead | 中断一个队友当前回合，保留其待处理收件箱（**配置关闭时此工具不注册 → 8 个**） |
-| `wait_agent` | Lead | 等待下一次成员/消息/任务变化（不会唤醒空闲成员；超时返回 noProgress） |
-| `team_task_create` | 全体 | 在共享任务板创建一条未分配任务（可带 `blocked_by` / `write_scopes`） |
-| `team_task_list` | 全体 | 列出任务：状态、owner、revision、阻塞、写作用域告警（可分页/过滤） |
-| `team_task_get` | 全体 | 读取单条任务的最新完整内容（改动前必读） |
-| `team_task_update` | 全体 | 用 `expected_revision` 做 CAS 的任务动作：claim / release / edit / set_dependencies / complete / reopen / reassign / delete |
+| `spawn_teammate` | Lead | Create a named persistent teammate (`context: fresh\|fork`; model auto-follows the Lead, no separate parameter; in orchestrator mode the Lead proactively staffs up) |
+| `send_message` | Everyone | Message another member: delivered at the nearest turn boundary while running; wakes/resumes an idle member |
+| `list_agents` | Everyone | List Lead + all teammates with targets and availability (`inactive` = no turn running, not a failure) |
+| `interrupt_agent` | Lead | Interrupt a teammate's current turn, preserving its pending inbox (**not registered when disabled → 8 tools**) |
+| `wait_agent` | Lead | Wait for the next member/message/task change (never wakes idle members; returns noProgress on timeout) |
+| `team_task_create` | Everyone | Create an unassigned task on the shared board (optional `blocked_by` / `write_scopes`) |
+| `team_task_list` | Everyone | List tasks: status, owner, revision, blocking, write-scope warnings (paginated/filterable) |
+| `team_task_get` | Everyone | Read one task's latest full content (must-read before editing) |
+| `team_task_update` | Everyone | CAS task actions via `expected_revision`: claim / release / edit / set_dependencies / complete / reopen / reassign / delete |
 
-另有一个 app 专用回环工具 `team_panel_call`（面板心跳/刷新/详情（**按轮摘要**）；**只读通道，零变更能力**，模型不可见）；诊断探针 `team_ping` 仅在 `TEAM_DEBUG_TOOLS=1` 时暴露。
+There is also an app-only loopback tool `team_panel_call` (panel heartbeat/refresh/detail with **per-turn summaries**; **read-only channel, zero mutation capability**, not model-visible); the diagnostic probe `team_ping` is exposed only with `TEAM_DEBUG_TOOLS=1`.
 
-## 配置（userConfig）
+## Configuration (userConfig)
 
-在 **设置 → 插件 → 智能体团队** 中修改，改完对新任务生效（进行中的会话沿用启动时配置）。
+Edit under **Settings → Plugins → Agent Team**; changes apply to new tasks (running sessions keep the config they started with).
 
-| 配置 | 默认 | 说明 |
+| Option | Default | Description |
 |---|---|---|
-| `maxMembers` | 8 | 团队内 teammate 数量上限（不含 Lead，含 failed） |
-| `maxTasks` | 256 | 任务板任务数量上限 |
-| `maxMessageBytes` | 65536 | 成员间单条消息的最大字节数 |
-| `disposalTimeoutMs` | 5000 | 团队处置（结算与回收）的超时时间 |
-| `interrupt` | true | 关闭后模型只拿到 8 个工具（`interrupt_agent` 不注册） |
-| `leadMode` | orchestrator | `orchestrator`：Lead 自主组队、分配、独立验收；`collaborator`：等你指示再建队 |
+| `maxMembers` | 8 | Max teammates per team (Lead excluded, failed included) |
+| `maxTasks` | 256 | Max tasks on the board |
+| `maxMessageBytes` | 65536 | Max bytes per member-to-member message |
+| `disposalTimeoutMs` | 5000 | Timeout for team disposal (settlement and reclaim) |
+| `interrupt` | true | When off, the model gets 8 tools (`interrupt_agent` is not registered) |
+| `leadMode` | orchestrator | `orchestrator`: the Lead staffs, assigns and accepts work independently; `collaborator`: waits for your instruction |
 
-## CLI 用法
+## Network access, dependencies and side effects
+
+| Item | Declaration |
+|---|---|
+| Network access | **No outbound requests.** The daemon talks to the host over stdio; the teammate ↔ host app-server bridge uses local inter-process channels; the optional companion page (`TEAM_COMPANION=1`) listens on loopback `127.0.0.1` only. Model requests are made by the host using the Providers you configure — unrelated to this plugin |
+| Model/API dependencies | Members are driven by the host-bundled `zcode` CLI and follow the Lead's current model every turn (see 2.1); **official coding plans cannot be inherited** (plan credentials are not forwarded); the plugin itself needs no API key |
+| File writes | Only the plugin data directory `$ZCODE_PLUGIN_DATA` (`teams/`, `logs/`, `meta/`, checkpoints) plus two whitelisted points in the host task index (member-session hiding anchor, `sidebar-audit --apply`, see D25); the host `db.sqlite` is strictly read-only |
+| Command execution | Hooks, the daemon and `team-ctl` are the plugin's own Node scripts (`runtime/*.mjs`) run by the host's Node; teammates are host CLI child processes; the plugin never runs arbitrary shell commands |
+| Hooks | SessionStart / Stop / UserPromptSubmit (`hooks/hooks.json`, effective on enable) |
+| MCP servers | `team-daemon` (stdio) |
+| Third-party code | Inlined MCP SDK and other third-party software with licenses: [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) |
+
+## CLI usage
 
 ```bash
-# /team 命令：输出团队状态文本摘要（桌面/CLI 均可用）
+# /team command: prints the team status text summary (desktop & CLI)
 /team
 
-# 直接读盘重放（与 /team 同源）
-node <插件目录>/dist/team-ctl.mjs state <teamDir>            # 文本摘要
-node <插件目录>/dist/team-ctl.mjs state <teamDir> --json     # 机器可读
-node <插件目录>/dist/team-ctl.mjs transcript <teamDir> <member>   # 成员会话摘要（按轮）
-node <插件目录>/dist/team-ctl.mjs widget <teamDir> --standalone --out /tmp/team.html --theme dark --lang zh
-node <插件目录>/dist/team-ctl.mjs tail <teamDir>             # 跟随事件日志
+# Direct disk replay (same source as /team)
+node <plugin-dir>/runtime/team-ctl.mjs state <teamDir>            # text summary
+node <plugin-dir>/runtime/team-ctl.mjs state <teamDir> --json     # machine-readable
+node <plugin-dir>/runtime/team-ctl.mjs transcript <teamDir> <member>   # per-turn member summary
+node <plugin-dir>/runtime/team-ctl.mjs widget <teamDir> --standalone --out /tmp/team.html --theme dark --lang en
+node <plugin-dir>/runtime/team-ctl.mjs tail <teamDir>             # follow the event log
 ```
 
-`<teamDir>` = `$ZCODE_PLUGIN_DATA/teams/<session_id>`（CLI 下通常是 `~/.zcode/cli/plugins/data/agent-team@<market>/teams/…`）。
+`<teamDir>` = `$ZCODE_PLUGIN_DATA/teams/<session_id>` (on CLI usually `~/.zcode/cli/plugins/data/agent-team@<market>/teams/…`).
 
-## Node 版本要求
+## Node requirement
 
-daemon、hooks 与 `team-ctl` 都由 Node 运行，要求 **Node ≥ 22**。安装前自检：
+The daemon, hooks and `team-ctl` all run on Node and require **Node ≥ 22**. Check before installing:
 
 ```bash
 node -v
 ```
 
-输出应为 `v22.x` 或更高。低于 v22 时 daemon 启动自检会给出警告，面板与工具可能不可用；插件会把实际版本写进 `$ZCODE_PLUGIN_DATA/logs/daemon-lifecycle.jsonl`（字段 `node`、`nodeWarn`）。
+Expect `v22.x` or higher. Below v22 the daemon startup self-check warns and the panel/tools may be unavailable; the actual version is written to `$ZCODE_PLUGIN_DATA/logs/daemon-lifecycle.jsonl` (fields `node`, `nodeWarn`).
 
-## 卸载后数据怎么处理
+## Uninstalling and your data
 
-**先备份，再卸载**。默认卸载会删除团队数据且不可撤销。
+**Back up first, then uninstall.** The default uninstall deletes team data irreversibly.
 
 ```bash
-# 1) 找到插件数据目录（安装时的 dataPath；也可从 plugins list --json 读取）
+# 1) Locate the plugin data dir (dataPath at install time; also visible in plugins list --json)
 DATA="$HOME/.zcode/cli/plugins/data/agent-team@<market>"
-# 2) 备份（保留任务板、成员、消息、事件日志）
+# 2) Back up (keeps the task board, members, messages, event log)
 tar -czf ~/agent-team-backup-$(date +%Y%m%d).tar.gz -C "$(dirname "$DATA")" "$(basename "$DATA")"
 ```
 
-实测行为（2026-10-24 干净环境演练）：
+Measured behavior (2026-10-24 clean-environment drill):
 
-| 入口 | 默认卸载 | 可否保留数据 |
+| Entry | Default uninstall | Can data be kept? |
 |---|---|---|
-| CLI | `zcode plugins uninstall agent-team@<market>` **删除整个插件数据目录**（任务板、成员、消息全部消失）；当前版本缓存删除，更早版本缓存与市场注册保留 | 可：`--keep-data` 保留数据目录（事件日志哈希不变），仅移除插件代码与启用项。非交互 shell 需 `--force` |
-| 桌面 | 设置 → 插件 → 更多操作 → 卸载，确认框明确提示删除缓存、数据目录与配置；实测**删除数据目录内容**（空目录保留），当前版本缓存删除 | **无** UI 等价选项 |
+| CLI | `zcode plugins uninstall agent-team@<market>` **deletes the entire plugin data directory** (board, members, messages); the current version cache is removed, older version caches and the marketplace registration stay | Yes: `--keep-data` keeps the data directory (event-log hash unchanged) and only removes code + enablement; non-interactive shells need `--force` |
+| Desktop | Settings → Plugins → more actions → Uninstall; the confirm dialog states cache, data and config deletion; measured: **deletes the data directory contents** (empty dir remains), current version cache removed | **No** UI equivalent |
 
-注意：卸载时仍打开的相关任务窗口，后续活动会在原路径**重建一个空的数据骨架**（`events.jsonl` 为 0 字节），原团队数据不会恢复；不要因为目录又出现而误判为“数据还在”。卸载后建议关闭相关任务窗口。
+Note: task windows still open at uninstall time may later **recreate an empty data skeleton** at the old path (0-byte `events.jsonl`); the original team data does not come back — do not mistake the reappearing directory for "data is still there". Close the related task windows after uninstalling.
 
-## 故障排查
+## Troubleshooting
 
-### 1. 先确认插件在不在、启没启
+### 1. First check whether the plugin exists and is enabled
 
 ```bash
 zcode plugins list | grep agent-team
-zcode plugins list --json        # 看 version / rootPath / dataPath / diagnostics
+zcode plugins list --json        # version / rootPath / dataPath / diagnostics
 ```
 
-桌面：**设置 → 插件** 中确认「智能体团队」开关为启用；**设置 → 钩子** 可看到它声明的三条 hook。
+Desktop: confirm the "Agent Team" toggle in **Settings → Plugins**; its three hooks show under **Settings → Hooks**.
 
-### 2. 日志位置（都在插件数据目录下）
+### 2. Log locations (all under the plugin data directory)
 
-| 文件 | 内容 |
+| File | Contents |
 |---|---|
-| `logs/hooks.jsonl` | 每次 SessionStart / Stop / UserPromptSubmit 的完整 env overlay 与输入摘要——**判断 hook 有没有跑就看这里** |
-| `logs/daemon-lifecycle.jsonl` | daemon 启动/回收：pid、node 版本、数据目录、`nodeWarn`、SIGINT 处置 |
-| `logs/provider.jsonl` | teammate 轮次与投递细节（排障用） |
-| `logs/requests.jsonl`、`logs/meta-log.jsonl` | 工具调用与面板回环记录 |
-| `meta/runtime-config.json` | daemon 落盘的有效配置（hook 读取同一份） |
-| `teams/<session_id>/events.jsonl` | 团队事件日志（append-only；`team-ctl tail` 可跟随） |
-| `teams/<session_id>/coordinator.audit.jsonl` | 协调者锁获取/释放/接任审计 |
+| `logs/hooks.jsonl` | Full env overlay and input digest per SessionStart / Stop / UserPromptSubmit — **check here to see whether hooks ran** |
+| `logs/daemon-lifecycle.jsonl` | Daemon start/reclaim: pid, node version, data dir, `nodeWarn`, SIGINT handling |
+| `logs/provider.jsonl` | Teammate turns and delivery details (debugging) |
+| `logs/requests.jsonl`, `logs/meta-log.jsonl` | Tool calls and panel loopback records |
+| `meta/runtime-config.json` | Effective config persisted by the daemon (hooks read the same file) |
+| `teams/<session_id>/events.jsonl` | Team event log (append-only; `team-ctl tail` follows it) |
+| `teams/<session_id>/coordinator.audit.jsonl` | Coordinator lock acquire/release/takeover audit |
 
-### 3. hook 没生效怎么查
+### 3. How to investigate hooks not taking effect
 
-1. 确认插件已启用（禁用状态下 hook 不会运行）；
-2. 打开一个**新会话**，然后看 `logs/hooks.jsonl` 是否新增 `sessionstart` 记录；
-3. 没有记录 → 看 **设置 → 钩子** 是否列出三条 agent-team hook（SessionStart / Stop / UserPromptSubmit），以及插件是否因版本/清单问题带 `diagnostics`；
-4. 有记录但模型没按团队策略行动 → 看该条记录的 `env_overlay.ZCODE_PLUGIN_ROOT` 是否指向当前安装目录；升级后旧会话仍用旧版本，需新开会话。
+1. Confirm the plugin is enabled (hooks do not run while disabled);
+2. Open a **new conversation**, then check whether `logs/hooks.jsonl` gained a `sessionstart` record;
+3. No record → check **Settings → Hooks** lists the three agent-team hooks (SessionStart / Stop / UserPromptSubmit) and whether the plugin carries `diagnostics` (version/manifest issues);
+4. Record exists but the model ignores team policy → check the record's `env_overlay.ZCODE_PLUGIN_ROOT` points at the current install; after upgrades old sessions keep the old version — start a new conversation.
 
-### 4. 常见现象
+### 4. Common symptoms
 
-| 现象 | 原因与处理 |
+| Symptom | Cause and handling |
 |---|---|
-| 安装后 `plugins list` 出现 `Duplicate plugin hooks file ignored: hooks/hooks.json` | 已知告警：manifest 的 hooks 声明与宿主自动发现同路径文件重复，宿主显式忽略；三条 hook 仍正常执行，不影响使用。计划在后续版本清理清单 |
-| 队友一直 `provisioning` / 无法创建 | 看 `logs/provider.jsonl` 与 `logs/daemon-lifecycle.jsonl`；确认 `zcode` 可执行文件可被发现（`TEAM_ZCODE_BIN` 可覆盖），以及成员名额未超 `maxMembers` |
-| 创建/续跑成员时报「成员无法继承 Lead 模型」 | 预期行为（0.4.0）：成员模型唯一路线 = 跟随 Lead，Lead 正在用**官方 coding plan 套餐**（`account:*`/`builtin:*`）或 Provider 已删除/禁用时直接报错，绝不静默换模型。处理：把 Lead 切到自配第三方模型（ZCode 设置 → 模型服务）后重试。0.4.1：spawn 在登记成员前即预检报错（不占成员名）；续跑失败后同一失败不会无限重试（确定性拒绝暂停 / 临时故障 5s/15s/30s 退避×3），Lead 换回可用模型或发新消息即自动恢复交付，旧错误提示随之清除 |
-| 桌面工具调用挂起或 `Client closed` | 已知宿主限制（D11）：桌面 callTool 在 daemon 空闲回收后不重建连接。新开一个任务、立刻发起调用可命中存活 daemon；面板心跳已尽量保活 |
-| 面板数字不动 | 面板靠订阅+心跳刷新；`/team` 或 `team-ctl state` 可交叉验证真实状态。桌面卡片/静态视图不探测活性，成员状态偏保守 |
-| 升级后行为没变 | 宿主按会话固定插件运行时：升级后请新开任务；CLI 更新提示 “Restart zcode to apply” 同理 |
-| 旧团队会话出现在左侧任务栏 | 旧数据遗留：`node dist/team-ctl.mjs sidebar-audit <teamDir> --apply` 归档（默认 dry-run，可复核） |
-| 团队持久记录损坏 | 报 `persisted Agent Teams … payload is invalid`。先备份 `teams/<session_id>/`，再用 `team-ctl state` 复核；不要手工改 `events.jsonl`（会破坏 seq 连续性） |
+| `Duplicate plugin hooks file ignored: hooks/hooks.json` in `plugins list` after install | Known warning: the manifest hooks declaration duplicates the host's auto-discovery of the same path; the host ignores it explicitly. All three hooks still run. Cleanup planned for a later version |
+| Teammate stuck `provisioning` / cannot be created | Check `logs/provider.jsonl` and `logs/daemon-lifecycle.jsonl`; confirm the `zcode` executable is discoverable (`TEAM_ZCODE_BIN` overrides) and member quota `maxMembers` is not exceeded |
+| "Member cannot inherit the Lead model" on spawn/resume | Expected (0.4.0): the only path is following the Lead; when the Lead is on an **official coding plan** (`account:*`/`builtin:*`) or the Provider is deleted/disabled it fails loudly, never silently switching models. Fix: switch the Lead to your own third-party model (ZCode Settings → Model Services) and retry. 0.4.1: spawn pre-checks before registering (no name consumed); the same failure does not retry forever (deterministic rejections suspend; transient faults back off 5s/15s/30s ×3); switching the Lead back or sending a new message resumes delivery and clears the error |
+| Desktop tool calls hang or `Client closed` | Known host limitation (D11): desktop callTool does not rebuild the connection after the daemon is idle-reclaimed. Start a new task and call immediately to hit a live daemon; the panel heartbeat keeps it alive as long as possible |
+| Panel numbers frozen | The panel refreshes via subscription + heartbeat; cross-check with `/team` or `team-ctl state`. Static cards/views do not probe liveness and are conservative |
+| No change after upgrading | The host pins a plugin runtime per conversation: start a new task after upgrading; the CLI's "Restart zcode to apply" hint is the same |
+| Old team sessions appear in the left task list | Leftover data: `node runtime/team-ctl.mjs sidebar-audit <teamDir> --apply` archives them (dry-run by default, reviewable) |
+| Persisted team record corrupt | Reports `persisted Agent Teams … payload is invalid`. Back up `teams/<session_id>/` first, then re-check with `team-ctl state`; never hand-edit `events.jsonl` (breaks seq continuity) |
 
-### 5. 安全清理数据目录
+### 5. Safely wiping the data directory
 
-确认不再需要历史团队后，可整体删除 `$ZCODE_PLUGIN_DATA`（等价于默认卸载的数据处置）。**删除前先备份**；删除后无法恢复任务板与消息。
+Once you no longer need historical teams you may delete `$ZCODE_PLUGIN_DATA` entirely (same data disposal as the default uninstall). **Back up first**; the board and messages cannot be recovered afterwards.
 
-## 限制与偏差（用户可读版，D1–D27）
+## Limitations and deviations (user-readable, D1–D27)
 
-本插件是 ZCode 上对 DSH Agent Teams 的复刻。以下差异均为**已登记、已验收**的适配项，来自《04-能力映射与差距分析》D1–D27（编号以该台账为准）。
+This plugin is a re-implementation of DSH Agent Teams on ZCode. The deviations below are **registered and acceptance-tested** adaptations from the gap analysis ledger D1–D27 (numbering per that ledger).
 
-| 编号 | 你会看到什么 |
+| ID | What you will observe |
 |---|---|
-| D1 | 团队事件写在插件自己的数据目录（JSONL），不写进 Lead 会话日志；会话导出/回滚不包含团队事件 |
-| D2 | “运行中插话”只能在下一次回合边界送达（宿主没有 steer 原语）；目标运行中时消息排队，不会被丢弃或重复 |
-| D3 | `context:"fork"` 在无法真正 fork 时用“fresh + Lead 已完成回合转录（截断）”实现；不是 KV 前缀共享 |
-| D4 | 主 UI 是会话内 MCP Apps 面板；没有原版的头部 hover 按钮/弹层/pin；`::visualize` 快照卡片仅桌面可用 |
-| D5 | 成员会话默认不进行左侧任务栏；面板内提供成员会话查看视图（只读）。旧版遗留的可见行可用 `sidebar-audit` 归档 |
-| D6 | Lead 仍能看见宿主内置 Task 工具（无法禁用）；teammate 侧已禁用 Task，团队工具优先由策略引导 |
-| D7 | 策略文本中“文件版本冲突”一句替换为 ZCode 文件工具的等价语义；其余逐字 |
-| D8 | 协调者是“瞬时”的：daemon 空闲会被宿主回收，任一实例可接任；协调者交替的瞬间可能出现 `TEAM_DISPOSED` 临时错误，重试即可（实测接任 ≤5s） |
-| D9 | 没有 SessionEnd hook：处置靠 daemon 退出时尽力执行 + 下次启动对账；极短宽限下可能只留下可对账的状态 |
-| D10 | 策略通过 SessionStart hook 注入到消息上下文，而非系统提示；注入文本不落 transcript；被禁用 hook 时会有 fail-loud 警告 |
-| D11 | 桌面 callTool 在 daemon 被回收后可能挂起/`Client closed` 且本会话不恢复；新任务可恢复。teammate 走独立进程不受影响 |
-| D13 | 工具条目不声明 `outputSchema`（宿主限制）；输出契约由测试锚定 |
-| D14 | 身份缺失时错误消息里用 `<unknown>` 占位 |
-| D15 | 参数类型错误返回 `TEAM_INVALID_ARGUMENT`，消息为 `param "<key>" must be …`；这些是工具面消息，错误码仍属既有 27 码 |
-| D16 | 同一团队由两个 daemon 服务时（代理模式）：`list_agents` 的 active 成员可能保守显示 `inactive`；`wait_agent` 保守等待、绝不误报 noProgress |
-| D17 | daemon 空闲回收默认**不终止**队友轮次（keep 休眠态）；如需要彻底回收可设 `TEAM_DRAIN_ON_DISPOSE=kill` |
-| D18 | 给 Lead 的“已送达”以 hook 注入回执为准（宿主无直达注入原语，注入不落 transcript）；对外仍是 `{sent:true}` |
-| D19 | hook 读取 daemon 落盘的配置；首次 daemon 启动前 hook 使用默认值（如 `interrupt=true`） |
-| D20 | 空闲 Lead 的唤醒是灰度功能：默认不拉起新回合，消息持久待命；`TEAM_WAKE_LEAD=1` 才启用 |
-| D21 | 静态卡片无活性探测：成员状态按 phase 保守映射（active→inactive、lead 恒 inactive）；实时面板/伴生面板才显示 running |
-| D22 | 诊断工具 `team_ping` 默认不在模型工具列表（模型面 9 个，`interrupt:false` 时 8 个）；`TEAM_DEBUG_TOOLS=1` 才暴露 |
-| D23 | 历史事件名/旧 checkpoint 自动兼容：旧 `team/message` 归一为 `team/message/queued`，旧 delivered 结构归一为字符串数组；历史团队数据可读 |
-| D24 | 策略文本在 SessionStart（startup/resume）注入；Lead 极长会话中途可能因上下文压缩丢失，可重新加载 skill 或开新任务 |
-| D25 | 插件只写宿主任务索引的两个白名单点（会话隔离 anchor 墓碑、`sidebar-audit --apply`）；`db.sqlite` 一律只读 |
-| D26 | Lead 默认 `orchestrator` 模式：主动组队/分配/独立验收，不亲自实现（除一行级修复或无人可派）；`collaborator` 恢复“等你指示” |
-| D27 | 任务 `complete` 是“提交”，Lead 需独立复核后才算验收完成；失败会 `reopen` 并附具体问题，通过则在任务描述里追加验收记录 |
+| D1 | Team events live in the plugin's own data directory (JSONL), not the Lead's session log; session export/rollback excludes team events |
+| D2 | "Interrupting a running member" is delivered at the next turn boundary (the host has no steer primitive); messages queue while the target runs — never dropped or duplicated |
+| D3 | `context:"fork"` falls back to "fresh + Lead's completed-turn transcript (truncated)" when a true fork is impossible; not KV-prefix sharing |
+| D4 | The main UI is the in-conversation MCP Apps panel; no upstream hover button/popover/pin; the `::visualize` snapshot card is desktop-only |
+| D5 | Member sessions stay out of the left task list by default; the panel offers a read-only member conversation view. Legacy visible rows can be archived with `sidebar-audit` |
+| D6 | The Lead still sees the host's built-in Task tools (cannot be disabled); teammates have Task disabled and team tools are policy-preferred |
+| D7 | One sentence about "file version conflicts" in the policy text is replaced with ZCode file-tool semantics; everything else is verbatim |
+| D8 | The coordinator is ephemeral: the daemon is reclaimed by the host when idle and any instance can take over; a momentary `TEAM_DISPOSED` error may appear during handover — just retry (measured takeover ≤5s) |
+| D9 | No SessionEnd hook: disposal is best-effort at daemon exit plus reconciliation on next start; under very short grace only a reconcilable state may remain |
+| D10 | The policy is injected into message context by the SessionStart hook, not the system prompt; injected text does not land in the transcript; disabling hooks triggers a fail-loud warning |
+| D11 | Desktop callTool may hang / `Client closed` after daemon reclaim without recovering in that session; a new task recovers. Teammates use separate processes and are unaffected |
+| D13 | Tool entries declare no `outputSchema` (host limitation); output contracts are pinned by tests |
+| D14 | With missing identity, error messages use an `<unknown>` placeholder |
+| D15 | Argument type errors return `TEAM_INVALID_ARGUMENT` with `param "<key>" must be …`; these are tool-face messages within the existing 27-code set |
+| D16 | When two daemons serve one team (proxy mode): `list_agents` may conservatively show active members as `inactive`; `wait_agent` waits conservatively and never falsely reports noProgress |
+| D17 | Idle reclaim does **not** terminate teammate turns by default (keep-asleep); set `TEAM_DRAIN_ON_DISPOSE=kill` to drain fully |
+| D18 | "Delivered" to the Lead means the hook injection receipt (the host has no direct injection primitive; injection is not in the transcript); externally it is still `{sent:true}` |
+| D19 | Hooks read the config persisted by the daemon; before the first daemon start they use defaults (e.g. `interrupt=true`) |
+| D20 | Waking an idle Lead is a gray feature: by default no new turn is started and messages stay pending; `TEAM_WAKE_LEAD=1` enables it |
+| D21 | Static cards do not probe liveness: member status maps conservatively from phase (active→inactive, lead always inactive); only the live panel/companion shows running |
+| D22 | The diagnostic tool `team_ping` is not in the model tool list by default (9 model-facing tools, 8 with `interrupt:false`); `TEAM_DEBUG_TOOLS=1` exposes it |
+| D23 | Historical event names/old checkpoints auto-upgrade: legacy `team/message` normalizes to `team/message/queued`, old delivered structures to string arrays; historical teams stay readable |
+| D24 | Policy text injects on SessionStart (startup/resume); in very long Lead sessions it may be lost to context compaction — reload the skill or start a new task |
+| D25 | The plugin writes only two whitelisted points in the host task index (session-hiding anchor tombstone, `sidebar-audit --apply`); `db.sqlite` is strictly read-only |
+| D26 | The Lead defaults to `orchestrator`: proactively staffs/assigns/accepts and does not implement itself (except one-line fixes or when nobody can take it); `collaborator` restores "waits for your instruction" |
+| D27 | Task `complete` means "submitted": the Lead must independently verify before acceptance; failures are `reopen`ed with concrete findings, passes append an acceptance note to the task |
 
-## 文档
+## Documentation
 
-- [使用手册（截图版）](docs/使用手册.md)
-- [Repo Wiki：架构、流程与源码导航（仅源码仓库，不随插件包分发）](docs/repo-wiki.md)
-- 内部移交（源码仓库 `docs/`，不随包分发）：`架构说明-as-built.md`、`运维手册.md`、`测试手册.md`
-- [变更记录](CHANGELOG.md)、[许可证](LICENSE)、[第三方声明](THIRD-PARTY-NOTICES.md)
+- [User manual with screenshots (Chinese)](docs/使用手册.md)
+- [Repo wiki: architecture, flows and source navigation (source repo only, not shipped)](docs/repo-wiki.md)
+- Internal handover docs (source repo `docs/`, not shipped): `架构说明-as-built.md`, `运维手册.md`, `测试手册.md`
+- [Changelog](CHANGELOG.md), [License](LICENSE), [Third-party notices](THIRD-PARTY-NOTICES.md)
+- Source repository: <https://github.com/Vincent-chk/zcode-agent-team>

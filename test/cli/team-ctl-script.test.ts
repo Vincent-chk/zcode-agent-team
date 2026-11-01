@@ -58,7 +58,7 @@ function waitFor(predicate: () => boolean, timeoutMs = 10_000, stepMs = 100): Pr
 
 beforeAll(async () => {
   root = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "at-ctl-"));
-  // build.mjs 生成 dist/team-ctl.mjs（薄启动器的依赖）
+  // build.mjs 生成 runtime/team-ctl.mjs（薄启动器的依赖）
   await new Promise<void>((resolve, reject) => {
     execFile(process.execPath, [path.join(PROJ, "scripts", "build.mjs")], { maxBuffer: 32 * 1024 * 1024 }, (err) => {
       if (err) reject(err);

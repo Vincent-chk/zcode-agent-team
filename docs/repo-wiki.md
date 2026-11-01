@@ -70,7 +70,7 @@ flowchart TD
 | 文件 | 职责 |
 |---|---|
 | [.zcode-plugin/plugin.json](../.zcode-plugin/plugin.json) | 插件标识、版本、6 项 userConfig、skills、commands、hooks 和会话面板 surface |
-| [.mcp.json](../.mcp.json) | 启动 `dist/team-daemon.mjs`，设置项目目录和插件数据目录，将 userConfig 映射为环境变量 |
+| [.mcp.json](../.mcp.json) | 启动 `runtime/team-daemon.mjs`，设置项目目录和插件数据目录，将 userConfig 映射为环境变量 |
 | [hooks/hooks.json](../hooks/hooks.json) | 注册 SessionStart（startup/resume）、Stop、UserPromptSubmit 三类事件 |
 | [skills/team-coordination/SKILL.md](../skills/team-coordination/SKILL.md) | 可手动重新加载的团队协作策略；主注入通道是 SessionStart hook |
 | [commands/team.md](../commands/team.md) | `/team` 状态摘要与面板、CLI 入口；命令职责是只读展示 |
@@ -326,13 +326,13 @@ node scripts/release.mjs --check-only
 
 | 输入 | 产物 |
 |---|---|
-| `src/daemon.ts` | `dist/team-daemon.mjs` |
-| `src/hooks.ts` | `dist/team-hooks.mjs` |
-| `src/cli/main.ts` | `dist/team-ctl.mjs` |
-| `src/provider/detach-helper.mjs`、`app-server-bridge.mjs` | dist 下同名独立子进程资产，直接复制 |
-| `src/panel/main.ts`、`companion-main.ts` | `dist/ui/panel.js`、`companion.js`，再内联进两份 HTML |
+| `src/daemon.ts` | `runtime/team-daemon.mjs` |
+| `src/hooks.ts` | `runtime/team-hooks.mjs` |
+| `src/cli/main.ts` | `runtime/team-ctl.mjs` |
+| `src/provider/detach-helper.mjs`、`app-server-bridge.mjs` | runtime 下同名独立子进程资产，直接复制 |
+| `src/panel/main.ts`、`companion-main.ts` | `runtime/ui/panel.js`、`companion.js`，再内联进两份 HTML |
 
-面板 HTML 必须自包含且不超过 4MiB。修改以 src 为准，由构建更新 dist；不要手改生成包作为实现源。`dev-install.mjs` 提供 status/install/uninstall/reinstall；安装直接更新用户 `~/.zcode/cli/config.json` 的 `plugins.dirs` 和 `enabledPlugins`，首次写入前保存备份。该脚本不构建，不调用市场安装命令。
+面板 HTML 必须自包含且不超过 4MiB。修改以 src 为准，由构建更新 runtime；不要手改生成包作为实现源。`dev-install.mjs` 提供 status/install/uninstall/reinstall；安装直接更新用户 `~/.zcode/cli/config.json` 的 `plugins.dirs` 和 `enabledPlugins`，首次写入前保存备份。该脚本不构建，不调用市场安装命令。
 
 ## 10. 测试与验收导航
 

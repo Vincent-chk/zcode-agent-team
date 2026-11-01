@@ -1,7 +1,7 @@
 // S1 协作剧本（SF01；真模型）：2 fresh 队友 + 3 任务（task-2 依赖 task-1）+ 双向消息 ≥4 +
 // Lead wait + 汇总 + 事件重放 + 产物文件。
 // 控制流由脚本驱动（与 Lead 模型同权的 MCP 工具调用）；模型负责真实执行任务/回复。
-// 运行前置：dist 已构建、插件已 dev-install（真 zcode 会话加载插件）、本机模型可用。
+// 运行前置：runtime 已构建、插件已 dev-install（真 zcode 会话加载插件）、本机模型可用。
 import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -196,7 +196,7 @@ try {
   const stateRun = await new Promise((resolve) => {
     execFile(
       process.execPath,
-      [path.join(PROJ, "dist", "team-ctl.mjs"), "state", teamDir, "--json", "--team", leadId],
+      [path.join(PROJ, "runtime", "team-ctl.mjs"), "state", teamDir, "--json", "--team", leadId],
       { maxBuffer: 16 * 1024 * 1024, timeout: 60_000 },
       (err, stdout, stderr) => resolve({ ok: !err, stdout: String(stdout), stderr: String(stderr) }),
     );

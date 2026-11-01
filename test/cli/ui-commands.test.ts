@@ -1,5 +1,5 @@
 // team-ctl transcript / widget 脚本集成测试（stage-5 T5.3/T5.7 CLI 对等；F12）。
-// 验证 dist 打包链路（薄启动器 → dist/team-ctl.mjs）真实输出：
+// 验证 runtime 打包链路（薄启动器 → runtime/team-ctl.mjs）真实输出：
 //  - transcript：lead/成员会话流合成（db 只读导出 + framed 徽标回填 + 分页游标 + --json）；
 //  - widget：::visualize 片段 / standalone 静态页 / --out 落盘（含路径穿越防护）；
 //  - state：既有基线不回归（新命令并入后 usage 正确）。
@@ -75,7 +75,7 @@ beforeAll(async () => {
   createTestDb(dbPath);
   db = new DatabaseSync(dbPath);
 
-  // dist/team-ctl.mjs（薄启动器依赖）
+  // runtime/team-ctl.mjs（薄启动器依赖）
   await new Promise<void>((resolve, reject) => {
     execFile(process.execPath, [path.join(PROJ, "scripts", "build.mjs")], { maxBuffer: 32 * 1024 * 1024 }, (err) => {
       if (err) reject(err);
@@ -251,12 +251,12 @@ describe("usage 回归（新命令并入）", () => {
   });
 });
 
-describe("dist 直接执行（/team 文档路径）", () => {
-  it("node dist/team-ctl.mjs state <teamDir> 自执行且有输出（薄启动器之外的第二入口）", async () => {
+describe("runtime 直接执行（/team 文档路径）", () => {
+  it("node runtime/team-ctl.mjs state <teamDir> 自执行且有输出（薄启动器之外的第二入口）", async () => {
     const r = await new Promise<RunResult>((resolve) => {
       const child = execFile(
         process.execPath,
-        [path.join(PROJ, "dist", "team-ctl.mjs"), "state", teamDir],
+        [path.join(PROJ, "runtime", "team-ctl.mjs"), "state", teamDir],
         { maxBuffer: 16 * 1024 * 1024, env: { ...process.env, TEAM_DB_PATH: dbPath } },
         (err, stdout, stderr) => {
           resolve({ code: child.exitCode ?? (err ? 1 : 0), stdout, stderr });

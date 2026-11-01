@@ -1,7 +1,7 @@
 // S6 hook 通道剧本（SF05b；生产 hook 二进制确定性矩阵）：
 //   Lead 回合内消息到达 → Stop block（≤3 次/run）→ 预算耗尽后 UserPromptSubmit / SessionStart 接力；
 //   全程 delivered/回执不重复，每条消息恰一次注入；注入文本可区分发送者与内容边界。
-// 说明：本剧本直接执行 dist/team-hooks.mjs（与宿主同一二进制/同一 stdin 协议），
+// 说明：本剧本直接执行 runtime/team-hooks.mjs（与宿主同一二进制/同一 stdin 协议），
 // 不依赖模型可用性；真实模型回合中的同一机制由 S1 的 resume 汇总与 SU 盲测覆盖。
 import { execFile } from "node:child_process";
 import crypto from "node:crypto";
@@ -61,7 +61,7 @@ function runHook(hookEvent, payload) {
   return new Promise((resolve) => {
     const child = execFile(
       process.execPath,
-      [path.join(PROJ, "dist", "team-hooks.mjs")],
+      [path.join(PROJ, "runtime", "team-hooks.mjs")],
       {
         env: {
           ...process.env,

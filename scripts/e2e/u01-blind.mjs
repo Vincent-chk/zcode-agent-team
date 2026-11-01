@@ -328,7 +328,7 @@ try {
   // 成员 transcript 导出（team-ctl transcript）
   for (const m of members) {
     await new Promise((resolve) => {
-      execFile(process.execPath, [path.join(PROJ, "dist", "team-ctl.mjs"), "transcript", teamDir, m.name], { timeout: 60_000, maxBuffer: 8 * 1024 * 1024 }, () => resolve(null));
+      execFile(process.execPath, [path.join(PROJ, "runtime", "team-ctl.mjs"), "transcript", teamDir, m.name], { timeout: 60_000, maxBuffer: 8 * 1024 * 1024 }, () => resolve(null));
     }).catch(() => null);
   }
   evidence.bundleDir = bundleDir;

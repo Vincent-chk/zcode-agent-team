@@ -272,7 +272,7 @@ try {
 
   // 判定 10【新】：事件重放一致性
   const stateRun = await new Promise((resolve) => {
-    execFile(process.execPath, [path.join(PROJ, "dist/team-ctl.mjs"), "state", teamDir, "--json", "--team", leadId], { maxBuffer: 16 * 1024 * 1024, timeout: 60_000 }, (err, stdout, stderr) => resolve({ ok: !err, stdout: String(stdout), stderr: String(stderr) }));
+    execFile(process.execPath, [path.join(PROJ, "runtime/team-ctl.mjs"), "state", teamDir, "--json", "--team", leadId], { maxBuffer: 16 * 1024 * 1024, timeout: 60_000 }, (err, stdout, stderr) => resolve({ ok: !err, stdout: String(stdout), stderr: String(stderr) }));
   });
   let replayed = null;
   try { replayed = JSON.parse(stateRun.stdout); } catch { replayed = null; }

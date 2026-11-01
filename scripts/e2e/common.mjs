@@ -62,7 +62,7 @@ export function loadConfig(args = parseArgv()) {
     ws,
     model: args.model ?? process.env.E2E_MODEL ?? "deepseek-flash",
     teamPrefix: args.prefix ?? process.env.E2E_TEAM_PREFIX ?? "sess_e2e",
-    daemon: args.daemon ?? path.join(PROJ, "dist", "team-daemon.mjs"),
+    daemon: args.daemon ?? path.join(PROJ, "runtime", "team-daemon.mjs"),
     fakeZcode: FAKE_ZCODE,
   };
 }
@@ -116,7 +116,7 @@ export function runZcode(cfg, { prompt, extraArgs = [], cwd = cfg.ws, timeoutMs 
 // ---------------------------------------------------------------- daemon（MCP stdio）
 
 /**
- * 启动 dist/team-daemon.mjs（生产形态：stdio NDJSON）。
+ * 启动 runtime/team-daemon.mjs（生产形态：stdio NDJSON）。
  * 返回 { ready, callTool, notifications, events, kill, waitExit, stderr, pid }。
  */
 export function startDaemon(cfg, { dataRoot = cfg.dataRoot, projectDir = cfg.ws, env = {}, dbPath = cfg.dbPath, label = "daemon" } = {}) {

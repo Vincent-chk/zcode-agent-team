@@ -2,7 +2,7 @@
 //  - 3 成员对同一 pending 任务并发 claim ×20 轮：每轮恰一成功，失败方 STALE/ALREADY_CLAIMED；
 //  - revision 连续（无断裂/无回退）；
 //  - 50 条并发消息：delivered 集合 = queued 集合、messageId 唯一、target 与源头一致。
-// 依赖：npm run build（dist/team-daemon.mjs）；TEAM_DB_PATH 指向测试库（本脚本自建）。
+// 依赖：npm run build（runtime/team-daemon.mjs）；TEAM_DB_PATH 指向测试库（本脚本自建）。
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
