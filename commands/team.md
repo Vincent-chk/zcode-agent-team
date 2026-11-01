@@ -26,8 +26,8 @@ allowed-tools: Bash
      空任务板 → `暂无共享任务，可以通过对话创建`。
    - en 环境用英文词典值（Members/Shared tasks/Pending/In progress/Completed/Owner/Unowned）。
 4. **按运行环境追加载体指引**（三档刷新语义，D4 口径）：
-   - **桌面（ZCode Desktop 会话）**：提示「可从会话面板入口打开『智能体团队』面板（自动实时：
-     订阅推送 ≤1s，无需刷新）」；spawn_teammate 工具已携带 `_meta.ui.surface` 定向打开提示；
+   - **桌面（ZCode Desktop 会话）**：提示「打开面板：会话右侧『+』→『查看所有插件』→『个人』→『智能体团队』→『打开』；宿主『新标签页』里含『智能体团队』入口时可直接从『新标签页』打开
+     （自动实时：订阅推送 ≤1s，无需刷新）」；spawn_teammate 工具已携带 `_meta.ui.surface` 定向打开提示；
    - **桌面内容引用（用户要求可视化卡片时）**：用 Bash 执行
      `node <team-ctl> widget <teamDir> --out <会话可视化目录>/team-widget.html --theme <light|dark> --lang <zh|en>`，
      然后在回复中单独一行输出内容引用（手动刷新 = 重跑 /team）：
