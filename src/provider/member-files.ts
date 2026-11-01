@@ -77,6 +77,24 @@ export interface Receipt {
   ts: string;
 }
 
+/**
+ * 〔issue #9 三档化 D28〕该团队是否**曾创建过成员**（auto 档注入门控 + daemon 首建队提示用）。
+ * 判定口径：`<teamDir>/members/` 下存在 **≠ leadSessionId** 的条目（spawn 落盘的 UUID 成员目录；
+ * failed/provisioning 中断的也算——用户拍板「曾建队即持久存在，含 inactive/failed/退场成员」）。
+ * 注意两个易错信号**不可用**：`lead/state.json`（hook 每回合无条件写）与 `events.jsonl`
+ * （任意团队工具首调即建空日志）——它们在未建队会话也存在。
+ * lead 自身的回执目录 `members/<leadSessionId>/` 不算成员（目录名 = 原始 sessionId，非 UUID）。
+ */
+export function teamEverCreated(teamDir: string, leadSessionId: string): boolean {
+  let entries: string[];
+  try {
+    entries = fs.readdirSync(path.join(teamDir, "members"));
+  } catch {
+    return false; // members/ 不存在 = 从未 spawn 过
+  }
+  return entries.some((entry) => entry !== leadSessionId);
+}
+
 export interface StopBudget {
   /** 本次 run 的 block 计数；runKey 变更时复位。 */
   runKey: string;

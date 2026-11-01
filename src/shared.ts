@@ -2,7 +2,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { validateTeamLimits, validateLeadMode, type LeadMode } from "./domain/config.js";
+import { validateTeamLimits, normalizeLeadMode, type LeadMode } from "./domain/config.js";
 
 export const PLUGIN_ID = "agent-team";
 
@@ -39,9 +39,11 @@ export function logsDir(): string {
 
 /** daemon 落盘的有效运行配置（hooks 读不到 userConfig，只能经此文件取 interrupt/leadMode 等开关）。 */
 export interface RuntimeConfig {
-  version: 1;
+  /** 〔issue #9 三档化 D28〕v2 = leadMode 为三档枚举；v1 旧文件的 leadMode 视为过期（见 readRuntimeConfig）。 */
+  version: 2;
   interrupt: boolean;
-  leadMode: LeadMode;
+  /** 三档枚举；undefined = 文件未携带有效值（v1 旧文件/垃圾值），调用方回落默认链。 */
+  leadMode?: LeadMode;
   limits: LimitConfig;
   updatedAt: string;
 }
@@ -54,9 +56,14 @@ export function readRuntimeConfig(): RuntimeConfig | undefined {
   try {
     const raw = fs.readFileSync(runtimeConfigPath(), "utf8");
     const parsed = JSON.parse(raw) as Partial<RuntimeConfig>;
-    if (parsed.version !== 1 || typeof parsed.interrupt !== "boolean") return undefined;
-    // v1 兼容（D26）：旧文件无 leadMode 字段 → 回落默认，不让整个配置判无效而丢 interrupt。
-    return { ...(parsed as RuntimeConfig), leadMode: parsed.leadMode === "collaborator" ? "collaborator" : "orchestrator" };
+    if (typeof parsed.interrupt !== "boolean") return undefined;
+    // 〔issue #9 三档化 D28〕v1 旧文件（version !== 2 或携带旧枚举值）：leadMode 一律视为过期
+    // ——旧默认 orchestrator 是 daemon 落的盘，不能把升级用户锁进激进档；interrupt/limits 照旧保留
+    // （沿用 D26「不让整个配置判无效而丢 interrupt」的先例）。daemon 下次启动重写为 v2。
+    if (parsed.version !== 2) {
+      return { ...(parsed as Omit<RuntimeConfig, "version" | "leadMode"> as RuntimeConfig), version: 2 };
+    }
+    return { ...(parsed as RuntimeConfig), leadMode: normalizeLeadMode(parsed.leadMode) };
   } catch {
     return undefined;
   }
@@ -66,7 +73,7 @@ export function writeRuntimeConfig(input: { interrupt: boolean; leadMode: LeadMo
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const tmp = `${file}.tmp-${process.pid}`;
   const doc: RuntimeConfig = {
-    version: 1,
+    version: 2,
     interrupt: input.interrupt,
     leadMode: input.leadMode,
     limits: input.limits,
@@ -109,13 +116,12 @@ export function readHostLeadModeOverride(homedir: string = os.homedir()): LeadMo
     }
   }
   if (strings.length === 0) return undefined;
-  const first = strings[0] as string;
-  // 只接受合法枚举且全键一致；垃圾值/冲突 → 退回下一层（validateLeadMode 不在此用——
-  // 它的回落语义是「变默认」，这里要的是「忽略、让下层决定」）。
-  if (strings.every((v) => v === first) && (first === "orchestrator" || first === "collaborator")) {
-    return validateLeadMode(first);
-  }
-  return undefined;
+  // 归一后判定（〔issue #9 三档化 D28〕：旧值 orchestrator/collaborator → auto；垃圾值 → 忽略本层）；
+  // 全键一致（归一后比较）才返回，冲突 → 退回下一层（回落语义仍是「忽略、让下层决定」）。
+  const normalized = strings.map((v) => normalizeLeadMode(v));
+  if (normalized.some((v) => v === undefined)) return undefined;
+  const first = normalized[0]!;
+  return normalized.every((v) => v === first) ? first : undefined;
 }
 
 export function appendJsonl(file: string, obj: unknown): void {

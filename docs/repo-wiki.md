@@ -30,7 +30,7 @@
 | 轮次 | 一次 headless ZCode 进程执行；成员可先后经历多个轮次 |
 | 协调者 | 某个团队事件日志当前持有文件锁的唯一写者；进程退出后可由其他实例接任。hooks 仍可独立写回执、预算和 Lead 状态等辅助文件 |
 
-默认 `leadMode=orchestrator`：策略要求 Lead 自主拆活、分派、复核和汇总。`collaborator` 模式省去主动编排段，按用户指示组队。两者使用相同工具和执行权限。
+〔issue #9 三档化 D28，2026-11-02〕默认 `leadMode=auto`（按需委派）：未建队时不注入任何模式段（普通单 agent 语义），该会话曾建过队（`members/` 有非 sessionId 成员目录，failed 也算、持久判定）后注入按需段（委派价值判断+正反例）。`always` 档保留原 D26 主动编排段（自主拆活、分派、复核、汇总）；`off` 档完全不注入团队上下文且不注册团队工具。旧值 `orchestrator`/`collaborator` 统一迁移 `auto`；auto/always 使用相同工具和执行权限，off 无工具面。
 
 需要区分三组语义：
 
@@ -298,9 +298,9 @@ Lead 的收件回执和 Stop 预算也使用 `members/<teamId>/` 下的对应文
 | `maxMessageBytes` | 65536 | `TEAM_MAX_MESSAGE_BYTES` |
 | `disposalTimeoutMs` | 5000 | `TEAM_DISPOSAL_TIMEOUT_MS` |
 | `interrupt` | true | `TEAM_INTERRUPT` |
-| `leadMode` | orchestrator | `TEAM_LEAD_MODE` |
+| `leadMode` | auto | `TEAM_LEAD_MODE` |
 
-四个数值限额必须是正安全整数；非法配置会阻止正常工具调用并显式报错。非法 leadMode 则记录告警后回到 orchestrator。hooks 的 leadMode 有环境变量、宿主配置直读、runtime-config 和默认值的回退链，避免首次 hook 早于 daemon 启动时丢失选择。
+四个数值限额必须是正安全整数；非法配置会阻止正常工具调用并显式报错。非法 leadMode 则记录告警后回到默认 `auto`；旧值 `orchestrator`/`collaborator` 归一为 `auto`（daemon 记迁移告警）。hooks 的 leadMode 有环境变量、宿主配置直读（归一后判定）、runtime-config（v2；v1 旧文件 leadMode 视为过期回落默认）和默认值的回退链，避免首次 hook 早于 daemon 启动时丢失选择。
 
 代码与构建目标要求 Node ≥ 22；sqlite 使用 Node 自带 `node:sqlite`，没有额外原生绑定。宿主会话库 `db.sqlite` 仅读取，创建会话与改模型通过宿主接口；宿主 `~/.zcode/v2/tasks-index.sqlite` 写入局限于 anchor tombstone 和显式 sidebar audit，后者也会补 anchor tombstone。
 
@@ -346,7 +346,7 @@ node scripts/release.mjs --check-only
 | hooks、面板帧、详情、CLI | `test/hooks/`、`test/panel/`、`test/ui-core/`、`test/cli/` |
 | daemon 协议装配 | `scripts/smoke-daemon.mjs`；先 build |
 | UI 几何、语言、主题、摘要 | `scripts/visual-regress.mjs`、`scripts/f10-companion.mjs`；需 Chromium |
-| 真实协作与 fork、hooks、编排 | `scripts/e2e/run.mjs` 的 S1–S7；部分剧本使用真实模型 |
+| 真实协作与 fork、hooks、编排 | `scripts/e2e/run.mjs` 的 S1–S8（S7=显式 always 编排旅程；S8=auto 默认链冒烟，issue #9 D28）；部分剧本使用真实模型 |
 | 崩溃、升级、性能 | `scripts/crash-matrix.mjs`、`upgrade-drill.mjs`、`perf-baseline.mjs` |
 | 权限和文件边界、策略文本一致性 | `scripts/security-audit.mjs`、`text-audit.mjs` |
 

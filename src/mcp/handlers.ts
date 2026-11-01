@@ -16,6 +16,9 @@ import { errorResult, successResult, withFailLoud } from "./results.js";
 import { resolveIdentity, type CallMeta, type ResolvedIdentity } from "./identity.js";
 import type { ProgressSink, TeamToolBackend } from "./backend.js";
 import { TEAM_TOOL_NAMES } from "./tools.js";
+import { FIRST_SPAWN_NOTE } from "./policy.js";
+import { teamPaths } from "../coord/paths.js";
+import { teamEverCreated } from "../provider/member-files.js";
 
 export interface HandleToolOptions {
   backend: TeamToolBackend;
@@ -25,6 +28,12 @@ export interface HandleToolOptions {
   meta: CallMeta | undefined;
   /** 工具参数（callTool params.arguments 原样；守卫在方法表/域层）。 */
   args: Record<string, unknown>;
+  /**
+   * 〔issue #9 三档化 D28〕daemon 已解析的 leadMode：off → 全部团队工具拒绝（tools/list 已空，
+   * 这里按 interrupt_agent 同款「未注册 → 未知工具」口径兜底直连调用）；auto → 首建队附提示。
+   * 缺省（单测直调）= 无档位行为。
+   */
+  leadMode?: string;
   /** progress 发射口（wait_agent 保活；宿主 progressToken 在场时由 server 层提供）。 */
   emitProgress?: ProgressSink;
   /** MCP 请求取消信号（wait_agent 透传；宿主取消时中止等待）。 */
@@ -37,6 +46,12 @@ export async function handleTeamToolCall(
   opts: HandleToolOptions,
   tool: string,
 ): Promise<CallToolResult> {
+  // 〔issue #9 D28〕off 档：团队工具整体禁用（tools/list 已不注册；此处兜底拒绝直接调用）。
+  if (opts.leadMode === "off") {
+    return errorResult(
+      new TypeError(`unsupported team tool: ${tool} (leadMode "off" — Agent Teams disabled)`),
+    );
+  }
   let identity: ResolvedIdentity;
   try {
     identity = resolveIdentity({
@@ -48,9 +63,18 @@ export async function handleTeamToolCall(
   } catch (err) {
     return errorResult(err); // fail-closed：TEAM_NOT_MEMBER（identity 层抛）
   }
+  // 〔issue #9 D28〕auto 档首建队提示：spawn 前 members/ 尚无成员条目 → 本次即首成员；
+  // 成功结果尾部附 FIRST_SPAWN_NOTE（独立 text 块，withFailLoud 同款，不改 JSON 本体）。
+  const probeFirstSpawn =
+    opts.leadMode === "auto" &&
+    tool === "spawn_teammate" &&
+    !teamEverCreated(teamPaths(opts.dataRoot, identity.teamId).teamDir, identity.teamId);
   try {
     const result = await dispatch(opts, identity, tool);
-    return withFailLoud(successResult(result), identity);
+    const success = withFailLoud(successResult(result), identity);
+    return probeFirstSpawn
+      ? { ...success, content: [...success.content, { type: "text", text: FIRST_SPAWN_NOTE }] }
+      : success;
   } catch (err) {
     return withFailLoud(errorResult(err), identity);
   }

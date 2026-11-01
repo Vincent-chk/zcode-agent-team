@@ -163,8 +163,8 @@
 | 18 | fork 注入 | `[Agent Teams fork context]` + Lead 转录 + 任务在尾 | S2（真模型） |
 | 19 | wait 被唤醒 | timedOut=false（变化触发） | S1 / perf 11ms |
 | 20 | hook 三通道 | stop 3 次后 UPS/SessionStart 接力、回执恰一次 | S6（10 项） |
-| 21 | D26 编排段 | orchestrator 注入含段且禁 interrupt_agent；collaborator/两参缺省不含段 | `scripts/text-audit.mjs`（D26 项）+ `test/mcp/policy-injection.test.ts` |
-| 22 | 工具面 9 个（0.4.0） | wire 清单逐字节 = 期望 JSON（无 team_ping；无 member_set_model；spawn 无模型参数） | `test/mcp/tools-snapshot.test.ts` |
+| 21 | D26/D28 模式段三档 | always 注入编排段、auto 建队后注入按需段（未建队/teammate/缺省无段）、off 完全无输出；三文本禁 interrupt_agent/do not resend；auto 首建队结果附 FIRST_SPAWN_NOTE | `scripts/text-audit.mjs`（D26/D28 项）+ `test/mcp/policy-injection.test.ts` + `test/mcp/lead-mode-tri.test.ts` |
+| 22 | 工具面 9 个（0.4.0；D28 增 off=0） | wire 清单逐字节 = 期望 JSON（无 team_ping；无 member_set_model；spawn 无模型参数；leadMode=off → 0 团队工具+调用拒绝） | `test/mcp/tools-snapshot.test.ts` + `test/mcp/lead-mode-tri.test.ts`（wire 层 off） |
 | 23 | 模型目录脱敏（内部；0.4.0 起 `team://models` 资源已下线） | provider 读目录输出无 `apiKey`/`baseURL`/凭据值；mtime 缓存 | `test/provider/model-catalog.test.ts`；`test/mcp/tools-snapshot.test.ts`（资源面反向断言：无 team://models） |
 | 24 | 成员无配置入口（0.4.0 反向） | 全部渲染路径无 `data-member-gear`/`.member-card`/弹窗节点 | `test/ui-core/render.test.ts`、`scripts/visual-regress.mjs`（gearCount=0 全页断言） |
 | 25 | 零凭据输入（全页面） | 全 76 页无 `input[type=password]`/`textarea`/凭据字段 | `scripts/visual-regress.mjs` |
@@ -183,7 +183,7 @@
 
 - 02 规格 §1–§14 全部有映射（含子节）；不适用项 5 条均给出理由。
 - 27 错误码、4 限额、25 词典键、4 事件类型在自动化审计中逐字核对；工具面 0.4.0 起 = 9（§18/§19 记录增删演变）。
-- 偏差登记：D1–D27（D19–D25 见 04；D26/D27 见 stage-6.5）；stage-8 适配登记见 §18；0.4.0 收敛注销见 §19。
+- 偏差登记：D1–D28（D19–D25 见 04；D26/D27 见 stage-6.5；**D28 = issue #9 三档化**：默认 auto（建队前不注入模式段、建队后注入按需段）、always 保留主动编排、off 全关（0 工具）；旧值 orchestrator/collaborator 统一迁移 auto；runtime-config 升 v2（v1 旧文件 leadMode 过期回落默认）；auto 中途首建队以 spawn 首成员结果尾部 FIRST_SPAWN_NOTE 补位）；stage-8 适配登记见 §18；0.4.0 收敛注销见 §19。
 
 ## 18. stage-8 模型可配置化（2026-10-24；F33–F36）
 

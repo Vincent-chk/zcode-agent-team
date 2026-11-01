@@ -63,10 +63,10 @@ export interface ToolDefinition {
 /** 9 工具注册表（顺序 = stage-3 任务书列举序；0.4.0 注销 member_set_model；快照与 tools/list 同源）。 */
 export const TEAM_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
   {
-    // 02 §9.3
+    // 02 §9.3（〔issue #9 三档化 D28〕描述去 orchestrator 档位措辞，改模式中立的按需口径）
     name: "spawn_teammate",
     description:
-      "Create one named, durable teammate. Only the Team Lead may call this tool. In orchestrator mode, create teammates proactively when the goal benefits from delegation, within the member limit. The teammate automatically follows the Lead's latest confirmed model and reasoning level on every turn; there is no per-member model option.",
+      "Create one named, durable teammate. Only the Team Lead may call this tool. Create teammates when the goal clearly benefits from delegation — multiple roles in parallel, disjoint write scopes, or long tasks needing their own context — within the member limit. The teammate automatically follows the Lead's latest confirmed model and reasoning level on every turn; there is no per-member model option.",
     inputSchema: {
       type: "object",
       properties: {
@@ -207,10 +207,10 @@ export const TEAM_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     },
   },
   {
-    // 02 §9.12
+    // 02 §9.12（〔issue #9 三档化 D28〕描述去 orchestrator 档位措辞）
     name: "team_task_update",
     description:
-      "Compare-and-set a shared task action using the latest revision from team_task_get or team_task_list. In orchestrator mode, the Lead verifies a completed task and reopens it with concrete findings on failure.",
+      "Compare-and-set a shared task action using the latest revision from team_task_get or team_task_list. When the Lead verifies a completed task, reopen it with concrete findings on failure.",
     inputSchema: {
       type: "object",
       properties: {
@@ -254,10 +254,15 @@ export const TEAM_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
 export const TEAM_TOOL_NAMES: ReadonlySet<string> = new Set(TEAM_TOOL_DEFINITIONS.map((t) => t.name));
 
 /**
- * 工具表按 interrupt 开关裁剪（〔对齐轮〕0.2.1 D3：interrupt?: boolean 默认 true；
- * false 时 9 工具——interrupt_agent 不注册（策略插值同步变化，见 policy.ts teamPolicy））。
+ * 工具表按开关裁剪（〔对齐轮〕0.2.1 D3：interrupt?: boolean 默认 true，false 时 8 工具——
+ * interrupt_agent 不注册，策略插值同步变化见 policy.ts teamPolicy；
+ * 〔issue #9 三档化 D28〕leadMode "off" 时团队工具**全部不注册**（返回空表）——off = 插件
+ * 对模型不可见；auto/always 均为 9/8 工具）。
  */
-export function teamToolDefinitions(options: { interrupt?: boolean } = {}): readonly ToolDefinition[] {
+export function teamToolDefinitions(
+  options: { interrupt?: boolean; leadMode?: string } = {},
+): readonly ToolDefinition[] {
+  if (options.leadMode === "off") return [];
   const interrupt = options.interrupt ?? true;
   return interrupt
     ? TEAM_TOOL_DEFINITIONS
@@ -265,7 +270,7 @@ export function teamToolDefinitions(options: { interrupt?: boolean } = {}): read
 }
 
 /** 工具名集合（按开关键裁；daemon tools/list 与分派使用）。 */
-export function teamToolNames(options: { interrupt?: boolean } = {}): ReadonlySet<string> {
+export function teamToolNames(options: { interrupt?: boolean; leadMode?: string } = {}): ReadonlySet<string> {
   return new Set(teamToolDefinitions(options).map((t) => t.name));
 }
 

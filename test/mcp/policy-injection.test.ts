@@ -26,10 +26,13 @@ import {
   FAIL_LOUD_WARNING,
   NO_PROGRESS_MESSAGE,
   ORCHESTRATOR_SECTION_TEXT,
+  ON_DEMAND_SECTION_TEXT,
+  FIRST_SPAWN_NOTE,
 } from "../../src/mcp/policy.js";
 import { TEAM_TOOL_DEFINITIONS } from "../../src/mcp/tools.js";
 import { readSessionRegistry, safeSessionKey, upsertSessionEntry } from "../../src/mcp/identity.js";
 import { readHostLeadModeOverride } from "../../src/shared.js";
+import { teamPaths } from "../../src/coord/paths.js";
 
 const PROJ = path.resolve(import.meta.dirname, "../..");
 const HOOKS = path.join(PROJ, "runtime", "team-hooks.mjs");
@@ -119,8 +122,8 @@ describe("定版文本保真（三层同源）", () => {
       expect(text.startsWith("\n")).toBe(false);
       expect(text.endsWith("\n")).toBe(false);
     }
-    // SESSION_START_CONTEXT = 策略 + Lead 身份 + 编排段（默认 orchestrator）+ 暗号（〔agent-team〕 前缀块）
-    expect(SESSION_START_CONTEXT).toBe(buildSessionStartContext(IDENTITY_LEAD_TEXT, true, "orchestrator"));
+    // 〔issue #9 D28〕SESSION_START_CONTEXT = 策略 + Lead 身份（新默认 auto·未建队 = 无模式段）
+    expect(SESSION_START_CONTEXT).toBe(buildSessionStartContext(IDENTITY_LEAD_TEXT, true));
     expect(SESSION_START_CONTEXT).toContain(IDENTITY_LEAD_TEXT);
   });
 
@@ -156,41 +159,58 @@ describe("定版文本保真（三层同源）", () => {
   });
 });
 
-describe("〔stage-6.5 D26〕Lead 编排模式附加段（分层注入）", () => {
-  it("orchestrator：Lead 注入含编排段；定版常量 = 默认模式；禁词与长度红线", () => {
-    const ctx = buildSessionStartContext(IDENTITY_LEAD_TEXT, true, "orchestrator");
+describe("〔stage-6.5 D26；issue #9 D28〕Lead 模式附加段（三档分层注入）", () => {
+  it("always：注入编排段；禁词与长度红线", () => {
+    const ctx = buildSessionStartContext(IDENTITY_LEAD_TEXT, true, ORCHESTRATOR_SECTION_TEXT);
     expect(ctx).toContain(ORCHESTRATOR_SECTION_TEXT);
-    expect(SESSION_START_CONTEXT).toBe(ctx);
-    // 红线：编排段不得引入 interrupt_agent / do not resend（text-audit #4 / audit-fixes 检查面）
-    expect(ORCHESTRATOR_SECTION_TEXT).not.toContain("interrupt_agent");
-    expect(ORCHESTRATOR_SECTION_TEXT).not.toContain("do not resend");
+    // 红线：模式段/提示不得引入 interrupt_agent / do not resend（text-audit / audit-fixes 检查面）
+    for (const text of [ORCHESTRATOR_SECTION_TEXT, ON_DEMAND_SECTION_TEXT, FIRST_SPAWN_NOTE]) {
+      expect(text).not.toContain("interrupt_agent");
+      expect(text).not.toContain("do not resend");
+    }
     expect(ctx.length).toBeLessThan(24_000);
+    expect(buildSessionStartContext(IDENTITY_LEAD_TEXT, true, ON_DEMAND_SECTION_TEXT).length).toBeLessThan(24_000);
   });
 
-  it("collaborator / 未传 leadMode：不注入编排段，与扩展前逐字节一致（回归面为零）", () => {
+  it("auto（未建队）/ 无模式段：不注入任何模式段，与扩展前逐字节一致（回归面为零）", () => {
     const legacy = `${HOOK_POLICY_PREFIX} ${POLICY_TEXT}\n${HOOK_POLICY_PREFIX} ${IDENTITY_LEAD_TEXT}`;
-    expect(buildSessionStartContext(IDENTITY_LEAD_TEXT, true, "collaborator")).toBe(legacy);
     expect(buildSessionStartContext(IDENTITY_LEAD_TEXT, true)).toBe(legacy);
-    expect(buildSessionStartContext(IDENTITY_LEAD_TEXT, true, "collaborator")).not.toContain(
-      "Lead operating mode",
-    );
+    expect(SESSION_START_CONTEXT).toBe(legacy); // 新默认 = auto · 未建队
+    expect(SESSION_START_CONTEXT).not.toContain("Lead operating mode");
   });
 
-  it("编排段进 SKILL.md 辅通道（逐字包含）", () => {
+  it("〔issue #9 D28〕on-demand 段口径：按需判断 + 正反例关键句", () => {
+    expect(ON_DEMAND_SECTION_TEXT.startsWith("Lead operating mode (on-demand):")).toBe(true);
+    expect(ORCHESTRATOR_SECTION_TEXT.startsWith("Lead operating mode (orchestrator):")).toBe(true);
+    expect(ON_DEMAND_SECTION_TEXT).not.toBe(ORCHESTRATOR_SECTION_TEXT);
+    expect(ON_DEMAND_SECTION_TEXT).toContain("delegation value");
+    expect(ON_DEMAND_SECTION_TEXT).toContain("one-line reason");
+    expect(ON_DEMAND_SECTION_TEXT).toContain("multiple roles in parallel");
+  });
+
+  it("〔issue #9 D28〕首建队提示（FIRST_SPAWN_NOTE）形态", () => {
+    expect(FIRST_SPAWN_NOTE.startsWith("[agent-team] ")).toBe(true);
+    expect(FIRST_SPAWN_NOTE).toContain("first teammate");
+  });
+
+  it("模式段进 SKILL.md 辅通道（逐字包含，两段都要）", () => {
     const skill = fs.readFileSync(path.join(PROJ, "skills", "team-coordination", "SKILL.md"), "utf8");
     expect(skill).toContain(ORCHESTRATOR_SECTION_TEXT);
+    expect(skill).toContain(ON_DEMAND_SECTION_TEXT);
   });
 
-  it("编排段在身份段之后、探针之前（TEAM_POLICY_PROBE=1 时的顺序契约）", () => {
+  it("模式段在身份段之后、探针之前（TEAM_POLICY_PROBE=1 时的顺序契约，两段各验）", () => {
     const prev = process.env.TEAM_POLICY_PROBE;
     process.env.TEAM_POLICY_PROBE = "1";
     try {
-      const ctx = buildSessionStartContext(IDENTITY_LEAD_TEXT, true, "orchestrator");
-      const identityAt = ctx.indexOf(IDENTITY_LEAD_TEXT);
-      const sectionAt = ctx.indexOf(ORCHESTRATOR_SECTION_TEXT);
-      const probeAt = ctx.indexOf(POLICY_PROBE_MARKER);
-      expect(identityAt).toBeLessThan(sectionAt);
-      expect(sectionAt).toBeLessThan(probeAt);
+      for (const section of [ORCHESTRATOR_SECTION_TEXT, ON_DEMAND_SECTION_TEXT]) {
+        const ctx = buildSessionStartContext(IDENTITY_LEAD_TEXT, true, section);
+        const identityAt = ctx.indexOf(IDENTITY_LEAD_TEXT);
+        const sectionAt = ctx.indexOf(section);
+        const probeAt = ctx.indexOf(POLICY_PROBE_MARKER);
+        expect(identityAt).toBeLessThan(sectionAt);
+        expect(sectionAt).toBeLessThan(probeAt);
+      }
     } finally {
       if (prev === undefined) delete process.env.TEAM_POLICY_PROBE;
       else process.env.TEAM_POLICY_PROBE = prev;
@@ -318,40 +338,65 @@ describe("主通道 · SessionStart hook 注入（startup/resume 双注入点）
     expect(ctx).not.toContain(ORCHESTRATOR_SECTION_TEXT); // 〔D26〕teammate 恒不注入编排段
   });
 
-  it("〔stage-6.5 D26〕TEAM_LEAD_MODE env 变体：orchestrator 注入 / collaborator 不注入 / 非法值回落默认", async () => {
-    const cases = [
-      ["orchestrator", true],
-      ["collaborator", false],
-      ["bogus-mode", true],
-      ["", true],
-    ] as const;
-    for (const [envValue, expectSection] of cases) {
+  it("〔issue #9 D28〕TEAM_LEAD_MODE env 变体：always 注入 / auto·旧值·非法值不注入 / off 完全无输出", async () => {
+    // ① always → 注入编排段
+    {
       const { stdout } = await runHook(
-        {
-          hook_event_name: "SessionStart",
-          session_id: `sess_lead_mode_${envValue || "empty"}`,
-          source: "startup",
-          cwd: dataRoot,
-        },
+        { hook_event_name: "SessionStart", session_id: "sess_lead_mode_always", source: "startup", cwd: dataRoot },
+        { TEAM_LEAD_MODE: "always" },
+      );
+      const ctx = (JSON.parse(stdout) as { hookSpecificOutput: { additionalContext: string } }).hookSpecificOutput.additionalContext;
+      expect(ctx).toContain(ORCHESTRATOR_SECTION_TEXT);
+    }
+    // ② auto / 旧值（迁移 auto）/ 非法值（回落默认 auto）→ 未建队不注入任何模式段
+    for (const envValue of ["auto", "orchestrator", "collaborator", "bogus-mode", ""] as const) {
+      const { stdout } = await runHook(
+        { hook_event_name: "SessionStart", session_id: `sess_lead_mode_${envValue || "empty"}`, source: "startup", cwd: dataRoot },
         { TEAM_LEAD_MODE: envValue },
       );
-      const parsed = JSON.parse(stdout) as {
-        hookSpecificOutput: { additionalContext: string };
-      };
-      const ctx = parsed.hookSpecificOutput.additionalContext;
-      if (expectSection) {
-        expect(ctx, `TEAM_LEAD_MODE=${JSON.stringify(envValue)} 应含编排段`).toContain(
-          ORCHESTRATOR_SECTION_TEXT,
-        );
-      } else {
-        expect(ctx, `TEAM_LEAD_MODE=${JSON.stringify(envValue)} 不应含编排段`).not.toContain(
-          ORCHESTRATOR_SECTION_TEXT,
-        );
-      }
+      const ctx = (JSON.parse(stdout) as { hookSpecificOutput: { additionalContext: string } }).hookSpecificOutput.additionalContext;
+      expect(ctx, `TEAM_LEAD_MODE=${JSON.stringify(envValue)} 不应含模式段（未建队）`).not.toContain(
+        "Lead operating mode",
+      );
     }
+    // ③ off → 完全无输出（插件对模型不可见），session-map 仍注册
+    const { stdout } = await runHook(
+      { hook_event_name: "SessionStart", session_id: "sess_lead_mode_off", source: "startup", cwd: dataRoot },
+      { TEAM_LEAD_MODE: "off" },
+    );
+    expect(stdout.trim()).toBe("");
+    const entry = readSessionRegistry(dataRoot)[safeSessionKey("sess_lead_mode_off")]!;
+    expect(entry.hookRegistered).toBe(true);
   });
 
-  it("〔stage-6.5 D26〕teammate 会话即使 TEAM_LEAD_MODE=orchestrator 也不注入编排段（Lead-only 门控）", async () => {
+  it("〔issue #9 D28〕auto 且曾建队（members/ 有非 sessionId 条目）→ 注入按需段而非编排段", async () => {
+    const sid = "sess_lead_auto_team";
+    const membersRoot = path.join(teamPaths(dataRoot, sid).teamDir, "members");
+    fs.mkdirSync(path.join(membersRoot, "11111111-2222-3333-4444-555555555555"), { recursive: true }); // spawn 落盘的 UUID 成员目录
+    fs.mkdirSync(path.join(membersRoot, sid), { recursive: true }); // lead 自身回执目录（不算成员）
+    const { stdout } = await runHook(
+      { hook_event_name: "SessionStart", session_id: sid, source: "resume", cwd: dataRoot },
+      { TEAM_LEAD_MODE: "auto" },
+    );
+    const ctx = (JSON.parse(stdout) as { hookSpecificOutput: { additionalContext: string } }).hookSpecificOutput.additionalContext;
+    expect(ctx).toContain(ON_DEMAND_SECTION_TEXT);
+    expect(ctx).not.toContain(ORCHESTRATOR_SECTION_TEXT);
+  });
+
+  it("〔issue #9 D28〕auto 未建队：lead/state.json 与空 events.jsonl 存在也不误判（干扰源隔离）", async () => {
+    const sid = "sess_lead_auto_noteam";
+    const teamDir = teamPaths(dataRoot, sid).teamDir;
+    fs.mkdirSync(path.join(teamDir, "lead"), { recursive: true }); // hook 每回合无条件写
+    fs.writeFileSync(path.join(teamDir, "events.jsonl"), ""); // 任意工具首调即建的空日志
+    const { stdout } = await runHook(
+      { hook_event_name: "SessionStart", session_id: sid, source: "startup", cwd: dataRoot },
+      { TEAM_LEAD_MODE: "auto" },
+    );
+    const ctx = (JSON.parse(stdout) as { hookSpecificOutput: { additionalContext: string } }).hookSpecificOutput.additionalContext;
+    expect(ctx).not.toContain("Lead operating mode");
+  });
+
+  it("〔stage-6.5 D26〕teammate 会话即使 TEAM_LEAD_MODE=always 也不注入编排段（Lead-only 门控）", async () => {
     const { stdout } = await runHook(
       {
         hook_event_name: "SessionStart",
@@ -359,7 +404,7 @@ describe("主通道 · SessionStart hook 注入（startup/resume 双注入点）
         source: "resume",
         cwd: dataRoot,
       },
-      { TEAM_LEAD_MODE: "orchestrator" },
+      { TEAM_LEAD_MODE: "always" },
     );
     const parsed = JSON.parse(stdout) as {
       hookSpecificOutput: { additionalContext: string };
@@ -367,36 +412,36 @@ describe("主通道 · SessionStart hook 注入（startup/resume 双注入点）
     expect(parsed.hookSpecificOutput.additionalContext).not.toContain(ORCHESTRATOR_SECTION_TEXT);
   });
 
-  it("〔stage-6.5 D26〕runtime-config 文件兜底：leadMode=collaborator 落盘 → 无 env 时不注入；旧文件缺字段 → 回落 orchestrator", async () => {
+  it("〔D26/D28〕runtime-config 兜底：v2 always → 注入；v1 旧文件（含旧枚举）→ leadMode 过期回落默认不注入", async () => {
     const metaDir = path.join(dataRoot, "meta");
     fs.mkdirSync(metaDir, { recursive: true });
     const limits = { maxMembers: 8, maxTasks: 256, maxMessageBytes: 65536, disposalTimeoutMs: 5000 };
-    // ① 新版文件（含 leadMode: collaborator）→ hook 无 env 时走文件 → 不注入编排段
+    // ① v2 文件（leadMode: always）→ hook 无 env 时走文件 → 注入编排段
     fs.writeFileSync(
       path.join(metaDir, "runtime-config.json"),
-      JSON.stringify({ version: 1, interrupt: true, leadMode: "collaborator", limits, updatedAt: new Date().toISOString() }),
+      JSON.stringify({ version: 2, interrupt: true, leadMode: "always", limits, updatedAt: new Date().toISOString() }),
     );
     let { stdout } = await runHook({
       hook_event_name: "SessionStart",
-      session_id: "sess_lead_file_collab",
+      session_id: "sess_lead_file_always",
       source: "startup",
       cwd: dataRoot,
     });
     let ctx = (JSON.parse(stdout) as { hookSpecificOutput: { additionalContext: string } }).hookSpecificOutput.additionalContext;
-    expect(ctx).not.toContain(ORCHESTRATOR_SECTION_TEXT);
-    // ② 旧版文件（无 leadMode 字段，扩展前 daemon 写的形态）→ v1 兼容回落默认 → 注入编排段
+    expect(ctx).toContain(ORCHESTRATOR_SECTION_TEXT);
+    // ② v1 旧文件（daemon 落盘的旧默认 orchestrator）→ 升级用户不被锁进激进档 → 回落默认 auto 不注入
     fs.writeFileSync(
       path.join(metaDir, "runtime-config.json"),
-      JSON.stringify({ version: 1, interrupt: true, limits, updatedAt: new Date().toISOString() }),
+      JSON.stringify({ version: 1, interrupt: true, leadMode: "orchestrator", limits, updatedAt: new Date().toISOString() }),
     );
     ({ stdout } = await runHook({
       hook_event_name: "SessionStart",
-      session_id: "sess_lead_file_legacy",
+      session_id: "sess_lead_file_v1",
       source: "startup",
       cwd: dataRoot,
     }));
     ctx = (JSON.parse(stdout) as { hookSpecificOutput: { additionalContext: string } }).hookSpecificOutput.additionalContext;
-    expect(ctx).toContain(ORCHESTRATOR_SECTION_TEXT);
+    expect(ctx).not.toContain("Lead operating mode");
   });
 
   // 〔stage-6.5 R2，2026-10-24〕宿主 config.json 直读回落层：消除首会话时序限制（撤销 D26 已知限制）。
@@ -408,28 +453,39 @@ describe("主通道 · SessionStart hook 注入（startup/resume 双注入点）
       return home;
     };
 
-    it("纯函数矩阵：单键合法 / 无值 / 垃圾值 / 多键一致 / 多键冲突 / 非本插件键 / 文件缺失", () => {
-      expect(readHostLeadModeOverride(mkHome({ "agent-team@inline": { leadMode: "collaborator" } }))).toBe("collaborator");
-      expect(readHostLeadModeOverride(mkHome({ "agent-team@inline": { leadMode: "orchestrator" } }))).toBe("orchestrator");
+    it("纯函数矩阵（D28 归一后）：新值 / 旧值→auto / 无值 / 垃圾值 / 多键一致（含新旧混排）/ 多键冲突 / 非本插件键 / 文件缺失", () => {
+      expect(readHostLeadModeOverride(mkHome({ "agent-team@inline": { leadMode: "always" } }))).toBe("always");
+      expect(readHostLeadModeOverride(mkHome({ "agent-team@inline": { leadMode: "auto" } }))).toBe("auto");
+      expect(readHostLeadModeOverride(mkHome({ "agent-team@inline": { leadMode: "off" } }))).toBe("off");
+      // 旧值统一迁移 auto（issue #9）
+      expect(readHostLeadModeOverride(mkHome({ "agent-team@inline": { leadMode: "orchestrator" } }))).toBe("auto");
+      expect(readHostLeadModeOverride(mkHome({ "agent-team@inline": { leadMode: "collaborator" } }))).toBe("auto");
       expect(readHostLeadModeOverride(mkHome({}))).toBeUndefined();
       expect(readHostLeadModeOverride(mkHome({ "agent-team@inline": {} }))).toBeUndefined();
       expect(readHostLeadModeOverride(mkHome({ "agent-team@inline": { leadMode: "bogus" } }))).toBeUndefined();
+      // 归一后一致（orchestrator 与 auto 等价）→ 返回归一值
       expect(
         readHostLeadModeOverride(
-          mkHome({ "agent-team@inline": { leadMode: "collaborator" }, "agent-team@dirs:x": { leadMode: "collaborator" } }),
+          mkHome({ "agent-team@inline": { leadMode: "orchestrator" }, "agent-team@dirs:x": { leadMode: "auto" } }),
         ),
-      ).toBe("collaborator");
+      ).toBe("auto");
       expect(
         readHostLeadModeOverride(
-          mkHome({ "agent-team@inline": { leadMode: "collaborator" }, "agent-team@dirs:x": { leadMode: "orchestrator" } }),
+          mkHome({ "agent-team@inline": { leadMode: "auto" }, "agent-team@dirs:x": { leadMode: "auto" } }),
+        ),
+      ).toBe("auto");
+      // 归一后冲突 → undefined
+      expect(
+        readHostLeadModeOverride(
+          mkHome({ "agent-team@inline": { leadMode: "auto" }, "agent-team@dirs:x": { leadMode: "always" } }),
         ),
       ).toBeUndefined();
-      expect(readHostLeadModeOverride(mkHome({ "other-plugin": { leadMode: "collaborator" } }))).toBeUndefined();
+      expect(readHostLeadModeOverride(mkHome({ "other-plugin": { leadMode: "always" } }))).toBeUndefined();
       expect(readHostLeadModeOverride(path.join(fs.realpathSync(os.tmpdir()), `at-r2-missing-${Date.now()}`))).toBeUndefined();
     });
 
-    it("hook 层优先级①：HOME 指向 collaborator 配置 → 无 env 无 runtime-config 也不注入编排段（优先于默认）", async () => {
-      const home = mkHome({ "agent-team@inline": { leadMode: "collaborator" } });
+    it("hook 层优先级①：HOME 指向 always 配置 → 无 env 无 runtime-config 也注入编排段（优先于默认）", async () => {
+      const home = mkHome({ "agent-team@inline": { leadMode: "always" } });
       const metaDir = path.join(dataRoot, "meta");
       fs.rmSync(path.join(metaDir, "runtime-config.json"), { force: true });
       const { stdout } = await runHook(
@@ -437,42 +493,53 @@ describe("主通道 · SessionStart hook 注入（startup/resume 双注入点）
         { HOME: home },
       );
       const ctx = (JSON.parse(stdout) as { hookSpecificOutput: { additionalContext: string } }).hookSpecificOutput.additionalContext;
-      expect(ctx).not.toContain(ORCHESTRATOR_SECTION_TEXT);
+      expect(ctx).toContain(ORCHESTRATOR_SECTION_TEXT);
     });
 
-    it("hook 层优先级②：host config（collaborator）优先于 runtime-config（orchestrator）", async () => {
-      const home = mkHome({ "agent-team@inline": { leadMode: "collaborator" } });
+    it("hook 层优先级②：host config（always）优先于 runtime-config（auto）", async () => {
+      const home = mkHome({ "agent-team@inline": { leadMode: "always" } });
       const metaDir = path.join(dataRoot, "meta");
       fs.mkdirSync(metaDir, { recursive: true });
       const limits = { maxMembers: 8, maxTasks: 256, maxMessageBytes: 65536, disposalTimeoutMs: 5000 };
       fs.writeFileSync(
         path.join(metaDir, "runtime-config.json"),
-        JSON.stringify({ version: 1, interrupt: true, leadMode: "orchestrator", limits, updatedAt: new Date().toISOString() }),
+        JSON.stringify({ version: 2, interrupt: true, leadMode: "auto", limits, updatedAt: new Date().toISOString() }),
       );
       const { stdout } = await runHook(
         { hook_event_name: "SessionStart", session_id: "sess_r2_host_over_file", source: "startup", cwd: dataRoot },
         { HOME: home },
       );
       const ctx = (JSON.parse(stdout) as { hookSpecificOutput: { additionalContext: string } }).hookSpecificOutput.additionalContext;
-      expect(ctx).not.toContain(ORCHESTRATOR_SECTION_TEXT);
+      expect(ctx).toContain(ORCHESTRATOR_SECTION_TEXT);
     });
 
-    it("hook 层优先级③：无 host 覆盖时 runtime-config（orchestrator）生效（注入编排段）", async () => {
-      // HOME 指向干净 fixture（无 agent-team 选项）→ host 层 undefined → runtime-config 显式 orchestrator 生效
+    it("hook 层优先级③：无 host 覆盖时 runtime-config（always）生效（注入编排段）", async () => {
+      // HOME 指向干净 fixture（无 agent-team 选项）→ host 层 undefined → runtime-config v2 显式 always 生效
       const cleanHome = mkHome({});
       const metaDir = path.join(dataRoot, "meta");
       fs.mkdirSync(metaDir, { recursive: true });
       const limits = { maxMembers: 8, maxTasks: 256, maxMessageBytes: 65536, disposalTimeoutMs: 5000 };
       fs.writeFileSync(
         path.join(metaDir, "runtime-config.json"),
-        JSON.stringify({ version: 1, interrupt: true, leadMode: "orchestrator", limits, updatedAt: new Date().toISOString() }),
+        JSON.stringify({ version: 2, interrupt: true, leadMode: "always", limits, updatedAt: new Date().toISOString() }),
       );
       const { stdout } = await runHook(
-        { hook_event_name: "SessionStart", session_id: "sess_r2_file_orch", source: "startup", cwd: dataRoot },
+        { hook_event_name: "SessionStart", session_id: "sess_r2_file_always", source: "startup", cwd: dataRoot },
         { HOME: cleanHome },
       );
       const ctx = (JSON.parse(stdout) as { hookSpecificOutput: { additionalContext: string } }).hookSpecificOutput.additionalContext;
       expect(ctx).toContain(ORCHESTRATOR_SECTION_TEXT);
+    });
+
+    it("hook 层优先级④〔issue #9 D28〕：host config（off）→ 完全无输出", async () => {
+      const home = mkHome({ "agent-team@inline": { leadMode: "off" } });
+      const metaDir = path.join(dataRoot, "meta");
+      fs.rmSync(path.join(metaDir, "runtime-config.json"), { force: true });
+      const { stdout } = await runHook(
+        { hook_event_name: "SessionStart", session_id: "sess_r2_host_off", source: "startup", cwd: dataRoot },
+        { HOME: home },
+      );
+      expect(stdout.trim()).toBe("");
     });
   });
 });

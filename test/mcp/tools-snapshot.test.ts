@@ -76,6 +76,17 @@ describe("F01 · schema 逐字节快照（进程内注册表）", () => {
     // 默认（无参）= interrupt=true（9 工具）
     expect(teamToolDefinitions().map((t) => t.name)).toEqual(NINE);
   });
+
+  it("〔issue #9 D28〕leadMode=off → 0 团队工具（注册面全裁；auto/always 均为 9 工具）", () => {
+    expect(teamToolDefinitions({ leadMode: "off" })).toEqual([]);
+    expect(listTeamTools({ leadMode: "off" })).toEqual([]);
+    expect(teamToolNames({ leadMode: "off" }).size).toBe(0);
+    expect(teamToolDefinitions({ leadMode: "auto" }).map((t) => t.name)).toEqual(NINE);
+    expect(teamToolDefinitions({ leadMode: "always" }).map((t) => t.name)).toEqual(NINE);
+    // 旧值（迁移 auto）不裁剪
+    expect(teamToolDefinitions({ leadMode: "orchestrator" }).map((t) => t.name)).toEqual(NINE);
+    expect(teamToolDefinitions({ leadMode: "collaborator" }).map((t) => t.name)).toEqual(NINE);
+  });
 });
 
 describe("F01 · schema 逐字节快照（wire 层：真实 stdio daemon）", () => {

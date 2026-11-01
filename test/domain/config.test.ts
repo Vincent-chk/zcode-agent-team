@@ -1,6 +1,6 @@
 // F31：4 限额启动校验（02 规格 §4；〔对齐轮修订〕0.2.1-alpha.5 删 maxPendingMessagesPerMember）。非正 safe integer → TEAM_INVALID_CONFIG，消息逐字。
 import { describe, expect, it } from "vitest";
-import { validateTeamLimits, TEAM_LIMIT_KEYS, validateLeadMode } from "../../src/domain/config.js";
+import { validateTeamLimits, TEAM_LIMIT_KEYS, validateLeadMode, normalizeLeadMode } from "../../src/domain/config.js";
 import { TeamError } from "../../src/domain/errors.js";
 
 const VALID = {
@@ -65,12 +65,24 @@ describe("config · validateTeamLimits", () => {
   });
 });
 
-// 〔stage-6.5 D26〕leadMode 校验：宽松回落（区别于 4 限额的 fail-loud）——非法值回落默认，
-// 绝不并入 config.ok（一个拼写错误不得禁用工具面）。
-describe("config · validateLeadMode（D26）", () => {
-  it("合法值原样通过", () => {
-    expect(validateLeadMode("orchestrator")).toBe("orchestrator");
-    expect(validateLeadMode("collaborator")).toBe("collaborator");
+// 〔stage-6.5 D26；issue #9 三档化 D28〕leadMode 校验：宽松回落（区别于 4 限额的 fail-loud）
+// ——非法值回落默认 auto，绝不并入 config.ok（一个拼写错误不得禁用工具面）。
+// 三档 off/auto/always；旧值 orchestrator/collaborator 统一迁移 auto。
+describe("config · validateLeadMode / normalizeLeadMode（D26/D28）", () => {
+  it("三档新值原样通过", () => {
+    expect(validateLeadMode("off")).toBe("off");
+    expect(validateLeadMode("auto")).toBe("auto");
+    expect(validateLeadMode("always")).toBe("always");
+    expect(normalizeLeadMode("off")).toBe("off");
+    expect(normalizeLeadMode("auto")).toBe("auto");
+    expect(normalizeLeadMode("always")).toBe("always");
+  });
+
+  it("旧值 orchestrator/collaborator → auto（issue #9 迁移口径）", () => {
+    expect(normalizeLeadMode("orchestrator")).toBe("auto");
+    expect(normalizeLeadMode("collaborator")).toBe("auto");
+    expect(validateLeadMode("orchestrator")).toBe("auto");
+    expect(validateLeadMode("collaborator")).toBe("auto");
   });
 
   it.each([
@@ -81,6 +93,8 @@ describe("config · validateLeadMode（D26）", () => {
     ["Orchestrator"],
     ["ORCHESTRATOR"],
     ["orchestrator "],
+    ["AUTO"],
+    ["always "],
     ["bogus-mode"],
     [0],
     [1],
@@ -88,8 +102,9 @@ describe("config · validateLeadMode（D26）", () => {
     [false],
     [{}],
     [[]],
-  ])("非法输入 %j → 回落默认 orchestrator（不抛错）", (raw) => {
+  ])("非法输入 %j → normalize=undefined、validate 回落默认 auto（不抛错）", (raw) => {
     expect(() => validateLeadMode(raw)).not.toThrow();
-    expect(validateLeadMode(raw)).toBe("orchestrator");
+    expect(normalizeLeadMode(raw)).toBeUndefined();
+    expect(validateLeadMode(raw)).toBe("auto");
   });
 });

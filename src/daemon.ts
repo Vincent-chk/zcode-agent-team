@@ -39,7 +39,7 @@ import {
   sanitizeToolName,
   metaFilePath,
 } from "./shared.js";
-import { validateLeadMode } from "./domain/config.js";
+import { validateLeadMode, normalizeLeadMode } from "./domain/config.js";
 import { TeamToolBackend } from "./mcp/backend.js";
 import { DEFAULT_HOST_LIMITS } from "./coord/host.js";
 import { callTeamTool, isTeamTool, listTeamTools } from "./mcp/registry.js";
@@ -113,11 +113,18 @@ if (!config.ok) {
 // provider.jsonl 结构化日志（V03：teamId/memberId/messageId 关联字段肉眼可串联）。
 // stage-6：teammate 会话隔离（child=宿主原生隐藏子会话，默认；legacy=旧顶层会话，回滚用）。
 const interruptEnabled = (process.env.TEAM_INTERRUPT ?? "true") !== "false";
-// 〔stage-6.5 D26〕leadMode（env TEAM_LEAD_MODE，默认 orchestrator）：宽松回落，非法值 warn 但不禁工具面。
+// 〔stage-6.5 D26；issue #9 三档化 D28〕leadMode（env TEAM_LEAD_MODE，默认 auto）：宽松回落，
+// 非法值 warn 但不禁工具面；off 档在 tools/list（不注册）与 handlers（调用拒绝）双层生效。
 const leadModeRaw = process.env.TEAM_LEAD_MODE;
 const leadMode = validateLeadMode(leadModeRaw);
-if (leadModeRaw !== undefined && leadModeRaw !== "orchestrator" && leadModeRaw !== "collaborator") {
+const leadModeNormalized = normalizeLeadMode(leadModeRaw);
+if (leadModeRaw !== undefined && leadModeNormalized === undefined) {
   logErr("daemon", `invalid TEAM_LEAD_MODE ${JSON.stringify(leadModeRaw)} — falling back to "${leadMode}"`);
+} else if (leadModeRaw === "orchestrator" || leadModeRaw === "collaborator") {
+  logErr(
+    "daemon",
+    `legacy TEAM_LEAD_MODE ${JSON.stringify(leadModeRaw)} mapped to "auto" (issue #9) — use "always" for proactive orchestration`,
+  );
 }
 if (config.ok) {
   // hooks 读不到 userConfig：把有效开关落盘，SessionStart 注入按同一配置插值（D19/D26）。
@@ -371,13 +378,13 @@ const RESOURCES = [
 
 server.setRequestHandler(ListToolsRequestSchema, async () => {
   appendJsonl(path.join(DATA, "logs", "requests.jsonl"), { ts: ts(), method: "tools/list" });
-  // 模型面 = 9 个团队工具（interrupt=false → 8）。team_ping 仅诊断：默认不暴露，
-  // TEAM_DEBUG_TOOLS=1 时才进入 tools/list；team_panel_call 保留给面板 app 通道。
+  // 模型面 = 9 个团队工具（interrupt=false → 8；〔issue #9 D28〕leadMode=off → 0）。team_ping 仅诊断：
+  // 默认不暴露，TEAM_DEBUG_TOOLS=1 时才进入 tools/list；team_panel_call 保留给面板 app 通道。
   const debugTools = process.env.TEAM_DEBUG_TOOLS === "1";
   const supportTools = debugTools
     ? TOOLS
     : TOOLS.filter((t) => t.name !== "team_ping");
-  return { tools: [...supportTools, ...listTeamTools({ interrupt: backend.interruptEnabled })] };
+  return { tools: [...supportTools, ...listTeamTools({ interrupt: backend.interruptEnabled, leadMode })] };
 });
 
 
@@ -486,6 +493,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
   }
 
   // —— stage-3/8：9 个团队工具（身份=_meta.session_id 每调解析；紧凑 JSON；错误 code 透传）
+  // 〔issue #9 D28〕leadMode 透传：off → handlers 拒绝；auto → 首建队附提示。
   if (isTeamTool(name)) {
     const meta = _meta as import("./mcp/identity.js").CallMeta | undefined;
     return callTeamTool(
@@ -496,6 +504,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
         name,
         args: (args ?? {}) as Record<string, unknown>,
         meta,
+        leadMode,
         signal: extra.signal,
       },
       // progress 保活：仅 wait_agent + 宿主 progressToken 在场时发（registry 内判定）；

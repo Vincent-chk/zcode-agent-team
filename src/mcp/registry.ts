@@ -21,8 +21,10 @@ export interface ProgressNotifier {
   }): Promise<void>;
 }
 
-/** tools/list 条目（9 工具；〔对齐轮〕interrupt=false 时 8 工具；与快照生成器同源同序列化器）。 */
-export function listTeamTools(options: { interrupt?: boolean } = {}): readonly Record<string, unknown>[] {
+/** tools/list 条目（9 工具；〔对齐轮〕interrupt=false 时 8 工具；〔issue #9 D28〕leadMode=off 时为空表）。 */
+export function listTeamTools(
+  options: { interrupt?: boolean; leadMode?: string } = {},
+): readonly Record<string, unknown>[] {
   return teamToolDefinitions(options).map((t) => ({
     name: t.name,
     description: t.description,
@@ -38,6 +40,8 @@ export interface CallTeamToolInput {
   name: string;
   args: Record<string, unknown>;
   meta: CallMeta | undefined;
+  /** 〔issue #9 D28〕daemon 已解析的 leadMode：off → 全部团队工具拒绝；auto → 首建队附提示。 */
+  leadMode?: string;
   signal?: AbortSignal;
   now?: () => number;
 }
@@ -55,6 +59,7 @@ export async function callTeamTool(
       bootTimeMs: input.bootTimeMs,
       meta: input.meta,
       args: input.args,
+      ...(input.leadMode !== undefined ? { leadMode: input.leadMode } : {}),
       ...(emitProgress !== undefined ? { emitProgress } : {}),
       ...(input.signal !== undefined ? { signal: input.signal } : {}),
       ...(input.now !== undefined ? { now: input.now } : {}),

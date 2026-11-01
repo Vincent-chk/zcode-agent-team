@@ -40,18 +40,39 @@ function coerceInteger(raw: unknown): number | undefined {
   return undefined;
 }
 
-// —— Lead 编排模式（D26；stage-6.5，2026-10-24）——
+// —— Lead 编排模式（D26；stage-6.5，2026-10-24；〔issue #9 三档化 D28〕2026-11-02）——
 // userConfig.leadMode（宿主 userConfig schema 无 enum 字段，取值约束只能在运行时校验）。
 // 校验策略 = 宽松回落（与 interrupt 同类，区别于 4 限额的 fail-loud）：非法值回落默认并由调用方
 // warn；**不并入 config.ok** —— 一个拼写错误不得禁用整个团队工具面（daemon 的 config.ok=false
 // 会拦截全部 tools/call）。
+// 〔issue #9〕二值（orchestrator/collaborator）改三档：
+//   off = 完全关闭（不注入任何团队上下文、不注册团队工具）；auto = 按需委派（默认，建队前不注入
+//   编排段、建队后注入按需段）；always = 始终主动编排（原 orchestrator 行为）。
+// 旧值迁移口径：orchestrator/collaborator 统一按 auto（orchestrator 同时是旧默认值，daemon 落盘
+// 的 runtime-config 无法区分「显式选择」与「未配置」，严格映射会让全部升级用户仍处激进档）。
 
-/** Lead 模式：orchestrator = Lead-only 编排段注入（默认，用户产品方向）；collaborator = DSH 复刻口径（无编排段）。 */
-export type LeadMode = "orchestrator" | "collaborator";
+/** Lead 模式：off = 完全关闭；auto = 按需委派（默认）；always = 始终主动编排。 */
+export type LeadMode = "off" | "auto" | "always";
 
-export const DEFAULT_LEAD_MODE: LeadMode = "orchestrator";
+export const DEFAULT_LEAD_MODE: LeadMode = "auto";
 
-/** 校验 leadMode 输入（env 形态 / JSON 字段均可）：合法值原样返回，其余（含 undefined/空串/拼写错）回落默认。 */
+/** 旧世界值 → 归一结果（仅迁移用，不导出语义）。 */
+const LEGACY_LEAD_MODE_MAP: Record<string, LeadMode> = {
+  orchestrator: "auto",
+  collaborator: "auto",
+};
+
+/**
+ * 归一 leadMode 输入（env 形态 / JSON 字段均可）：新值原样；旧值（orchestrator/collaborator）
+ * 映射 auto；其余（undefined/空串/拼写错/非字符串）→ undefined（含义 = 「无有效值，让调用方回落」）。
+ */
+export function normalizeLeadMode(raw: unknown): LeadMode | undefined {
+  if (typeof raw !== "string") return undefined;
+  if (raw === "off" || raw === "auto" || raw === "always") return raw;
+  return LEGACY_LEAD_MODE_MAP[raw];
+}
+
+/** 校验 leadMode 输入：normalize 有值返回该值，无值回落默认（不抛错）。 */
 export function validateLeadMode(raw: unknown): LeadMode {
-  return raw === "collaborator" ? "collaborator" : "orchestrator";
+  return normalizeLeadMode(raw) ?? DEFAULT_LEAD_MODE;
 }

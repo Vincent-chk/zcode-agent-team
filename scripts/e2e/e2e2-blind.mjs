@@ -3,7 +3,7 @@
 // ① R1 修复——reopen 若发生，findings 必须持久化进任务描述（修复前会被丢弃）；
 // ② 会话隔离——成员会话行不进任务栏（tasks-index absent）；
 // ③ 验收记录——completed 后 description 再变化（edit 追加验收 verdict）；
-// ④ 事件重放一致性（team-ctl state 无 failure）；⑤ runtime-config 生产链 leadMode=orchestrator。
+// ④ 事件重放一致性（team-ctl state 无 failure）；⑤ runtime-config 反映显式注入档（〔issue #9 D28〕本剧本改 TEAM_LEAD_MODE=always 显式跑深度旅程；auto 默认链见 S8/U-O1）。
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -94,9 +94,8 @@ try {
   verdict["1-prompt-clean"] = { pass: dirty.length === 0, dirty };
   checks.check("1 prompt 洁净（零插件触发词）", dirty.length === 0, { dirty });
 
-  // 旅程：生产默认链（无 TEAM_* env）
-  const env = { ...process.env };
-  delete env.TEAM_LEAD_MODE;
+  // 旅程：显式 always（D28：默认 auto 不保证建队，深度旅程断言需编排语义）
+  const env = { ...process.env, TEAM_LEAD_MODE: "always" };
   const journey = await runZcode(cfg, { prompt: PROMPT, cwd: ws, timeoutMs: 1_800_000, env });
   const leadId = journey.parsed?.sessionId;
   const answer = String(journey.parsed?.response ?? "");
@@ -112,10 +111,10 @@ try {
   evidence.dataRoot = root;
   evidence.teamDir = teamDir;
 
-  // 生产链：runtime-config 应为 orchestrator（daemon 落盘）
+  // 生产链：daemon 落盘应反映显式注入的 always
   const rc = JSON.parse(fs.readFileSync(path.join(root, "meta", "runtime-config.json"), "utf8"));
   evidence.runtimeConfig = rc;
-  checks.check("5 生产默认链生效（runtime-config.leadMode=orchestrator）", rc.leadMode === "orchestrator", { leadMode: rc.leadMode });
+  checks.check("5 显式注入链生效（TEAM_LEAD_MODE=always → runtime-config.leadMode=always）", rc.leadMode === "always", { leadMode: rc.leadMode });
 
   // 等任务面收敛
   const settled = await waitFor(() => {

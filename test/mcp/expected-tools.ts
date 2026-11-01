@@ -19,7 +19,7 @@ export const EXPECTED_TEAM_TOOLS: readonly Record<string, unknown>[] = [
   {
     name: "spawn_teammate",
     description:
-      "Create one named, durable teammate. Only the Team Lead may call this tool. In orchestrator mode, create teammates proactively when the goal benefits from delegation, within the member limit. The teammate automatically follows the Lead's latest confirmed model and reasoning level on every turn; there is no per-member model option.",
+      "Create one named, durable teammate. Only the Team Lead may call this tool. Create teammates when the goal clearly benefits from delegation — multiple roles in parallel, disjoint write scopes, or long tasks needing their own context — within the member limit. The teammate automatically follows the Lead's latest confirmed model and reasoning level on every turn; there is no per-member model option.",
     inputSchema: {
       type: "object",
       properties: {
@@ -161,7 +161,7 @@ export const EXPECTED_TEAM_TOOLS: readonly Record<string, unknown>[] = [
   {
     name: "team_task_update",
     description:
-      "Compare-and-set a shared task action using the latest revision from team_task_get or team_task_list. In orchestrator mode, the Lead verifies a completed task and reopens it with concrete findings on failure.",
+      "Compare-and-set a shared task action using the latest revision from team_task_get or team_task_list. When the Lead verifies a completed task, reopen it with concrete findings on failure.",
     inputSchema: {
       type: "object",
       properties: {

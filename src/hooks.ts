@@ -10,7 +10,13 @@
 import fs from "node:fs";
 import path from "node:path";
 import { dataDir, ensureDir, appendJsonl, ts, readRuntimeConfig, readHostLeadModeOverride, isSensitiveEnvKey } from "./shared.js";
-import { buildSessionStartContext, IDENTITY_LEAD_TEXT, identityTeammateText } from "./mcp/policy.js";
+import {
+  buildSessionStartContext,
+  IDENTITY_LEAD_TEXT,
+  identityTeammateText,
+  ORCHESTRATOR_SECTION_TEXT,
+  ON_DEMAND_SECTION_TEXT,
+} from "./mcp/policy.js";
 import { validateLeadMode } from "./domain/config.js";
 import { readSessionRegistry, upsertSessionEntry, safeSessionKey } from "./mcp/identity.js";
 import { teamPaths, assertPathInside } from "./coord/paths.js";
@@ -25,7 +31,7 @@ import {
   budgetAllows,
   nextBudget,
 } from "./hooks/inbox.js";
-import { readStopBudget, writeStopBudget, memberPaths } from "./provider/member-files.js";
+import { readStopBudget, writeStopBudget, memberPaths, teamEverCreated } from "./provider/member-files.js";
 import { recordLeadTurnEvent } from "./provider/lead-wake.js";
 
 
@@ -98,6 +104,18 @@ const role = resolveHookRole({
   sessionId: rawSessionId ?? "",
 });
 
+// —— 〔issue #9 三档化 D28〕leadMode 全事件共用解析（原仅 SessionStart 分支；off 需在
+// UserPromptSubmit/Stop 也生效）。回落序（R2 四级）：env（teammate 继承 daemon env / e2e 显式注入）
+// → 宿主 config.json 直读 → runtime-config → 默认 auto。
+const runtimeConfig = readRuntimeConfig();
+const leadMode = validateLeadMode(
+  process.env.TEAM_LEAD_MODE !== undefined
+    ? process.env.TEAM_LEAD_MODE
+    : (readHostLeadModeOverride() ?? runtimeConfig?.leadMode),
+);
+/** off 仅对 Lead 会话生效：teammate 会话（既有团队）注入恒走原逻辑。 */
+const leadOff = role.role === "lead" && leadMode === "off";
+
 // —— 各事件输出
 /** stdout 写完后才 resolve：回执/ack 必须晚于注入输出，避免“先记 delivered 但模型没收到”。 */
 function out(obj: unknown): Promise<void> {
@@ -165,21 +183,25 @@ if (event === "sessionstart") {
   // 策略注入主通道（stage-3 T3.3；D10 口径 = hook_context 消息形态）+ 身份分支（D2 每轮重注入）
   const identityText =
     role.role === "teammate" ? identityTeammateText(role.name) : IDENTITY_LEAD_TEXT;
-  // hooks 读不到 userConfig：优先 env（teammate 轮次继承 daemon env），否则读 daemon 落盘配置。
-  const runtimeConfig = readRuntimeConfig();
   const interrupt =
     process.env.TEAM_INTERRUPT !== undefined
       ? process.env.TEAM_INTERRUPT !== "false"
       : (runtimeConfig?.interrupt ?? true);
-  // 〔stage-6.5 D26/R2〕leadMode 回落序（R2 后四级）：env（teammate 继承 daemon env / e2e 显式注入）
-  // → 宿主 config.json plugins.options 直读（消除首会话时序限制）→ runtime-config.json → 默认。
-  // 编排段仅 Lead 会话注入（teammate 传 undefined = 注入逐字节不变）。
-  const leadMode = validateLeadMode(
-    process.env.TEAM_LEAD_MODE !== undefined
-      ? process.env.TEAM_LEAD_MODE
-      : (readHostLeadModeOverride() ?? runtimeConfig?.leadMode),
-  );
-  let context = buildSessionStartContext(identityText, interrupt, role.role === "lead" ? leadMode : undefined);
+  // 〔issue #9 三档化 D28〕模式段计算（仅 Lead 会话；teammate 恒不追加 = 注入逐字节不变）：
+  //   always → 编排段（原 D26 行为）；auto → 该会话曾建过队（members/ 存在非 sessionId 条目，
+  //   teamEverCreated）才注入按需段，未建队 = 策略+身份（上游按需组队语义）；off → 整体不输出。
+  let modeSection: string | undefined;
+  if (role.role === "lead") {
+    if (leadMode === "always") {
+      modeSection = ORCHESTRATOR_SECTION_TEXT;
+    } else if (leadMode === "auto") {
+      const teamDir = safeTeamDir(role.teamId);
+      if (teamDir !== null && teamEverCreated(teamDir, role.teamId)) {
+        modeSection = ON_DEMAND_SECTION_TEXT;
+      }
+    }
+  }
+  let context = buildSessionStartContext(identityText, interrupt, modeSection);
 
   // Lead 收件箱附加段（resume 冷拉起 = 无上限交付点）+ 回执
   let pending: Awaited<ReturnType<typeof pendingForLead>> = [];
@@ -187,21 +209,28 @@ if (event === "sessionstart") {
     const teamDir = safeTeamDir(role.teamId);
     if (teamDir !== null) {
       recordLeadTurnEvent(teamDir, "start");
-      pending = await pendingForLead(teamDir, role.teamId);
-      if (pending.length > 0) {
-        context += `\n${buildInboxContext(pending.map((m) => m.text))}`;
+      // 〔issue #9 D28〕off 档不投递收件箱；轮次记录保留（重新开启后投递链路完好）。
+      if (!leadOff) {
+        pending = await pendingForLead(teamDir, role.teamId);
+        if (pending.length > 0) {
+          context += `\n${buildInboxContext(pending.map((m) => m.text))}`;
+        }
       }
     }
   }
-  await out({
-    hookSpecificOutput: {
-      hookEventName: "SessionStart",
-      additionalContext: context,
-    },
-  });
+  // 〔issue #9 D28〕off 档：完全不输出 additionalContext（插件对模型不可见）；session-map 注册/
+  // 触发日志/恢复对账等内部副作用照旧（便于诊断与后续重新开启）。
+  if (!leadOff) {
+    await out({
+      hookSpecificOutput: {
+        hookEventName: "SessionStart",
+        additionalContext: context,
+      },
+    });
+  }
   // 输出成功后才落回执（顺序 = 注入可达性优先；回执让协调者折叠 delivered）。
   if (role.role === "lead" && rawSessionId !== null) {
-    if (pending.length > 0) {
+    if (!leadOff && pending.length > 0) {
       writeReceipts(DATA, role.teamId, pending.map((m) => m.messageId), "sessionstart");
       await boundedAck("mailbox.ack", { session_id: rawSessionId, messageIds: pending.map((m) => m.messageId) });
     }
@@ -213,7 +242,8 @@ if (event === "sessionstart") {
     const teamDir = safeTeamDir(role.teamId);
     if (teamDir !== null) {
       recordLeadTurnEvent(teamDir, "start");
-      const pending = await pendingForLead(teamDir, role.teamId);
+      // 〔issue #9 D28〕off 档：不投递收件箱（插件对模型不可见）；轮次记录保留。
+      const pending = leadOff ? [] : await pendingForLead(teamDir, role.teamId);
       if (pending.length > 0) {
         await out({
           hookSpecificOutput: {
@@ -232,7 +262,8 @@ if (event === "sessionstart") {
     const teamDir = safeTeamDir(role.teamId);
     if (teamDir !== null) {
       recordLeadTurnEvent(teamDir, "stop");
-      const pending = await pendingForLead(teamDir, role.teamId);
+      // 〔issue #9 D28〕off 档：不 block 不投递（同上）；轮次记录保留。
+      const pending = leadOff ? [] : await pendingForLead(teamDir, role.teamId);
       if (pending.length > 0) {
         const runKey = runKeyFor(input.stop_hook_active);
         const budgetPaths = memberPaths(teamDir, role.teamId);

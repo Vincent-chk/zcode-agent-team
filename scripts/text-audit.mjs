@@ -19,7 +19,7 @@ export {
   teamPolicy, IDENTITY_LEAD_TEXT, identityTeammateText, buildSessionStartContext,
   POLICY_PROBE_MARKER, POLICY_TEXT, NO_PROGRESS_MESSAGE, NO_PROGRESS_REASON,
   D7_ORIGINAL_SENTENCE, D7_REPLACEMENT_SENTENCE, HOOK_POLICY_PREFIX, FAIL_LOUD_WARNING,
-  ORCHESTRATOR_SECTION_TEXT,
+  ORCHESTRATOR_SECTION_TEXT, ON_DEMAND_SECTION_TEXT, FIRST_SPAWN_NOTE,
 } from ${JSON.stringify(path.join(proj, "src/mcp/policy.ts"))};
 export { TEAM_ERROR_CODES, TEAM_ERROR_CATALOG } from ${JSON.stringify(path.join(proj, "src/domain/errors.ts"))};
 export { DICT, DICT_KEYS } from ${JSON.stringify(path.join(proj, "src/ui-core/dict.ts"))};
@@ -170,17 +170,30 @@ try {
     typeof m.FAIL_LOUD_WARNING === "string" && m.FAIL_LOUD_WARNING.includes("策略注入"),
   );
 
-  // ⑨ 〔stage-6.5 D26，2026-10-24〕Lead 编排附加段：orchestrator 注入含段且禁词；collaborator/两参缺省不注入
-  const ctxOrch = m.buildSessionStartContext(m.IDENTITY_LEAD_TEXT, true, "orchestrator");
-  const ctxCollab = m.buildSessionStartContext(m.IDENTITY_LEAD_TEXT, true, "collaborator");
+  // ⑨ 〔stage-6.5 D26；issue #9 三档化 D28，2026-11-02〕Lead 模式段：always 编排段 + auto 按需段 + 首建队提示
+  const ctxAlways = m.buildSessionStartContext(m.IDENTITY_LEAD_TEXT, true, m.ORCHESTRATOR_SECTION_TEXT);
+  const ctxAuto = m.buildSessionStartContext(m.IDENTITY_LEAD_TEXT, true, m.ON_DEMAND_SECTION_TEXT);
   check(
-    "D26 编排段：orchestrator 含段、禁 interrupt_agent；collaborator/缺省不含段",
-    ctxOrch.includes(m.ORCHESTRATOR_SECTION_TEXT) &&
-      !m.ORCHESTRATOR_SECTION_TEXT.includes("interrupt_agent") &&
-      !m.ORCHESTRATOR_SECTION_TEXT.includes("do not resend") &&
-      !ctxCollab.includes("Lead operating mode") &&
+    "D26/D28 模式段：always/on-demand 注入成功、三文本禁词、缺省无段",
+    ctxAlways.includes(m.ORCHESTRATOR_SECTION_TEXT) &&
+      ctxAuto.includes(m.ON_DEMAND_SECTION_TEXT) &&
+      [m.ORCHESTRATOR_SECTION_TEXT, m.ON_DEMAND_SECTION_TEXT, m.FIRST_SPAWN_NOTE].every(
+        (t) => typeof t === "string" && !t.includes("interrupt_agent") && !t.includes("do not resend"),
+      ) &&
       !ctxDefault.includes("Lead operating mode"),
-    { sectionLen: m.ORCHESTRATOR_SECTION_TEXT.length },
+    {
+      orchestratorLen: m.ORCHESTRATOR_SECTION_TEXT.length,
+      onDemandLen: m.ON_DEMAND_SECTION_TEXT.length,
+      noteLen: m.FIRST_SPAWN_NOTE.length,
+    },
+  );
+  check(
+    "D28 on-demand 段口径关键句 + 首建队提示形态",
+    m.ON_DEMAND_SECTION_TEXT.includes("delegation value") &&
+      m.ON_DEMAND_SECTION_TEXT.includes("one-line reason") &&
+      m.ON_DEMAND_SECTION_TEXT.includes("multiple roles in parallel") &&
+      m.FIRST_SPAWN_NOTE.startsWith("[agent-team] ") &&
+      m.FIRST_SPAWN_NOTE.includes("first teammate"),
   );
 } catch (err) {
   check("text-audit 未抛异常", false, { error: String(err?.stack ?? err).slice(0, 2000) });

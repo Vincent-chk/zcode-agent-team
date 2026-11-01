@@ -2,7 +2,8 @@
 // 每个剧本在独立子进程里跑（数据根/DB 隔离），输出统一 result.json；任一失败 → 非零退出。
 // 剧本清单与依赖：
 //   S1 协作（真模型）  S2 fork（真模型）  S3 崩溃矩阵（确定性）  S4 限额（真模型）
-//   S5 并发（fake-zcode，确定性） S6 hook 通道（真模型）  S7 编排旅程（真模型；stage-6.5 D26）
+//   S5 并发（fake-zcode，确定性） S6 hook 通道（真模型）  S7 编排旅程（真模型；显式 always）
+//   S8 auto 默认链冒烟（真模型；issue #9 D28：简单任务不建队、注入无模式段）
 import { execFile } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -15,7 +16,7 @@ const argOf = (name) => {
   const i = args.indexOf(`--${name}`);
   return i !== -1 && i + 1 < args.length ? args[i + 1] : undefined;
 };
-const only = new Set((argOf("only") ?? "s1,s2,s3,s4,s5,s6,s7").split(",").map((s) => s.trim().toLowerCase()).filter(Boolean));
+const only = new Set((argOf("only") ?? "s1,s2,s3,s4,s5,s6,s7,s8").split(",").map((s) => s.trim().toLowerCase()).filter(Boolean));
 const retries = Number(argOf("retries") ?? "1");
 const outDir = path.resolve(argOf("out") ?? path.join(PROJ, "..", "zcode-agent-team-plan", "stage-6-e2e-acceptance", "evidence"));
 fs.mkdirSync(outDir, { recursive: true });
@@ -28,6 +29,7 @@ const SCENARIOS = {
   s5: { file: "s5-concurrency.mjs", label: "S5 并发剧本", needsModel: false },
   s6: { file: "s6-hook-channel.mjs", label: "S6 hook 通道剧本", needsModel: true },
   s7: { file: "s7-orchestration.mjs", label: "S7 编排旅程（stage-6.5）", needsModel: true },
+  s8: { file: "s8-auto.mjs", label: "S8 auto 默认链（issue #9 D28）", needsModel: true },
 };
 
 function runOnce(id, scenario) {

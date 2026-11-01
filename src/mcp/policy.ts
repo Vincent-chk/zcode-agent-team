@@ -1,4 +1,5 @@
-import type { LeadMode } from "../domain/config.js";
+// 〔issue #9 三档化 D28〕LeadMode 枚举真源在 domain/config.ts；本文件只承载注入文本与拼装
+// （buildSessionStartContext 第三参 = 模式段文本，由 hooks 按档位+建队状态算好传入）。
 
 // 策略三层注入的定版文本（stage-3 T3.3；〔对齐轮修订 2026-10-17〕换版 0.2.1-alpha.5，冻结包 06 §3.1）。
 // 主通道 = SessionStart hook additionalContext（src/hooks.ts 经 buildSessionStartContext 组装）；
@@ -77,7 +78,7 @@ export const POLICY_PROBE_MARKER = "quartz-ember-73";
 
 /**
  * Lead 编排模式附加段（〔stage-6.5 D26〕2026-10-24 定稿；stage-6.5/开发规划 §3 逐字）。
- * 仅注入 Lead 会话（buildSessionStartContext 第三参）；语义 = 分解→默认委派→自主组队→
+ * 〔issue #9 三档化 D28〕本段仅注入 **always** 档 Lead 会话；语义 = 分解→默认委派→自主组队→
  * 带验收标准任务→Lead 独立复核（reopen 带问题 / edit 追加验收记录 = D27 标记完成闭环）→护栏。
  * 红线：不含 interrupt_agent / do not resend 子串。
  */
@@ -85,29 +86,46 @@ export const ORCHESTRATOR_SECTION_TEXT =
   "Lead operating mode (orchestrator): Decompose any non-trivial multi-step request into disjoint work packages before doing hands-on work. Do not edit files or implement directly except trivial one-line fixes or when no eligible member exists — delegate by creating teammates that cover the roles the goal requires. You decide the team composition and spawn it without being asked; consult the user only when the choice materially changes cost or scope. Turn every delegated unit into a shared task whose description states concrete acceptance criteria, assign an owner, record expected write scopes, and set dependencies when ordering matters. Require each owner to self-check and report changed files and test results before completing. When a task reaches completed, verify it independently: review the final diff and run the relevant tests yourself; if it fails, reopen the task with concrete findings; if it passes, append your acceptance verdict to the task description — a task is done when completed plus your recorded acceptance. Reuse idle teammates before spawning new ones and keep one member per role, within the member limit. You still wait for required teammates and synthesize their results for the final answer.";
 
 /**
- * 按身份分支构建 SessionStart 注入全文（策略 + 身份 + 可选编排段 + 可选暗号行，各一行 [agent-team] 前缀）。
- * 编排段（D26）只在 leadMode === "orchestrator" 时注入——hooks 仅对 Lead 会话传值，teammate 恒 undefined。
+ * Lead 按需委派附加段（〔issue #9 三档化 D28〕2026-11-02 定稿）。
+ * 仅注入 **auto 档且该会话曾建过队** 的 Lead 会话（hooks 用 teamEverCreated 判定后传入）；
+ * 语义 = 委派价值门槛 + 正反例（Lead 直接处理 / 走团队流程）+ 委派时沿用 D26 的
+ * 验收标准/独立复核/护栏句（验收闭环语义与 always 档一致）。
+ * 红线：不含 interrupt_agent / do not resend 子串。
+ */
+export const ON_DEMAND_SECTION_TEXT =
+  "Lead operating mode (on-demand): Judge each request by delegation value before using the team. Handle work directly yourself — with a one-line reason, no forced tasks — for questions and explanations, small changes confined to a single file, read-only research summaries, or when every teammate is busy and the request is unrelated to existing work. Use the team workflow when work clearly benefits from multiple roles in parallel, when write scopes must be split across members, when a long task deserves its own context, or when the user explicitly names members. When you delegate, turn each delegated unit into a shared task whose description states concrete acceptance criteria, assign an owner, record expected write scopes, and set dependencies when ordering matters. Require each owner to self-check and report changed files and test results before completing. When a task reaches completed, verify it independently: review the final diff and run the relevant tests yourself; if it fails, reopen the task with concrete findings; if it passes, append your acceptance verdict to the task description — a task is done when completed plus your recorded acceptance. Reuse idle teammates before spawning new ones and keep one member per role, within the member limit. Wait for required teammates and synthesize their results for the final answer.";
+
+/**
+ * auto 档「会话中途首建队」提示（〔issue #9 D28〕）：SessionStart 只在 startup|resume 触发，
+ * 首次 spawn 发生在中途不会重跑——以独立 text 块附在首成员 spawn 成功结果尾部（withFailLoud
+ * 同款追加方式，不改结果 JSON 本体）。语义 = 团队模式已激活 + 此后按委派价值判断。
+ */
+export const FIRST_SPAWN_NOTE =
+  "[agent-team] Team mode is now active: this is the first teammate of this session. From now on, judge each request by delegation value — handle simple work directly with a one-line reason, and use the team for work that benefits from multiple roles, parallel execution, or disjoint write scopes.";
+
+/**
+ * 按身份分支构建 SessionStart 注入全文（策略 + 身份 + 可选模式段 + 可选暗号行，各一行 [agent-team] 前缀）。
+ * 〔issue #9 三档化 D28〕第三参从 leadMode 枚举改为 **模式段文本**（调用方算好传入）：
+ *   always → ORCHESTRATOR_SECTION_TEXT；auto 且已建队 → ON_DEMAND_SECTION_TEXT；
+ *   auto 未建队 / teammate / 不追加 → undefined。off 档 hooks 整体不输出（不进入本函数）。
  * 探针标记只在显式 `TEAM_POLICY_PROBE=1` 时注入；生产默认不污染模型上下文。
  */
 export function buildSessionStartContext(
   identityText: string,
   interrupt = true,
-  leadMode?: LeadMode,
+  modeSection?: string,
 ): string {
   const policy = teamPolicy(interrupt);
-  const orchestration =
-    leadMode === "orchestrator"
-      ? `\n${HOOK_POLICY_PREFIX} ${ORCHESTRATOR_SECTION_TEXT}`
-      : "";
+  const section = modeSection !== undefined ? `\n${HOOK_POLICY_PREFIX} ${modeSection}` : "";
   const probe =
     process.env.TEAM_POLICY_PROBE === "1"
       ? `\n${HOOK_POLICY_PREFIX} 策略注入验证标记：${POLICY_PROBE_MARKER}`
       : "";
-  return `${HOOK_POLICY_PREFIX} ${policy}\n${HOOK_POLICY_PREFIX} ${identityText}${orchestration}${probe}`;
+  return `${HOOK_POLICY_PREFIX} ${policy}\n${HOOK_POLICY_PREFIX} ${identityText}${section}${probe}`;
 }
 
-/** SessionStart additionalContext 定版全文（缺省 = Lead 分支 + 默认编排模式 orchestrator；teammate 会话由 hooks 换分支）。 */
-export const SESSION_START_CONTEXT = buildSessionStartContext(IDENTITY_LEAD_TEXT, true, "orchestrator");
+/** SessionStart additionalContext 定版全文（缺省 = Lead 分支 + 新默认 auto·未建队 = 策略+身份，无模式段；teammate 会话由 hooks 换分支）。 */
+export const SESSION_START_CONTEXT = buildSessionStartContext(IDENTITY_LEAD_TEXT, true);
 
 
 /**
