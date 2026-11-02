@@ -17,6 +17,14 @@ import type { LifecyclePort } from "./lifecycle.js";
 /** §5.1 名字规则。 */
 const NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
+/** 〔D33〕provisioning 对账宽限：事件年龄小于此值且尚未出现「可续跑且首轮已受理」记录 → defer。
+ *  取值依据（2026-11-02 实测）：provisioning 事件到首轮落盘的窗口实测 7–46s（createChild 含
+ *  app-server ready 20s + 两次 v4/command 各 30s + setModel 20s 的理论上限 ~100s）；20s 不足以
+ *  覆盖真实窗口。宽限只推迟误判、不掩盖真故障：年龄 ≥ 宽限 或 恢复抛错 → 照旧定案。 */
+const PROVISIONING_GRACE_MS = 60_000;
+/** 〔D33〕defer 后的一次性复核间隔（unref；admin.reconcile 亦为兜底通道）。 */
+const PROVISIONING_RECHECK_MS = 10_000;
+
 // 〔对齐轮修订 2026-10-17〕原 §9.3 身份前缀块（identityPrefix）已删除：
 // 0.2.1-alpha.5 身份改由运行时上下文承载（systemPrompt.context，required、抗压缩、每请求重发），
 // spawn 首轮 prompt = 任务原文（sends the initial task unchanged）；ZCode 侧身份注入改 hook 通道（stage-3 T3.3）。
@@ -70,6 +78,8 @@ export interface RosterDeps {
 
 export class TeamRoster {
   private readonly statusListeners = new Set<() => void>();
+  /** 〔D33〕defer 复核定时器（成员 id → timer；一次性、unref）。 */
+  private readonly recheckTimers = new Map<string, NodeJS.Timeout>();
   readonly recoveryDone: Promise<void>;
 
   constructor(private readonly deps: RosterDeps) {
@@ -280,18 +290,31 @@ export class TeamRoster {
 
   /** 对每个 provisioning 且不存活的成员执行四条件对账；C3：恢复自身抛错仅警告。
    *  返回摘要（第四轮最小扩展）：orphans = 本轮识别的失联成员；settled = 本轮定案者
-   *  （active/failed 任一去向；幂等竞态下相位已被他方定案也计入——结局已持久）。 */
-  async reconcileProvisioning(): Promise<{ orphans: string[]; settled: string[] }> {
+   *  （active/failed 任一去向；幂等竞态下相位已被他方定案也计入——结局已持久）；
+   *  〔D33〕deferred = 本轮因宽限跳过判定的成员（事件年龄 < graceMs 且 origin 未落盘）。
+   *
+   *  〔D33 事件年龄宽限，2026-11-02〕锁易主/恢复触发的 reconcile 与 in-flight spawn 竞态：
+   *  origin.json 在 createChild 之后才落盘（resume-provider.ts），此前 readProvisioningRecord
+   *  恒 undefined，旧逻辑会把仍在正常供给的成员误判 failed（sess_cabd748c 实测：锁被假死抢走后
+   *  新协调者构造即 reconcile，两个 in-flight 成员被误杀）。现以 journal 中该成员最后一条
+   *  team/member(provisioning) 事件的 ts 计龄：尚未确认首轮受理（记录缺失或 accepted 未置位）
+   *  且年龄 < graceMs → 跳过本轮并排一次性 recheck（10s）；年龄 ≥ graceMs 或恢复抛错 → 照旧
+   *  定案（真故障不被掩盖）。store 未实现 readEventLines（内存桩）→ 无宽限（旧语义）。 */
+  async reconcileProvisioning(): Promise<{ orphans: string[]; settled: string[]; deferred: string[] }> {
     const state = this.loadState();
     const pending = state.members.filter(
       (m) => m.phase === "provisioning" && !this.deps.inspector.isAlive(m.id),
     );
     const orphans = pending.map((m) => m.id);
     const settled: string[] = [];
+    const deferred: string[] = [];
+    // 〔D33〕事件年龄表（一次性读；失败/缺端口 → undefined = 不启用宽限）。
+    const ages = await this.provisioningEventAges();
     for (const member of pending) {
       try {
         let failure: string | undefined;
         let active = false;
+        let recoveryThrew = false;
         try {
           const record = this.deps.recon.readProvisioningRecord(member.id);
           if (record === undefined) {
@@ -308,7 +331,16 @@ export class TeamRoster {
             failure = "persisted child Session does not match the provisioned continuation";
           }
         } catch (err) {
+          recoveryThrew = true;
           failure = `child Session recovery failed: ${errorMessage(err)}`;
+        }
+        // 〔D33〕宽限：「尚无可用记录」或「记录在但首轮未受理」都属 pre-turn 瞬态窗口
+        // （isAlive 已排除首轮已启动者）；恢复自身抛错 = 真故障，不 defer。
+        const ageMs = ages?.get(member.id);
+        if (!active && !recoveryThrew && ageMs !== undefined && ageMs < PROVISIONING_GRACE_MS) {
+          deferred.push(member.id);
+          this.scheduleProvisioningRecheck(member.id);
+          continue;
         }
         // 事务内重查：创建方已定案 → settle 幂等返回，放弃（竞态双方结局之一）
         await this.settleProvisioning(member.id, active ? "active" : "failed", failure);
@@ -320,7 +352,48 @@ export class TeamRoster {
         );
       }
     }
-    return { orphans, settled };
+    return { orphans, settled, deferred };
+  }
+
+  /** 〔D33〕每个成员最后一条 team/member(provisioning) 事件的年龄（ms）；无端口/读失败 → undefined。 */
+  private async provisioningEventAges(): Promise<Map<string, number> | undefined> {
+    const read = this.deps.store.readEventLines;
+    if (read === undefined) return undefined;
+    try {
+      const lines = await read.call(this.deps.store);
+      const lastTs = new Map<string, number>();
+      for (const line of lines) {
+        const e = line.event as { type?: unknown; member?: { id?: unknown; phase?: unknown } } | null;
+        if (e?.type !== "team/member") continue;
+        const id = e.member?.id;
+        if (typeof id !== "string") continue;
+        if (e.member?.phase !== "provisioning") continue;
+        const at = Date.parse(line.ts);
+        if (Number.isNaN(at)) continue;
+        const prev = lastTs.get(id);
+        if (prev === undefined || at > prev) lastTs.set(id, at);
+      }
+      const now = Date.now();
+      const ages = new Map<string, number>();
+      for (const [id, at] of lastTs) ages.set(id, now - at);
+      return ages;
+    } catch {
+      return undefined; // 读失败 = 不启用宽限（宁可误判也不无限 defer）
+    }
+  }
+
+  /** 〔D33〕defer 后的一次性复核（不阻塞、不叠加：同成员在途则跳过）。 */
+  private scheduleProvisioningRecheck(memberId: string): void {
+    if (this.recheckTimers.has(memberId)) return;
+    const timer = setTimeout(() => {
+      this.recheckTimers.delete(memberId);
+      void this.reconcileProvisioning().then(
+        () => undefined,
+        () => undefined, // C3：对账自身抛错仅警告语义由调用方承担
+      );
+    }, PROVISIONING_RECHECK_MS);
+    timer.unref?.();
+    this.recheckTimers.set(memberId, timer);
   }
 
   // ---------------------------------------------------------------- listMembers（§5.5）

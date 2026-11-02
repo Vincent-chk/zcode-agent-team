@@ -261,7 +261,7 @@ Lead 的收件回执和 Stop 预算也使用 `members/<teamId>/` 下的对应文
 - journal 记录 `{seq, ts, writer, event}`，串行事务内先用投影验证候选，再追加和 fsync；默认每 256 次提交及关闭时保存 checkpoint。
 - checkpoint 无效时回退全量重放；有效时从字节偏移增量恢复。checkpoint 是加速器，正确性依赖事件日志。
 - 坏 JSON、序号断裂或已识别团队事件的非法内容会进入 `failure` 终态，显式失败；未知事件类型和非本团队事件按 selector 规则忽略，不能概括为“任何不认识的事件都报错”。
-- 单写者由 O_EXCL owner 文件与 token 心跳维持；默认心跳 1000ms、过期 4500ms。接任后恢复成员供给、接管或结算孤儿轮次，并扫描 pending 消息。消息交付集合必须始终是已排队消息集合的子集。
+- 单写者由 O_EXCL owner 文件与 token 心跳维持；默认心跳 1000ms、过期 4500ms；〔D32〕抢锁前双信号判定（心跳年龄 + 持有者 PID 存活）：活持有者宽限 3s 复核、15s 硬上限兜底，真崩溃仍 ≤5s 接任。接任后恢复成员供给、接管或结算孤儿轮次，并扫描 pending 消息。消息交付集合必须始终是已排队消息集合的子集。
 - socket 路径过长时落到 `os.tmpdir()/agent-team-sockets/at-<hash>.sock` 私有目录，由 `socket.path` 发现；不是固定写到共享 `/tmp` 根。
 - daemon 被宿主回收时，默认 drain 策略为 `keep`，保留 teammate 轮次；后续协调者依据盘上凭据恢复。daemon 信号处理只给轻量关闭约 200ms，完整恢复不能依赖这次退出成功完成。
 

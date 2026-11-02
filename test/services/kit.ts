@@ -57,6 +57,13 @@ export class TestableMemoryStore extends MemoryTeamStore implements TeamStore {
     super(applyProjectionEvent, emptyTeamState(teamId));
   }
 
+  /** 〔D33〕合成事件行（含 ts）：供对账宽限测试；未设置 = 空列表 = 无宽限（旧语义）。 */
+  syntheticEventLines: Array<{ ts: string; event: unknown }> | undefined;
+
+  async readEventLines(): Promise<Array<{ ts: string; event: unknown }>> {
+    return this.syntheticEventLines ?? [];
+  }
+
   testMutate(fn: (state: TeamState) => TeamState): void {
     const current = this.state();
     const next = fn(current);

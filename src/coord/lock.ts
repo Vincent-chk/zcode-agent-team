@@ -13,18 +13,31 @@
 //  - tryClaim：仅 EEXIST 返回 null；其余错误（权限/IO）显式抛出，不静默降级。
 //
 // 语义仍是「活跃窗口内持有」：exit handler 尽力释放；SIGKILL 由心跳过期兜底。
-// 默认调参不变：心跳 1000ms / 过期 4500ms / 轮询 200ms（kill -9 → 接任 ≤5s 硬断言）。
+// 默认调参：心跳 1000ms / 过期 4500ms / 轮询 200ms（kill -9 → 接任 ≤5s 硬断言，f29/C2）。
+// 〔D32，2026-11-02〕双信号存活判定：心跳过期只说明「心跳停了」，不等于进程死了——
+// daemon 事件循环被同步 fsync 卡住（journal.ts fsyncSync；外置卷负载下秒级）时活持有者的
+// 心跳文件也会停滞 >4.5s，旧逻辑会把活人判死并抢锁（sess_cabd748c 实测：steal 后 victim
+// 仍存活，in-flight spawn 被 reconcile 误判 failed）。现增 PID 存活信号：
+//   holderAlive=false（真崩溃）→ 立即抢锁，≤5s SLA 不变；
+//   holderAlive=true（stalled）→ 宽限 graceMs 再复核（期间记 steal-deferred），
+//     硬上限 hardExpiryMs 兜底（防 stalled 变无限期 outage）；
+//   holderAlive=null（锁不可解析）→ 维持旧行为（过期即抢）。
+// 宽限路径另做 PID 复用防护（锁文件增 startedAt，与 ps 启动时间比对）。
 
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
 import { bootId } from "./identity.js";
+import { pidAlive } from "../provider/procgroup.js";
 
 export interface LockInfo {
   pid: number;
   bootId: string;
   heartbeatAt: number; // epoch ms
   acquiredAt: number; // epoch ms
+  /** 持有者进程启动时刻（epoch ms，估算）；旧格式锁文件缺省 → 宽限路径不做 PID 复用校验。 */
+  startedAt?: number;
   /** 每次抢锁唯一；旧格式锁文件可缺省（视为 legacy，仅按 pid/bootId 识别）。 */
   token?: string;
 }
@@ -33,12 +46,18 @@ export interface LockTuning {
   heartbeatMs: number;
   expiryMs: number;
   pollMs: number;
+  /** 〔D32〕stalled-but-alive 持有者的抢锁宽限（复核窗口）。 */
+  graceMs: number;
+  /** 〔D32〕无论存活与否都抢锁的硬上限（防 stalled 变无限期 outage）。 */
+  hardExpiryMs: number;
 }
 
 export const DEFAULT_LOCK_TUNING: LockTuning = {
   heartbeatMs: 1000,
   expiryMs: 4500,
   pollMs: 200,
+  graceMs: 3000,
+  hardExpiryMs: 15000,
 };
 
 /**
@@ -81,6 +100,10 @@ interface ObservedLock {
   parseable: boolean;
   /** owner 文件 inode（steal 复核用；不存在时缺省）。 */
   ino?: number;
+  /** 〔D32〕持有者进程存活信号：false=确认死亡（立即抢）；true=活着（宽限）；null=无法判定。 */
+  holderAlive: boolean | null;
+  /** 〔D32〕心跳年龄来源：token 心跳文件 / 回退到冻结的 owner.heartbeatAt / mtime 估算。 */
+  hbSource: "token" | "owner-fallback" | "mtime";
 }
 
 export interface LockOptions extends Partial<LockTuning> {
@@ -155,7 +178,11 @@ export class CoordinatorLock {
         continue;
       }
       if (observed.ageMs > this.tuning.expiryMs) {
-        this.steal(observed);
+        const outcome = await this.steal(observed);
+        if (outcome === "stolen") continue; // 锁已隔离 → 立即 tryClaim（不节流，保住 ≤5s 接任）
+        // deferred/skipped：节流 + deadline 检查（waitMs=0 = 单次出手语义）。
+        if (Date.now() >= deadline) timeout();
+        await sleep(Math.min(this.tuning.pollMs, Math.max(deadline - Date.now(), 1)));
         continue; // 下一轮 tryClaim（抢占失败也只是继续观察）
       }
       if (Date.now() >= deadline) timeout();
@@ -182,9 +209,14 @@ export class CoordinatorLock {
     try {
       this.writeHeartbeat(held.token, now);
     } catch (err) {
-      this.audit("renew-failed", { error: String(err) });
-      this.markLost(owner.info);
-      return false;
+      // 〔D32〕单次坏写不立即降级：同步重试一次（exFAT 偶发抖动），仍败才 markLost。
+      try {
+        this.writeHeartbeat(held.token, now);
+      } catch (retryErr) {
+        this.audit("renew-failed", { error: String(err), retryError: String(retryErr) });
+        this.markLost(owner.info);
+        return false;
+      }
     }
     this.held = { ...held, info: { ...held.info, heartbeatAt: now } };
     return true;
@@ -259,7 +291,8 @@ export class CoordinatorLock {
     this.exitUnregister = registerExitRelease(() => this.releaseSync());
   }
 
-  /** 观察锁文件（不抢）。ageMs：可解析 = now-heartbeatAt（优先 token 心跳）；否则 now-mtime。 */
+  /** 观察锁文件（不抢）。ageMs：可解析 = now-heartbeatAt（优先 token 心跳）；否则 now-mtime。
+   *  〔D32〕同时给出持有者进程存活信号与心跳来源（回退路径不再静默不可诊断）。 */
   observe(): ObservedLock {
     let raw: string;
     let stat: fs.Stats;
@@ -267,7 +300,7 @@ export class CoordinatorLock {
       stat = fs.statSync(this.lockFile);
       raw = fs.readFileSync(this.lockFile, "utf8");
     } catch {
-      return { exists: false, ageMs: Number.POSITIVE_INFINITY, parseable: false };
+      return { exists: false, ageMs: Number.POSITIVE_INFINITY, parseable: false, holderAlive: null, hbSource: "mtime" };
     }
     try {
       const info = JSON.parse(raw) as LockInfo;
@@ -277,9 +310,13 @@ export class CoordinatorLock {
         typeof info.heartbeatAt === "number"
       ) {
         let heartbeatAt = info.heartbeatAt;
+        let hbSource: ObservedLock["hbSource"] = "owner-fallback";
         if (typeof info.token === "string") {
           const hb = this.readHeartbeat(info.token);
-          if (hb !== undefined) heartbeatAt = hb;
+          if (hb !== undefined) {
+            heartbeatAt = hb;
+            hbSource = "token";
+          }
         }
         return {
           exists: true,
@@ -287,12 +324,21 @@ export class CoordinatorLock {
           ageMs: Date.now() - heartbeatAt,
           parseable: true,
           ino: stat.ino,
+          holderAlive: pidAlive(info.pid),
+          hbSource,
         };
       }
     } catch {
       /* JSON 坏 → 按 mtime 龄估算 */
     }
-    return { exists: true, ageMs: Date.now() - stat.mtimeMs, parseable: false, ino: stat.ino };
+    return {
+      exists: true,
+      ageMs: Date.now() - stat.mtimeMs,
+      parseable: false,
+      ino: stat.ino,
+      holderAlive: null,
+      hbSource: "mtime",
+    };
   }
 
   /** 审计痕迹（获取/释放/抢占/丢失；best-effort，无 fsync）。 */
@@ -319,6 +365,8 @@ export class CoordinatorLock {
       bootId: this.ownerBootId,
       heartbeatAt: now,
       acquiredAt: now,
+      // 〔D32〕进程启动时刻估算（宽限路径做 PID 复用防护；旧锁无此字段则跳过校验）。
+      startedAt: now - Math.round(process.uptime() * 1000),
       token,
     };
     let fd: number;
@@ -349,8 +397,9 @@ export class CoordinatorLock {
     try {
       this.writeHeartbeat(token, now);
       this.cleanupForeignHeartbeats(token);
-    } catch {
-      /* 心跳首写失败不致命：observe 回退 owner.heartbeatAt */
+    } catch (err) {
+      // 〔D32〕首写失败不再静默：observe 会回退到冻结的 acquire 时间戳，4.5s 后即被误判死亡。
+      this.audit("heartbeat-first-write-failed", { error: String(err) });
     }
     this.audit("acquire", { token: token.slice(0, 8), ino });
     return info;
@@ -427,33 +476,53 @@ export class CoordinatorLock {
   }
 
   /**
-   * 过期抢占：guard 单飞 → 重读复核 → rename 到 quarantine → 校验 inode。
+   * 过期抢占（〔D32〕双信号）：guard 单飞 → 重读复核 →
+   *   holderAlive=false（真崩溃）→ 立即 quarantine（kill -9 接任 ≤5s SLA 不变）；
+   *   holderAlive=true（stalled-but-alive）→ audit `steal-deferred` + 宽限 graceMs 复核：
+   *     宽限内心跳恢复/换代 → 放弃；仍过期且（已死 或 超过 hardExpiryMs 硬上限）→ quarantine；
+   *   holderAlive=null（锁不可解析）→ 维持旧行为（过期即抢）。
+   * 宽限路径做 PID 复用防护（锁内 startedAt 与 ps etimes 推算的启动时刻比对）。
    * 若 rename 到的不是观察到的 inode（竞争者刚换了新锁）→ 尝试归还并回滚。
    */
-  private steal(observed: ObservedLock): void {
+  private async steal(observed: ObservedLock): Promise<"stolen" | "deferred" | "skipped"> {
     const guard = `${this.lockFile}.guard-${process.pid}-${crypto.randomBytes(4).toString("hex")}`;
     let guardFd: number;
     try {
       guardFd = fs.openSync(guard, "wx", 0o600);
     } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === "EEXIST") return; // 他人在抢 → 本轮放弃
+      if ((err as NodeJS.ErrnoException).code === "EEXIST") return "skipped"; // 他人在抢 → 本轮放弃
       throw err;
     }
     try {
       const current = this.observe();
-      if (!current.exists || current.ageMs <= this.tuning.expiryMs) return;
+      if (!current.exists || current.ageMs <= this.tuning.expiryMs) return "skipped";
       if (
         observed.ino === undefined ||
         current.ino !== observed.ino ||
         current.info?.token !== observed.info?.token
       ) {
-        return; // 观察后锁已换代 → 不抢
+        return "skipped"; // 观察后锁已换代 → 不抢
+      }
+      // 〔D32〕活持有者宽限：心跳停了但进程还在 = 事件循环卡顿（同步 fsync 等），不是死亡。
+      if (current.holderAlive === true && current.ageMs <= this.tuning.hardExpiryMs && !this.pidReused(current)) {
+        this.audit("steal-deferred", {
+          reason: "holder-alive",
+          ageMs: Math.round(current.ageMs),
+          graceMs: this.tuning.graceMs,
+          hbSource: current.hbSource,
+          previous: current.info,
+        });
+        await sleep(this.tuning.graceMs);
+        const re = this.observe();
+        if (!re.exists || re.ageMs <= this.tuning.expiryMs) return "deferred"; // 宽限内恢复 → 不抢
+        if (re.ino !== current.ino || re.info?.token !== current.info?.token) return "deferred"; // 换代 → 不抢
+        if (re.holderAlive === true && re.ageMs <= this.tuning.hardExpiryMs) return "deferred"; // 仍活且未超硬上限 → 交给后续轮询
       }
       const quarantine = `${this.lockFile}.stale-${Date.now()}-${crypto.randomBytes(4).toString("hex")}`;
       try {
         fs.renameSync(this.lockFile, quarantine);
       } catch (err) {
-        if ((err as NodeJS.ErrnoException).code === "ENOENT") return;
+        if ((err as NodeJS.ErrnoException).code === "ENOENT") return "skipped";
         throw err;
       }
       let quarantinedIno: number | null = null;
@@ -477,14 +546,17 @@ export class CoordinatorLock {
             quarantine,
           });
         }
-        return;
+        return "skipped";
       }
       this.audit("steal", {
         reason: current.parseable ? "heartbeat-expired" : "unparseable-and-aged",
+        holderAlive: current.holderAlive,
+        hbSource: current.hbSource,
         previous: current.info ?? { mtimeAgeMs: Math.round(current.ageMs) },
         quarantine,
       });
       if (typeof current.info?.token === "string") this.removeHeartbeat(current.info.token);
+      return "stolen";
     } finally {
       try {
         fs.closeSync(guardFd);
@@ -499,6 +571,26 @@ export class CoordinatorLock {
     }
   }
 
+  /**
+   * 〔D32〕PID 复用防护（仅宽限路径调用）：锁内 startedAt 与 `ps -o etime=` 推算的启动时刻
+   * 偏差 >3s → 认定 PID 已被复用（原持有者已死）→ 跳过宽限按死亡处理。
+   * 旧锁无 startedAt / ps 不可用 / 解析失败 → 返回 false（保守：维持宽限，不误杀活人）。
+   * etime 跨平台（macOS 无 etimes；格式 mm:ss | hh:mm:ss | d-hh:mm:ss）。
+   */
+  private pidReused(observed: ObservedLock): boolean {
+    const startedAt = observed.info?.startedAt;
+    const pid = observed.info?.pid;
+    if (typeof startedAt !== "number" || typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0) {
+      return false;
+    }
+    const r = spawnSync("ps", ["-o", "etime=", "-p", String(pid)], { encoding: "utf8" });
+    if (r.status !== 0) return false;
+    const elapsedSec = parseEtime(r.stdout.trim());
+    if (!Number.isFinite(elapsedSec) || elapsedSec < 0) return false;
+    const estimatedStart = Date.now() - elapsedSec * 1000;
+    return Math.abs(estimatedStart - startedAt) > 3000;
+  }
+
   private markLost(previous: unknown): void {
     if (this.held === null) return; // 只回调一次
     this.audit("lost", { previous });
@@ -510,4 +602,23 @@ export class CoordinatorLock {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** 〔D32〕解析 `ps -o etime=` 输出为秒：mm:ss | hh:mm:ss | d-hh:mm:ss；不可解析 → NaN。 */
+export function parseEtime(raw: string): number {
+  let s = raw.trim();
+  if (s.length === 0) return Number.NaN;
+  let days = 0;
+  const dash = s.indexOf("-");
+  if (dash !== -1) {
+    days = Number.parseInt(s.slice(0, dash), 10);
+    s = s.slice(dash + 1);
+  }
+  const parts = s.split(":").map((p) => Number.parseInt(p, 10));
+  if (parts.some((p) => !Number.isFinite(p) || p < 0)) return Number.NaN;
+  let sec: number;
+  if (parts.length === 3) sec = parts[0] * 3600 + parts[1] * 60 + parts[2];
+  else if (parts.length === 2) sec = parts[0] * 60 + parts[1];
+  else return Number.NaN;
+  return days * 86400 + sec;
 }

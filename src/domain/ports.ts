@@ -11,6 +11,11 @@ export interface TeamStore {
   transact<T>(op: () => Promise<T>): Promise<T>;
   /** 提交边（Activity 唤醒源之一）。 */
   onCommit(listener: (seq: number, state: TeamState) => void): () => void;
+  /**
+   * 〔D33〕原始事件行（含写入 ts）——供 provisioning 对账宽限读取事件年龄。
+   * 只读、不持锁；未实现（内存桩）= 无宽限（旧语义）。
+   */
+  readEventLines?(): Promise<Array<{ ts: string; event: unknown }>>;
 }
 
 /** 进程内存储实现（单测/桩用；真持久化走 src/coord/store-adapter.ts）。 */

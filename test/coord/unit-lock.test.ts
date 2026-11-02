@@ -48,27 +48,123 @@ describe("lock · 原子获取与独占", () => {
     await a.release();
   });
 
-  it("过期抢占（steal）：心跳超龄 → 接任者 unlink 后重抢成功；原持有者 renew 判失", async () => {
+  it("过期抢占（steal）：心跳超龄 + 持有者已死 → 立即接任（不走宽限）；原持有者 renew 判失", async () => {
     // F29：过期检测 → 抢占 → 接任。进程内用注入身份模拟两持有者（生产为两进程）。
+    // 〔D32〕持有者 pid 置 0（死亡信号）→ 崩溃路径：立即抢锁，不进入活持有者宽限。
     const lockFile = path.join(dir, "t3.lock");
     const auditFile = path.join(dir, "t3.audit.jsonl");
     const a = new CoordinatorLock(lockFile, auditFile); // 身份 = 本进程 bootId
     await a.acquire();
     // 手工把心跳写老（模拟 SIGKILL 后残留的过期锁；token 心跳文件也要一并置老/删除）
-    const stale = { ...a.info!, heartbeatAt: Date.now() - DEFAULT_LOCK_TUNING.expiryMs - 1000 };
+    const stale = { ...a.info!, pid: 0, heartbeatAt: Date.now() - DEFAULT_LOCK_TUNING.expiryMs - 1000 };
     fs.writeFileSync(lockFile, JSON.stringify(stale));
     for (const name of fs.readdirSync(dir)) {
       if (name.startsWith("t3.lock.hb-")) fs.unlinkSync(path.join(dir, name));
     }
     const b = new CoordinatorLock(lockFile, auditFile, { ownerBootId: "boot-standby" });
+    const t0 = Date.now();
     const info2 = await b.acquire({ waitMs: 1000 });
+    expect(Date.now() - t0).toBeLessThan(DEFAULT_LOCK_TUNING.graceMs); // 崩溃路径不宽限
     expect(info2.bootId).toBe("boot-standby");
     // 原持有者发现锁已非己有 → renew false（lost 审计）
     expect(await a.renew()).toBe(false);
     const audit = fs.readFileSync(auditFile, "utf8");
     expect(audit).toContain('"event":"steal"');
+    expect(audit).toContain('"holderAlive":false');
     expect(audit).toContain('"event":"lost"');
     await b.release();
+  });
+
+  // ——〔D32〕双信号存活判定：活持有者心跳停滞 ≠ 死亡 ——
+  it("〔D32〕活持有者心跳超龄 → 宽限内不抢（steal-deferred 审计 + 锁不换主）", async () => {
+    const lockFile = path.join(dir, "t30.lock");
+    const auditFile = path.join(dir, "t30.audit.jsonl");
+    const a = new CoordinatorLock(lockFile, auditFile);
+    await a.acquire();
+    // 心跳写老但 pid 存活（= 本进程）→ stalled-but-alive
+    const stale = { ...a.info!, heartbeatAt: Date.now() - DEFAULT_LOCK_TUNING.expiryMs - 1000 };
+    fs.writeFileSync(lockFile, JSON.stringify(stale));
+    for (const name of fs.readdirSync(dir)) {
+      if (name.startsWith("t30.lock.hb-")) fs.unlinkSync(path.join(dir, name));
+    }
+    const b = new CoordinatorLock(lockFile, auditFile, { ownerBootId: "boot-standby" });
+    // 过期 4.5s + 宽限 3s 内绝不应抢到（defer 后复核仍活 → 放弃）
+    await expect(
+      b.acquire({ waitMs: DEFAULT_LOCK_TUNING.expiryMs + DEFAULT_LOCK_TUNING.graceMs + 500 }),
+    ).rejects.toThrowError(AcquireTimeout);
+    expect(a.isHeld).toBe(true);
+    expect(fs.existsSync(lockFile)).toBe(true);
+    const audit = fs.readFileSync(auditFile, "utf8");
+    expect(audit).toContain('"event":"steal-deferred"');
+    expect(audit).not.toContain('"event":"steal"');
+    // 持有者释放后接任者正常获得（宽限不破坏正常交接）
+    await a.release();
+    const info2 = await b.acquire({ waitMs: 1000 });
+    expect(info2.bootId).toBe("boot-standby");
+    await b.release();
+  });
+
+  it("〔D32〕活持有者超 hardExpiry → 不再宽限，直接抢（防 stalled 变无限期 outage）", async () => {
+    const lockFile = path.join(dir, "t31.lock");
+    const auditFile = path.join(dir, "t31.audit.jsonl");
+    const a = new CoordinatorLock(lockFile, auditFile);
+    await a.acquire();
+    const stale = {
+      ...a.info!,
+      heartbeatAt: Date.now() - DEFAULT_LOCK_TUNING.hardExpiryMs - 1000,
+      startedAt: Date.now() - Math.round(process.uptime() * 1000), // 真实启动时刻 → 非 PID 复用
+    };
+    fs.writeFileSync(lockFile, JSON.stringify(stale));
+    for (const name of fs.readdirSync(dir)) {
+      if (name.startsWith("t31.lock.hb-")) fs.unlinkSync(path.join(dir, name));
+    }
+    const b = new CoordinatorLock(lockFile, auditFile, { ownerBootId: "boot-standby" });
+    const t0 = Date.now();
+    const info2 = await b.acquire({ waitMs: 2000 });
+    expect(Date.now() - t0).toBeLessThan(DEFAULT_LOCK_TUNING.graceMs); // 硬上限路径不宽限
+    expect(info2.bootId).toBe("boot-standby");
+    const audit = fs.readFileSync(auditFile, "utf8");
+    expect(audit).toContain('"event":"steal"');
+    expect(audit).toContain('"holderAlive":true'); // 活但超硬上限 → 仍抢
+    await b.release();
+  });
+
+  it("〔D32〕PID 复用防护：锁内 startedAt 与 ps 启动时刻不符 → 视为已死，立即抢", async () => {
+    const lockFile = path.join(dir, "t32.lock");
+    const auditFile = path.join(dir, "t32.audit.jsonl");
+    const a = new CoordinatorLock(lockFile, auditFile);
+    await a.acquire();
+    const stale = {
+      ...a.info!,
+      heartbeatAt: Date.now() - DEFAULT_LOCK_TUNING.expiryMs - 1000,
+      startedAt: Date.now() - 10 * 60_000, // 谎称 10 分钟前启动 → 与 ps etimes 偏差 > 3s = PID 已复用
+    };
+    fs.writeFileSync(lockFile, JSON.stringify(stale));
+    for (const name of fs.readdirSync(dir)) {
+      if (name.startsWith("t32.lock.hb-")) fs.unlinkSync(path.join(dir, name));
+    }
+    const b = new CoordinatorLock(lockFile, auditFile, { ownerBootId: "boot-standby" });
+    const t0 = Date.now();
+    await b.acquire({ waitMs: 1500 });
+    expect(Date.now() - t0).toBeLessThan(DEFAULT_LOCK_TUNING.graceMs);
+    await b.release();
+  });
+
+  it("〔D32〕心跳写失败不再静默：renew 单次坏写重试一次；持续失败才 markLost 且留审计", async () => {
+    const lockFile = path.join(dir, "t33.lock");
+    const auditFile = path.join(dir, "t33.audit.jsonl");
+    const a = new CoordinatorLock(lockFile, auditFile);
+    const info = await a.acquire();
+    // 把心跳文件路径变成目录 → writeFileSync(tmp)+rename 持续失败（EISDIR/EPERM）
+    const hbFile = path.join(dir, `t33.lock.hb-${info.token}`);
+    fs.rmSync(hbFile, { force: true });
+    fs.mkdirSync(hbFile);
+    expect(await a.renew()).toBe(false); // 重试一次仍败 → markLost
+    expect(a.isHeld).toBe(false);
+    const audit = fs.readFileSync(auditFile, "utf8");
+    expect(audit).toContain('"event":"renew-failed"');
+    expect(audit).toContain("retryError");
+    fs.rmdirSync(hbFile);
   });
 
   it("不可解析锁文件：新鲜（mtime 近）视为存活；超龄可抢占", async () => {

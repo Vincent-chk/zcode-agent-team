@@ -262,7 +262,7 @@ zcode plugins list --json        # 看 version / rootPath / dataPath / diagnosti
 | D5 | 成员会话默认不进左侧任务栏；面板内提供成员会话查看视图（只读）。旧版遗留的可见行可用 `sidebar-audit` 归档 |
 | D6 | Lead 仍能看见宿主内置 Task 工具（无法禁用）；teammate 侧已禁用 Task，团队工具优先由策略引导 |
 | D7 | 策略文本中“文件版本冲突”一句替换为 ZCode 文件工具的等价语义；其余逐字 |
-| D8 | 协调者是“瞬时”的：daemon 空闲会被宿主回收，任一实例可接任；协调者交替的瞬间可能出现 `TEAM_DISPOSED` 临时错误，重试即可（实测接任 ≤5s） |
+| D8 | 协调者是“瞬时”的：daemon 空闲会被宿主回收，任一实例可接任；协调者交替的瞬间可能出现 `TEAM_DISPOSED` 临时错误，重试即可（真崩溃实测接任 ≤5s；〔D32〕心跳过期但进程仍存活时按 PID 存活判定宽限复核，不抢活人） |
 | D9 | 没有 SessionEnd hook：处置靠 daemon 退出时尽力执行 + 下次启动对账；极短宽限下可能只留下可对账的状态 |
 | D10 | 策略通过 SessionStart hook 注入到消息上下文，而非系统提示；注入文本不落 transcript；被禁用 hook 时会有 fail-loud 警告 |
 | D11 | 桌面 callTool 在 daemon 被回收后可能挂起/`Client closed` 且本会话不恢复；新任务可恢复。teammate 走独立进程不受影响 |

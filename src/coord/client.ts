@@ -16,7 +16,9 @@ export interface TeamClientOptions {
   teamId: string;
   /** 本进程宿主（协调者模式 → 写操作直执行，不经 socket）。 */
   host?: () => TeamCoordinatorHost | null;
-  /** 缺位窗口重试预算（默认 6000ms ≥ kill -9 接任上限 5s）。 */
+  /** 缺位窗口重试预算（默认 6000ms ≥ kill -9 接任上限 5s）。
+   *  〔D32〕预算只覆盖真崩溃路径；stalled-but-alive 持有者走宽限复核（graceMs/hardExpiryMs），
+   *  该场景协调者仍在服务（只是心跳滞后），不产生长缺位窗口。 */
   unavailableRetryMs?: number;
   /** 经 socket 单次调用的执行超时（缺省用 callCoordinator 默认）。 */
   callTimeoutMs?: number;

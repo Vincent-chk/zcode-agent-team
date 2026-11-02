@@ -229,7 +229,12 @@ describe("真实装配 · 全方法 happy（进程内，补 socket 演练不计�
         tasks: [expect.objectContaining({ subject: "wake" })], // 无 blocker 的 pending 任务 ready=true
       });
 
-      await expect(host.dispatch("admin.reconcile", { teamId })).resolves.toEqual({ orphans: [], settled: [] });
+      // 〔D33〕摘要新增 deferred 桶；空团队三桶皆空。
+      await expect(host.dispatch("admin.reconcile", { teamId })).resolves.toEqual({
+        orphans: [],
+        settled: [],
+        deferred: [],
+      });
     } finally {
       await host.close();
     }

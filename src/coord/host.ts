@@ -5,6 +5,8 @@
 //
 // 接任：代理模式默认开启 autoTakeover 观察者（poll lock；持有者心跳过期/锁消失 → 抢锁晋升
 // 协调者，kill -9 → 接任 ≤5s 由 lock 调参保证：4500ms 过期 + 200ms 轮询）。
+// 〔D32〕心跳过期但持有者进程仍存活（事件循环被同步 fsync 卡住）时不立即抢：宽限 graceMs
+// 复核，硬上限 hardExpiryMs 兜底；真崩溃（PID 已死）仍走 ≤5s 快路径（lock.ts 双信号判定）。
 
 import { CoordinatorLock, AcquireTimeout, type LockInfo } from "./lock.js";
 import { JournalTeamStore } from "./store-adapter.js";

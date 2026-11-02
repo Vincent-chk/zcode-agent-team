@@ -295,6 +295,51 @@ describe("Roster · 恢复对账（F12 + C3/C6）", () => {
     return kit;
   }
 
+  const provisioningLine = (ageMs: number) => ({
+    ts: new Date(Date.now() - ageMs).toISOString(),
+    event: { type: "team/member", version: 2, teamId: TEAM, member: { id: "agent-ghost", name: "ghost", phase: "provisioning" } },
+  });
+
+  // ——〔D33〕provisioning 对账宽限：in-flight spawn 不被 reconcile 误杀 ——
+  it("〔D33〕事件年龄 < 宽限 + 记录缺失 → defer（不定 failed）；返回 deferred 摘要", async () => {
+    const kit = await kitWithProvisioningMember();
+    kit.store.syntheticEventLines = [provisioningLine(7_000)];
+    const summary = await kit.runtime.roster.reconcileProvisioning();
+    expect(summary.deferred).toContain("agent-ghost");
+    expect(summary.settled).not.toContain("agent-ghost");
+    const member = kit.store.state().members.find((m) => m.id === "agent-ghost");
+    expect(member?.phase).toBe("provisioning"); // 未被误杀
+  });
+
+  it("〔D33〕事件年龄 ≥ 宽限 + 记录缺失 → 照旧定 failed（真故障不被掩盖）", async () => {
+    const kit = await kitWithProvisioningMember();
+    kit.store.syntheticEventLines = [provisioningLine(90_000)];
+    const summary = await kit.runtime.roster.reconcileProvisioning();
+    expect(summary.deferred).not.toContain("agent-ghost");
+    expect(summary.settled).toContain("agent-ghost");
+    const member = kit.store.state().members.find((m) => m.id === "agent-ghost");
+    expect(member?.phase).toBe("failed");
+    expect(member?.error).toBe("provisioning did not leave a resumable child Session");
+  });
+
+  it("〔D33〕恢复抛错 = 真故障：即使年龄 < 宽限也不 defer", async () => {
+    const kit = await kitWithProvisioningMember();
+    kit.store.syntheticEventLines = [provisioningLine(3_000)];
+    (kit.provider as unknown as { readProvisioningRecord: () => unknown }).readProvisioningRecord = () => {
+      throw new Error("disk error");
+    };
+    const summary = await kit.runtime.roster.reconcileProvisioning();
+    expect(summary.deferred).not.toContain("agent-ghost");
+    expect(kit.store.state().members[0].error).toBe("child Session recovery failed: disk error");
+  });
+
+  it("〔D33〕无事件行（内存桩缺省）→ 旧语义：记录缺失即 failed", async () => {
+    const kit = await kitWithProvisioningMember();
+    const summary = await kit.runtime.roster.reconcileProvisioning();
+    expect(summary.deferred).toHaveLength(0);
+    expect(kit.store.state().members[0].phase).toBe("failed");
+  });
+
   it("四条件逐项缺失 → failed 三条文本逐字", async () => {
     const cases: Array<[string, () => { rootSessionId: string; descriptor?: { provider: string; mode: string }; initialUserMessageAccepted: boolean } | undefined, string]> = [
       ["no-record", () => undefined, "provisioning did not leave a resumable child Session"],

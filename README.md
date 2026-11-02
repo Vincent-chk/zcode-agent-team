@@ -262,7 +262,7 @@ This plugin is a re-implementation of DSH Agent Teams on ZCode. The deviations b
 | D5 | Member sessions stay out of the left task list by default; the panel offers a read-only member conversation view. Legacy visible rows can be archived with `sidebar-audit` |
 | D6 | The Lead still sees the host's built-in Task tools (cannot be disabled); teammates have Task disabled and team tools are policy-preferred |
 | D7 | One sentence about "file version conflicts" in the policy text is replaced with ZCode file-tool semantics; everything else is verbatim |
-| D8 | The coordinator is ephemeral: the daemon is reclaimed by the host when idle and any instance can take over; a momentary `TEAM_DISPOSED` error may appear during handover — just retry (measured takeover ≤5s) |
+| D8 | The coordinator is ephemeral: the daemon is reclaimed by the host when idle and any instance can take over; a momentary `TEAM_DISPOSED` error may appear during handover — just retry (measured takeover ≤5s for a truly dead coordinator; a stalled-but-alive holder is detected via PID liveness and given a bounded grace instead of being stolen from) |
 | D9 | No SessionEnd hook: disposal is best-effort at daemon exit plus reconciliation on next start; under very short grace only a reconcilable state may remain |
 | D10 | The policy is injected into message context by the SessionStart hook, not the system prompt; injected text does not land in the transcript; disabling hooks triggers a fail-loud warning |
 | D11 | Desktop callTool may hang / `Client closed` after daemon reclaim without recovering in that session; a new task recovers. Teammates use separate processes and are unaffected |

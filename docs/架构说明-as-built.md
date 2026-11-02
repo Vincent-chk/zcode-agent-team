@@ -45,7 +45,7 @@
 ## 2. 进程与生命周期
 
 - **daemon**：MCP stdio server，会话按需拉起；宿主空闲 30s 回收是常态（H9/ADR-3）。启动即全量重放日志 + 恢复对账，任何实例都可服务。回收时不杀 teammate 轮次（D17，默认 `keep`）。
-- **协调者（瞬时）**：`teams/<id>/coordinator.lock` 独占文件锁选出唯一写者。锁 = owner 文件（O_EXCL，inode+token 永不改写）+ 按 token 分开的心跳文件；心跳 1000ms / 过期 4500ms / 轮询 200ms。协调者死亡 → 心跳过期 → 下一个实例抢占接任（实测 kill -9 → 接任 ≤5s）。非协调者实例经 `coordinator.sock`（NDJSON，0600，路径过长时回退 `/tmp/at-<hash>.sock`）代理写操作。
+- **协调者（瞬时）**：`teams/<id>/coordinator.lock` 独占文件锁选出唯一写者。锁 = owner 文件（O_EXCL，inode+token 永不改写）+ 按 token 分开的心跳文件；心跳 1000ms / 过期 4500ms / 轮询 200ms；〔D32〕宽限 3000ms / 硬上限 15000ms。协调者死亡 → 心跳过期 → 下一个实例抢占接任（实测 kill -9 → 接任 ≤5s）；心跳过期但进程仍存活（事件循环卡顿）→ 记 steal-deferred 并宽限复核，防活持有者被误抢（2026-11-02 sess_cabd748c）。非协调者实例经 `coordinator.sock`（NDJSON，0600，路径过长时回退 `/tmp/at-<hash>.sock`）代理写操作。
 - **teammate**：`ResumePerTurnProvider` 每轮 `zcode -p --resume <childSession> --json --mode yolo --surface terminal --disallowed-tools Task`，独立进程组；首轮前经 `session-breeder` 用 app-server 创建宿主原生 `selection_side_chat` 隐藏子会话 + anchor tombstone（会话隔离）。进程退出码 + transcript 即完成信号。
 - **hooks**：三个合法事件（SessionStart startup/resume、Stop、UserPromptSubmit）；读 stdin 事件 → 写 `logs/hooks.jsonl` → 按角色注入策略/收件箱/Stop block；RPC ack 失败静默（回执文件为权威）。
 - **面板**：daemon 内视图服务以 500ms 轮询构帧，`resources/subscribe` 推 `team://view`；面板 25s 心跳 `team_panel_call` 保活 Lead 侧连接；detail 视图按页只读 db.sqlite（按轮摘要：用户指令 + 动作组 + 每轮结论）。0.4.0：面板为**只读通道**（`team://models` 资源与 modelOptions/setMemberModel 两动作下线，零变更能力恢复 F07/F14 口径）。
@@ -97,7 +97,7 @@ teams/<sessionId>/
 | 场景 | 行为 |
 |---|---|
 | daemon 空闲回收 | 正常事件；teammate 轮次保留（D17）；下次任一实例重放 + 对账 |
-| 协调者 kill -9 | 锁心跳过期 → 接任 ≤5s；缺位窗口返回 `TEAM_DISPOSED` 临时错误，客户端退避重试（D8） |
+| 协调者 kill -9 | 锁心跳过期 + PID 已死 → 立即接任 ≤5s；缺位窗口返回 `TEAM_DISPOSED` 临时错误，客户端退避重试（D8）。〔D32〕心跳过期但 PID 存活 → 宽限 3s 复核、15s 硬上限，不抢活人 |
 | 日志坏行 / seq 断裂 | 重放 fail-closed → `failure` 终态；面板/工具显式报错，不猜测 |
 | 宿主回收 SIGINT→SIGKILL（~260ms） | 处置只做轻量落盘；孤儿轮次由冷启动 `adoptOrphans` 定案/纳管（D9/D17） |
 | db.sqlite 不可读/结构变化 | 只影响 transcript/detail 的会话内容回填与模型继承兜底，不阻塞团队域操作 |

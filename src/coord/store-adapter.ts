@@ -74,6 +74,12 @@ export class JournalTeamStore implements TeamStore {
     return this.journal.committedSeq;
   }
 
+  /** 〔D33〕原始事件行（含 ts）：provisioning 对账宽限读事件年龄；只读全量回放，不持锁。 */
+  async readEventLines(): Promise<Array<{ ts: string; event: unknown }>> {
+    const lines = await this.journal.readAll();
+    return lines.map((line) => ({ ts: line.ts, event: line.event }));
+  }
+
   transact<T>(op: () => Promise<T>): Promise<T> {
     return this.journal.transact(op);
   }

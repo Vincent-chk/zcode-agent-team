@@ -201,7 +201,12 @@ describe("S1 · 方法表全量接线（socket 载体）", () => {
       await rpc(caseRoot, "task.create", { session_id: TEAM, subject: "wake", description: "d" });
       await expect(waiting).resolves.toEqual({ timedOut: false });
 
-      await expect(rpc(caseRoot, "admin.reconcile", { teamId: TEAM })).resolves.toEqual({ orphans: [], settled: [] });
+      // 〔D33〕reconcile 摘要新增 deferred 桶（宽限跳过判定者）；空团队三桶皆空。
+      await expect(rpc(caseRoot, "admin.reconcile", { teamId: TEAM })).resolves.toEqual({
+        orphans: [],
+        settled: [],
+        deferred: [],
+      });
       await expect(rpc(caseRoot, "task.list", { session_id: TEAM, status: "pending" })).resolves.toMatchObject({
         tasks: expect.any(Array),
       });
