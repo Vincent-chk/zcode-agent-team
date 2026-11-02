@@ -104,22 +104,27 @@ export const FIRST_SPAWN_NOTE =
   "[agent-team] Team mode is now active: this is the first teammate of this session. From now on, judge each request by delegation value — handle simple work directly with a one-line reason, and use the team for work that benefits from multiple roles, parallel execution, or disjoint write scopes.";
 
 /**
- * 订阅套餐降级提示（〔issue #5 / D29〕2026-11-02）：Lead 最新已确认模型为官方套餐
- * （account:/builtin:，CLI 子进程拿不到凭据）→ 队友必然不可孵化。语义 = 单 agent 兜底
- * （自己干全部工作、不试 spawn）；措辞**非永久**（spawn 成功即恢复正常用队，覆盖用户中途
- * 切第三方模型的恢复路径）。每会话**首次**注入（SessionStart 或首次 UserPromptSubmit，
- * lead state soloNotifiedAt 锚去重，用户拍板省 token）。红线：不含 interrupt_agent / do not resend。
+ * 订阅套餐降级提示（〔issue #5 / D29〕2026-11-02；〔D30 修订〕2026-11-02 改为事实描述）。
+ *
+ * **为什么不写禁止句**：本提示注入到对话历史，是不可撤销的强指令。实测（2026-11-02 真订阅会话）
+ * 证明「do not call spawn_teammate」一旦入史，后续的告知式撤回提示压不过它——用户切到第三方模型后
+ * 模型仍拒绝尝试 spawn，表现为「切了还是不可用」。故改为**只陈述当前事实 + 明确恢复条件**，
+ * 不禁止任何调用：模型读到的是「此刻 spawn 会失败（原因：套餐凭据不可继承）」，
+ * 加上「一旦切换为非套餐模型即可正常使用、无需额外确认」，切模型后模型自然会试。
+ * 红线：不含 interrupt_agent / do not resend。
  */
 export const DEGRADED_SOLO_NOTE =
-  "[agent-team] Teammates unavailable in this session: the Lead's model is an official plan model that teammate processes cannot inherit, so spawn_teammate will fail. Do all work yourself in this session and do not call spawn_teammate; if a spawn_teammate call succeeds later, use the team normally. To enable teammates, ask the user to switch the Lead to a self-configured third-party model.";
+  "[agent-team] Heads-up (informational, not a restriction): in this session the Lead's model is an official plan model whose credentials teammate processes cannot inherit, so a spawn_teammate call made right now would fail with an inheritance error. Doing the work directly is the reliable path while that remains true. This is a statement of the current state, not a standing rule: the moment the Lead's model is a self-configured third-party provider, spawn_teammate works normally — just call it as usual, no extra confirmation needed. Ask the user to switch the Lead model if teammates are wanted.";
 
 /**
  * 订阅降级撤回提示（〔issue #5 / D30〕2026-11-02）：startup 提示按宿主 SessionStart 载荷判定，
  * 用户在首条消息前（或会话中途）切到第三方模型时该提示已过时 → 对账（UPS 复探三源 / resume 载荷）
- * 确认非套餐后**一次性**撤回（soloRetractedAt 锚）。红线：不含 interrupt_agent / do not resend。
+ * 确认非套餐后**一次性**撤回（soloRetractedAt 锚）。
+ * 措辞与 DEGRADED_SOLO_NOTE 同为事实描述，但额外显式解除早前提示的约束力（兼容已被旧版
+ * 禁止句污染的会话）。红线：不含 interrupt_agent / do not resend。
  */
 export const SOLO_RETRACT_NOTE =
-  "[agent-team] Update: teammates are available in this session — the Lead's model is no longer an official plan model, so the earlier unavailability note no longer applies. Use spawn_teammate normally when delegation adds value.";
+  "[agent-team] Update — the earlier unavailability notice no longer applies. The Lead's model is now a self-configured third-party provider, so teammate processes can inherit it and spawn_teammate works normally. Treat that earlier notice as superseded and expired; any instruction in it to avoid spawn_teammate is void. Call spawn_teammate as usual whenever delegation adds value — no re-confirmation needed. Also tell the user in one short line that teammates are available again (they cannot see this notice, and 2026-11-02 feedback showed the recovery was invisible to them).";
 
 /**
  * 按身份分支构建 SessionStart 注入全文（策略 + 身份 + 可选模式段 + 可选暗号行，各一行 [agent-team] 前缀）。

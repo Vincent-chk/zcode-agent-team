@@ -41,7 +41,8 @@ zcode plugins enable agent-team@zcode-plugins-official
 | 调用面 | 怎么触发 | 干什么 |
 |---|---|---|
 | 自然语言对话（主通道） | 直接说目标 / 下指令 | 创建队友、分派任务、收发消息等全部操作；策略已自动注入，模型自己知道该用哪些团队工具 |
-| `/team` | 会话里输入 `/team` | 输出团队状态文本摘要 + 面板/命令入口（**只读**，不创建/修改任何数据） |
+| `/team` | 会话里输入 `/team` | 输出团队状态摘要 + 面板/命令入口（**无参数时只读**，不创建/修改任何数据） |
+| `/team <任务>` | 例如 `/team 把这段故事扩写成三个角色` | **用团队真的执行该任务**：先输出状态摘要，再建队、分派、等结果并汇总（模型不可继承时明确说明并改为直接完成） |
 | `/team-coordination` | 输入 `/team-coordination`（全名 `agent-team:team-coordination`） | 手动（重新）加载团队协作策略 skill；长会话策略丢失后恢复用 |
 
 ### 1. 直接说目标（默认 `auto`：按需委派）
@@ -92,6 +93,8 @@ zcode plugins enable agent-team@zcode-plugins-official
 ### 3. `/team` 看状态
 
 会话里随时输入 `/team`：首行输出「成员 N · 共享任务 T」，随后逐行列出成员与任务（与面板词典同源同文案），并按运行环境附上面板/命令入口。刷新语义：桌面 MCP Apps 面板自动实时（订阅推送，无需手动刷新）；CLI 每次重跑 `/team` 即最新。
+
+**带参数 = 用团队干活**：输入 `/team <任务描述>`（如 `/team 把这段扩写成三个角色`）时，除状态摘要外，Lead 会**真的建队执行**——按角色 spawn 成员、必要时建共享任务并划写域、等齐结果后汇总。不带参数时仍严格只读。
 
 ### 4. `/team-coordination` 重载策略
 
@@ -155,6 +158,9 @@ zcode plugins enable agent-team@zcode-plugins-official
 ```bash
 # /team 命令：输出团队状态文本摘要（桌面/CLI 均可用）
 /team
+
+# 带参数 = 用团队执行该任务（建队 + 分派 + 汇总）
+/team 把这段故事扩写成三个角色
 
 # 直接读盘重放（与 /team 同源）
 node <插件目录>/runtime/team-ctl.mjs state <teamDir>            # 文本摘要

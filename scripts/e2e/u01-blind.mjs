@@ -156,14 +156,16 @@ try {
   );
 
   // ── 判定 3c〔issue #5 D29/D30〕无误报面：headless 默认第三方模型的真会话不得注入单 agent 兜底
-  //   提示（lead state 无 soloNotifiedAt 锚），复跑注入亦无 'Teammates unavailable'。
+  //   提示（lead state 无 soloNotifiedAt 锚），复跑注入亦无降级提示。
   //   防假通过：state 文件必须存在且形状合法（否则「读不到」也被当成「无锚」）；复跑必须正常退出
   //   且策略正文在（崩溃/坏产物不能算「无兜底提示」）。
   const leadStateFile = path.join(root, "teams", leadId, "lead", "state.json");
   const leadStateJson = fs.existsSync(leadStateFile) ? JSON.parse(fs.readFileSync(leadStateFile, "utf8")) : undefined;
   const stateShapeOk = typeof leadStateJson?.active === "boolean" && typeof leadStateJson?.updatedAt === "string";
   const replayOk = hookReplay.err === undefined && injected.includes("Agent Teams is available in this session");
-  const soloHits = injected.includes("Teammates unavailable");
+  // 〔D30 修订〕提示开头已改为事实描述（"Heads-up (informational, not a restriction)"），
+  // 与策略正文的 "Agent Teams is available in this session" 可区分；改用稳定的开头标记。
+  const soloHits = injected.includes("informational, not a restriction");
   verdict["3c-no-solo-false-positive"] = {
     pass: stateShapeOk && leadStateJson?.soloNotifiedAt === undefined && replayOk && !soloHits,
     stateShapeOk,
@@ -172,7 +174,7 @@ try {
     soloHits,
   };
   checks.check(
-    "3c 第三方模型真会话无单 agent 兜底误报（state 形状合法且无 soloNotifiedAt + 复跑正常退出且注入无 'Teammates unavailable'）",
+    "3c 第三方模型真会话无单 agent 兜底误报（state 形状合法且无 soloNotifiedAt + 复跑正常退出且注入无降级提示）",
     stateShapeOk && leadStateJson?.soloNotifiedAt === undefined && replayOk && !soloHits,
     { stateShapeOk, soloNotifiedAt: leadStateJson?.soloNotifiedAt ?? null, replayOk, soloHits },
   );

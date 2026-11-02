@@ -195,19 +195,28 @@ try {
       m.FIRST_SPAWN_NOTE.startsWith("[agent-team] ") &&
       m.FIRST_SPAWN_NOTE.includes("first teammate"),
   );
+  // 〔D30 修订〕提示必须是**事实描述**、不得含禁止性祈使句（实测证明禁令入史后无法被撤回覆盖）
   check(
-    "〔issue #5 / D29〕订阅套餐降级提示形态与口径",
+    "〔issue #5 / D29〕订阅套餐降级提示形态与口径（事实描述，非禁令）",
     m.DEGRADED_SOLO_NOTE.startsWith("[agent-team] ") &&
-      m.DEGRADED_SOLO_NOTE.includes("spawn_teammate will fail") &&
-      m.DEGRADED_SOLO_NOTE.includes("Do all work yourself") &&
-      m.DEGRADED_SOLO_NOTE.includes("succeeds later, use the team normally"), // 非永久措辞（中途切第三方可恢复）
+      m.DEGRADED_SOLO_NOTE.includes("would fail with an inheritance error") &&
+      m.DEGRADED_SOLO_NOTE.includes("informational, not a restriction") &&
+      m.DEGRADED_SOLO_NOTE.includes("works normally") &&
+      m.DEGRADED_SOLO_NOTE.includes("no extra confirmation needed") &&
+      // 禁止性祈使句绝不能出现（本轮实测事故的根因）
+      !/do not call/i.test(m.DEGRADED_SOLO_NOTE) &&
+      !/must not/i.test(m.DEGRADED_SOLO_NOTE) &&
+      !/never call/i.test(m.DEGRADED_SOLO_NOTE),
   );
   check(
-    "〔issue #5 / D30〕订阅降级撤回提示形态与口径",
+    "〔issue #5 / D30〕订阅降级撤回提示形态与口径（显式解除早前约束力 + 要求告知用户）",
     typeof m.SOLO_RETRACT_NOTE === "string" &&
-      m.SOLO_RETRACT_NOTE.startsWith("[agent-team] Update: teammates are available") &&
-      m.SOLO_RETRACT_NOTE.includes("no longer an official plan model") &&
-      m.SOLO_RETRACT_NOTE.includes("Use spawn_teammate normally") &&
+      m.SOLO_RETRACT_NOTE.startsWith("[agent-team] Update") &&
+      m.SOLO_RETRACT_NOTE.includes("no longer applies") &&
+      m.SOLO_RETRACT_NOTE.includes("superseded and expired") &&
+      m.SOLO_RETRACT_NOTE.includes("is void") &&
+      m.SOLO_RETRACT_NOTE.includes("works normally") &&
+      m.SOLO_RETRACT_NOTE.includes("tell the user in one short line") &&
       !m.SOLO_RETRACT_NOTE.includes("interrupt_agent") &&
       !m.SOLO_RETRACT_NOTE.includes("do not resend") &&
       m.SOLO_RETRACT_NOTE !== m.DEGRADED_SOLO_NOTE,

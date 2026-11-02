@@ -27,8 +27,8 @@ const PLAN = "account:bigmodel-individual-coding-plan";
 const HINT_PLAN = `${PLAN}/GLM-5.3`;
 const THIRD = "98331807-541d-4961-b55f-f2e4a0c4f870"; // 本机第三方 provider 形态（UUID）
 const HINT_THIRD = `${THIRD}/deepseek-flash`;
-const NOTE_MARK = "Teammates unavailable in this session";
-const RETRACT_MARK = "Update: teammates are available in this session";
+const NOTE_MARK = "informational, not a restriction";
+const RETRACT_MARK = "the earlier unavailability notice no longer applies";
 
 // 〔安全〕本剧本会**写**会话库（夹具三源），绝不能落在宿主库：
 // 忽略 TEAM_DB_PATH（run.mjs 透传 process.env，可能指向 ~/.zcode/cli/db/db.sqlite）与 --db，

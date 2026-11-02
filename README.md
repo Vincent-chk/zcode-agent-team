@@ -41,7 +41,8 @@ After install and enable you need **no special command**: the teamwork policy is
 | Surface | How to trigger | What it does |
 |---|---|---|
 | Natural language (main channel) | Just state a goal / give orders | Everything: spawning teammates, assigning tasks, messaging; the policy is auto-injected and the model knows which team tools to use |
-| `/team` | Type `/team` | Prints a text summary of team status + panel/command entries (**read-only**, creates/modifies nothing) |
+| `/team` | Type `/team` | Prints a text summary of team status + panel/command entries (**read-only when called without arguments**, creates/modifies nothing) |
+| `/team <task>` | e.g. `/team expand this story into three characters` | **Actually runs the task with the team**: prints the status summary, then spawns teammates, assigns work, waits and summarizes (if the model cannot be inherited it says so and does the work directly) |
 | `/team-coordination` | Type `/team-coordination` (full name `agent-team:team-coordination`) | Manually (re)load the teamwork policy skill; use when a very long session has lost it |
 
 ### 1. Just state the goal (default `auto`: on-demand delegation)
@@ -92,6 +93,8 @@ Create a teammate named reviewer to check the first three paragraphs of README f
 ### 3. `/team` for status
 
 Type `/team` any time: the first line reads "Members N · Shared tasks T", followed by one line per member and task (same wording as the panel dictionary), plus panel/command entries depending on the runtime. Refresh semantics: the desktop MCP Apps panel is live (subscription push, no manual refresh); on CLI every `/team` run is fresh.
+
+**With an argument it also does the work**: `/team <task description>` prints the summary and then actually builds the team — spawns members by role, creates shared tasks with write scopes when coordination is needed, waits for results and summarizes. Without arguments it stays strictly read-only.
 
 ### 4. `/team-coordination` to reload the policy
 
@@ -155,6 +158,9 @@ Edit under **Settings → Plugins → Agent Team**; changes apply to new tasks (
 ```bash
 # /team command: prints the team status text summary (desktop & CLI)
 /team
+
+# With an argument: runs the task with the team (spawn + assign + summarize)
+/team expand this story into three characters
 
 # Direct disk replay (same source as /team)
 node <plugin-dir>/runtime/team-ctl.mjs state <teamDir>            # text summary
