@@ -1112,7 +1112,7 @@ export class ResumePerTurnProvider implements TeammateProvider {
       if (!throwOnUnusable) return undefined;
       throw new ModelInheritanceError(
         `Lead 当前使用官方套餐模型（${model}），成员无法继承（CLI 进程拿不到订阅套餐凭据）。` +
-          "请在 ZCode 中切换到自配的第三方模型后重试。",
+          "请在 ZCode 中切换到自配的第三方模型后重试；或由 Lead 直接完成该工作（单 agent 兜底）。",
         latest,
       );
     }

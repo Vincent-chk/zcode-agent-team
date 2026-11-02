@@ -183,7 +183,7 @@
 
 - 02 规格 §1–§14 全部有映射（含子节）；不适用项 5 条均给出理由。
 - 27 错误码、4 限额、25 词典键、4 事件类型在自动化审计中逐字核对；工具面 0.4.0 起 = 9（§18/§19 记录增删演变）。
-- 偏差登记：D1–D28（D19–D25 见 04；D26/D27 见 stage-6.5；**D28 = issue #9 三档化**：默认 auto（建队前不注入模式段、建队后注入按需段）、always 保留主动编排、off 全关（0 工具）；旧值 orchestrator/collaborator 统一迁移 auto；runtime-config 升 v2（v1 旧文件 leadMode 过期回落默认）；auto 中途首建队以 spawn 首成员结果尾部 FIRST_SPAWN_NOTE 补位）；stage-8 适配登记见 §18；0.4.0 收敛注销见 §19。
+- 偏差登记：D1–D29（D19–D25 见 04；D26/D27 见 stage-6.5；**D28 = issue #9 三档化**：默认 auto（建队前不注入模式段、建队后注入按需段）、always 保留主动编排、off 全关（0 工具）；旧值 orchestrator/collaborator 统一迁移 auto；runtime-config 升 v2（v1 旧文件 leadMode 过期回落默认）；auto 中途首建队以 spawn 首成员结果尾部 FIRST_SPAWN_NOTE 补位；**D29 = issue #5 降级自干（0.5.1）**：Lead 已确认模型为官方套餐 → hook 每会话一次性注入 DEGRADED_SOLO_NOTE（lead state soloNotifiedAt 锚；探针 lead-model-probe.ts 三源+前缀、乐观默认），spawn 报错与工具描述同步给出「自己干」出路）；stage-8 适配登记见 §18；0.4.0 收敛注销见 §19。
 
 ## 18. stage-8 模型可配置化（2026-10-24；F33–F36）
 

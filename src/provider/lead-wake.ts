@@ -19,6 +19,8 @@ export interface LeadState {
   active: boolean;
   updatedAt: string;
   lastWakeAt?: string;
+  /** 〔D29〕单 agent 降级提示已注入时间（每会话一次锚；缺 = 未通知）。读取方容忍缺字段。 */
+  soloNotifiedAt?: string;
 }
 
 export interface LeadWakeResult {
@@ -68,7 +70,7 @@ function writeLeadState(teamDir: string, state: LeadState): void {
   fs.renameSync(tmp, file);
 }
 
-/** hook 侧：Lead 回合开始/结束。teammate 不写本文件。 */
+/** hook 侧：Lead 回合开始/结束。teammate 不写本文件。〔D29〕spread 须保留 soloNotifiedAt（否则每回合覆写丢失）。 */
 export function recordLeadTurnEvent(
   teamDir: string,
   event: "start" | "stop",
@@ -78,11 +80,28 @@ export function recordLeadTurnEvent(
     const prior = readLeadState(teamDir);
     writeLeadState(teamDir, {
       ...(prior?.lastWakeAt !== undefined ? { lastWakeAt: prior.lastWakeAt } : {}),
+      ...(prior?.soloNotifiedAt !== undefined ? { soloNotifiedAt: prior.soloNotifiedAt } : {}),
       active: event === "start",
       updatedAt: new Date(now).toISOString(),
     });
   } catch {
     /* 状态文件失败不阻断 hook；下一次事件重试 */
+  }
+}
+
+/** 〔D29〕标记单 agent 降级提示已注入（每会话一次锚；幂等，保留既有字段；失败不抛）。 */
+export function markSoloNotified(teamDir: string, now: number = Date.now()): void {
+  try {
+    const prior = readLeadState(teamDir);
+    writeLeadState(teamDir, {
+      ...(prior?.lastWakeAt !== undefined ? { lastWakeAt: prior.lastWakeAt } : {}),
+      ...(prior?.soloNotifiedAt !== undefined ? { soloNotifiedAt: prior.soloNotifiedAt } : {}),
+      active: prior?.active ?? false,
+      updatedAt: new Date(now).toISOString(),
+      soloNotifiedAt: new Date(now).toISOString(),
+    });
+  } catch {
+    /* 状态文件失败不阻断注入 */
   }
 }
 

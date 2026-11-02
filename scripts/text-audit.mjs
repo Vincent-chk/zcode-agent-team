@@ -19,7 +19,7 @@ export {
   teamPolicy, IDENTITY_LEAD_TEXT, identityTeammateText, buildSessionStartContext,
   POLICY_PROBE_MARKER, POLICY_TEXT, NO_PROGRESS_MESSAGE, NO_PROGRESS_REASON,
   D7_ORIGINAL_SENTENCE, D7_REPLACEMENT_SENTENCE, HOOK_POLICY_PREFIX, FAIL_LOUD_WARNING,
-  ORCHESTRATOR_SECTION_TEXT, ON_DEMAND_SECTION_TEXT, FIRST_SPAWN_NOTE,
+  ORCHESTRATOR_SECTION_TEXT, ON_DEMAND_SECTION_TEXT, FIRST_SPAWN_NOTE, DEGRADED_SOLO_NOTE,
 } from ${JSON.stringify(path.join(proj, "src/mcp/policy.ts"))};
 export { TEAM_ERROR_CODES, TEAM_ERROR_CATALOG } from ${JSON.stringify(path.join(proj, "src/domain/errors.ts"))};
 export { DICT, DICT_KEYS } from ${JSON.stringify(path.join(proj, "src/ui-core/dict.ts"))};
@@ -177,7 +177,7 @@ try {
     "D26/D28 模式段：always/on-demand 注入成功、三文本禁词、缺省无段",
     ctxAlways.includes(m.ORCHESTRATOR_SECTION_TEXT) &&
       ctxAuto.includes(m.ON_DEMAND_SECTION_TEXT) &&
-      [m.ORCHESTRATOR_SECTION_TEXT, m.ON_DEMAND_SECTION_TEXT, m.FIRST_SPAWN_NOTE].every(
+      [m.ORCHESTRATOR_SECTION_TEXT, m.ON_DEMAND_SECTION_TEXT, m.FIRST_SPAWN_NOTE, m.DEGRADED_SOLO_NOTE].every(
         (t) => typeof t === "string" && !t.includes("interrupt_agent") && !t.includes("do not resend"),
       ) &&
       !ctxDefault.includes("Lead operating mode"),
@@ -194,6 +194,13 @@ try {
       m.ON_DEMAND_SECTION_TEXT.includes("multiple roles in parallel") &&
       m.FIRST_SPAWN_NOTE.startsWith("[agent-team] ") &&
       m.FIRST_SPAWN_NOTE.includes("first teammate"),
+  );
+  check(
+    "〔issue #5 / D29〕订阅套餐降级提示形态与口径",
+    m.DEGRADED_SOLO_NOTE.startsWith("[agent-team] ") &&
+      m.DEGRADED_SOLO_NOTE.includes("spawn_teammate will fail") &&
+      m.DEGRADED_SOLO_NOTE.includes("Do all work yourself") &&
+      m.DEGRADED_SOLO_NOTE.includes("succeeds later, use the team normally"), // 非永久措辞（中途切第三方可恢复）
   );
 } catch (err) {
   check("text-audit 未抛异常", false, { error: String(err?.stack ?? err).slice(0, 2000) });

@@ -63,10 +63,10 @@ export interface ToolDefinition {
 /** 9 工具注册表（顺序 = stage-3 任务书列举序；0.4.0 注销 member_set_model；快照与 tools/list 同源）。 */
 export const TEAM_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
   {
-    // 02 §9.3（〔issue #9 三档化 D28〕描述去 orchestrator 档位措辞，改模式中立的按需口径）
+    // 02 §9.3（〔issue #9 D28〕去档位措辞；〔issue #5 / D29〕补不可继承失败口径）
     name: "spawn_teammate",
     description:
-      "Create one named, durable teammate. Only the Team Lead may call this tool. Create teammates when the goal clearly benefits from delegation — multiple roles in parallel, disjoint write scopes, or long tasks needing their own context — within the member limit. The teammate automatically follows the Lead's latest confirmed model and reasoning level on every turn; there is no per-member model option.",
+      "Create one named, durable teammate. Only the Team Lead may call this tool. Create teammates when the goal clearly benefits from delegation — multiple roles in parallel, disjoint write scopes, or long tasks needing their own context — within the member limit. If the Lead's model cannot be inherited (official plan model), the call fails — handle the work directly instead. The teammate automatically follows the Lead's latest confirmed model and reasoning level on every turn; there is no per-member model option.",
     inputSchema: {
       type: "object",
       properties: {

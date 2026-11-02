@@ -16,6 +16,7 @@ import {
   identityTeammateText,
   ORCHESTRATOR_SECTION_TEXT,
   ON_DEMAND_SECTION_TEXT,
+  DEGRADED_SOLO_NOTE,
 } from "./mcp/policy.js";
 import { validateLeadMode } from "./domain/config.js";
 import { readSessionRegistry, upsertSessionEntry, safeSessionKey } from "./mcp/identity.js";
@@ -32,7 +33,8 @@ import {
   nextBudget,
 } from "./hooks/inbox.js";
 import { readStopBudget, writeStopBudget, memberPaths, teamEverCreated } from "./provider/member-files.js";
-import { recordLeadTurnEvent } from "./provider/lead-wake.js";
+import { recordLeadTurnEvent, readLeadState, markSoloNotified } from "./provider/lead-wake.js";
+import { probeLeadPlanModel } from "./provider/lead-model-probe.js";
 
 
 interface HookInput {
@@ -203,6 +205,21 @@ if (event === "sessionstart") {
   }
   let context = buildSessionStartContext(identityText, interrupt, modeSection);
 
+  // 〔issue #5 / D29〕订阅套餐降级：Lead 最新已确认模型为官方套餐 → 队友不可孵化。每会话
+  // **首次**注入单 agent 兜底提示（lead state soloNotifiedAt 锚去重；三源全空/读库失败 =
+  // 乐观跳过，绝不误报；off 档整体不输出已天然门控）。
+  if (role.role === "lead" && !leadOff && rawSessionId !== null) {
+    const soloTeamDir = safeTeamDir(role.teamId);
+    if (
+      soloTeamDir !== null &&
+      readLeadState(soloTeamDir)?.soloNotifiedAt === undefined &&
+      probeLeadPlanModel(rawSessionId).blocked
+    ) {
+      context += `\n${DEGRADED_SOLO_NOTE}`;
+      markSoloNotified(soloTeamDir);
+    }
+  }
+
   // Lead 收件箱附加段（resume 冷拉起 = 无上限交付点）+ 回执
   let pending: Awaited<ReturnType<typeof pendingForLead>> = [];
   if (role.role === "lead" && rawSessionId !== null) {
@@ -244,15 +261,27 @@ if (event === "sessionstart") {
       recordLeadTurnEvent(teamDir, "start");
       // 〔issue #9 D28〕off 档：不投递收件箱（插件对模型不可见）；轮次记录保留。
       const pending = leadOff ? [] : await pendingForLead(teamDir, role.teamId);
-      if (pending.length > 0) {
+      // 〔issue #5 / D29〕降级提示（每会话一次）：与收件箱合并为一次 additionalContext
+      // （hook 单输出）；首轮提交后 db 必有源1 记录 → 判定必中。
+      const soloNeeded =
+        !leadOff &&
+        readLeadState(teamDir)?.soloNotifiedAt === undefined &&
+        probeLeadPlanModel(rawSessionId).blocked;
+      if (pending.length > 0 || soloNeeded) {
+        const parts: string[] = [];
+        if (soloNeeded) parts.push(DEGRADED_SOLO_NOTE);
+        if (pending.length > 0) parts.push(buildInboxContext(pending.map((m) => m.text)));
         await out({
           hookSpecificOutput: {
             hookEventName: "UserPromptSubmit",
-            additionalContext: buildInboxContext(pending.map((m) => m.text)),
+            additionalContext: parts.join("\n"),
           },
         });
-        writeReceipts(DATA, role.teamId, pending.map((m) => m.messageId), "userpromptsubmit");
-        await boundedAck("mailbox.ack", { session_id: rawSessionId, messageIds: pending.map((m) => m.messageId) });
+        if (soloNeeded) markSoloNotified(teamDir);
+        if (pending.length > 0) {
+          writeReceipts(DATA, role.teamId, pending.map((m) => m.messageId), "userpromptsubmit");
+          await boundedAck("mailbox.ack", { session_id: rawSessionId, messageIds: pending.map((m) => m.messageId) });
+        }
       }
     }
   }

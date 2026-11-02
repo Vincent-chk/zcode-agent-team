@@ -104,6 +104,16 @@ export const FIRST_SPAWN_NOTE =
   "[agent-team] Team mode is now active: this is the first teammate of this session. From now on, judge each request by delegation value — handle simple work directly with a one-line reason, and use the team for work that benefits from multiple roles, parallel execution, or disjoint write scopes.";
 
 /**
+ * 订阅套餐降级提示（〔issue #5 / D29〕2026-11-02）：Lead 最新已确认模型为官方套餐
+ * （account:/builtin:，CLI 子进程拿不到凭据）→ 队友必然不可孵化。语义 = 单 agent 兜底
+ * （自己干全部工作、不试 spawn）；措辞**非永久**（spawn 成功即恢复正常用队，覆盖用户中途
+ * 切第三方模型的恢复路径）。每会话**首次**注入（SessionStart 或首次 UserPromptSubmit，
+ * lead state soloNotifiedAt 锚去重，用户拍板省 token）。红线：不含 interrupt_agent / do not resend。
+ */
+export const DEGRADED_SOLO_NOTE =
+  "[agent-team] Teammates unavailable in this session: the Lead's model is an official plan model that teammate processes cannot inherit, so spawn_teammate will fail. Do all work yourself in this session and do not call spawn_teammate; if a spawn_teammate call succeeds later, use the team normally. To enable teammates, ask the user to switch the Lead to a self-configured third-party model.";
+
+/**
  * 按身份分支构建 SessionStart 注入全文（策略 + 身份 + 可选模式段 + 可选暗号行，各一行 [agent-team] 前缀）。
  * 〔issue #9 三档化 D28〕第三参从 leadMode 枚举改为 **模式段文本**（调用方算好传入）：
  *   always → ORCHESTRATOR_SECTION_TEXT；auto 且已建队 → ON_DEMAND_SECTION_TEXT；

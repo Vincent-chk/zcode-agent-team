@@ -30,7 +30,7 @@
 | 轮次 | 一次 headless ZCode 进程执行；成员可先后经历多个轮次 |
 | 协调者 | 某个团队事件日志当前持有文件锁的唯一写者；进程退出后可由其他实例接任。hooks 仍可独立写回执、预算和 Lead 状态等辅助文件 |
 
-〔issue #9 三档化 D28，2026-11-02〕默认 `leadMode=auto`（按需委派）：未建队时不注入任何模式段（普通单 agent 语义），该会话曾建过队（`members/` 有非 sessionId 成员目录，failed 也算、持久判定）后注入按需段（委派价值判断+正反例）。`always` 档保留原 D26 主动编排段（自主拆活、分派、复核、汇总）；`off` 档完全不注入团队上下文且不注册团队工具。旧值 `orchestrator`/`collaborator` 统一迁移 `auto`；auto/always 使用相同工具和执行权限，off 无工具面。
+〔issue #9 三档化 D28，2026-11-02〕默认 `leadMode=auto`（按需委派）：未建队时不注入任何模式段（普通单 agent 语义），该会话曾建过队（`members/` 有非 sessionId 成员目录，failed 也算、持久判定）后注入按需段（委派价值判断+正反例）。`always` 档保留原 D26 主动编排段（自主拆活、分派、复核、汇总）；`off` 档完全不注入团队上下文且不注册团队工具。旧值 `orchestrator`/`collaborator` 统一迁移 `auto`；auto/always 使用相同工具和执行权限，off 无工具面。〔issue #5 / D29〕Lead 已确认模型为官方套餐（`account:`/`builtin:`）时，hook 每会话一次性注入单 agent 兜底提示（`DEGRADED_SOLO_NOTE`，lead state `soloNotifiedAt` 锚去重；探针 `src/provider/lead-model-probe.ts` 三源取最新+前缀判定，乐观默认）。
 
 需要区分三组语义：
 

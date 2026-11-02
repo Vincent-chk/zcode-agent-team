@@ -19,7 +19,7 @@ export const EXPECTED_TEAM_TOOLS: readonly Record<string, unknown>[] = [
   {
     name: "spawn_teammate",
     description:
-      "Create one named, durable teammate. Only the Team Lead may call this tool. Create teammates when the goal clearly benefits from delegation — multiple roles in parallel, disjoint write scopes, or long tasks needing their own context — within the member limit. The teammate automatically follows the Lead's latest confirmed model and reasoning level on every turn; there is no per-member model option.",
+      "Create one named, durable teammate. Only the Team Lead may call this tool. Create teammates when the goal clearly benefits from delegation — multiple roles in parallel, disjoint write scopes, or long tasks needing their own context — within the member limit. If the Lead's model cannot be inherited (official plan model), the call fails — handle the work directly instead. The teammate automatically follows the Lead's latest confirmed model and reasoning level on every turn; there is no per-member model option.",
     inputSchema: {
       type: "object",
       properties: {
