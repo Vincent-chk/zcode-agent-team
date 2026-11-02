@@ -130,13 +130,16 @@ try {
   const hooksLog = readJsonl(path.join(root, "logs", "hooks.jsonl"));
   const hookRan = hooksLog.some((l) => l.event === "sessionstart" && (l.input_session_id === leadId || l.env_session_id === leadId));
   const probeId = `sess_u01_probe_${Date.now()}`;
+  // 净化 TEAM_*：本进程可能身处 Lead/teammate 会话，继承变量会改判角色/注入来源。
+  const replayEnv = { ...process.env, TEAM_PLUGIN_DATA: root, ZCODE_SESSION_ID: probeId };
+  for (const key of Object.keys(replayEnv)) if (key.startsWith("TEAM_") && key !== "TEAM_PLUGIN_DATA") delete replayEnv[key];
   const hookReplay = await new Promise((resolve) => {
     const child = execFile(
       process.execPath,
       [path.join(PROJ, "runtime", "team-hooks.mjs")],
       {
         maxBuffer: 8 * 1024 * 1024,
-        env: { ...process.env, TEAM_PLUGIN_DATA: root, ZCODE_SESSION_ID: probeId },
+        env: replayEnv,
       },
       (err, stdout) => resolve({ err, stdout: String(stdout) }),
     );
@@ -150,6 +153,28 @@ try {
     "3 注入面无模式段（hook 已执行 + 复跑产物注入无 'Lead operating mode'）",
     hookRan && !modeSectionHits && injected.includes("Agent Teams is available in this session"),
     { hookRan, modeSectionHits, injectedChars: injected.length },
+  );
+
+  // ── 判定 3c〔issue #5 D29/D30〕无误报面：headless 默认第三方模型的真会话不得注入单 agent 兜底
+  //   提示（lead state 无 soloNotifiedAt 锚），复跑注入亦无 'Teammates unavailable'。
+  //   防假通过：state 文件必须存在且形状合法（否则「读不到」也被当成「无锚」）；复跑必须正常退出
+  //   且策略正文在（崩溃/坏产物不能算「无兜底提示」）。
+  const leadStateFile = path.join(root, "teams", leadId, "lead", "state.json");
+  const leadStateJson = fs.existsSync(leadStateFile) ? JSON.parse(fs.readFileSync(leadStateFile, "utf8")) : undefined;
+  const stateShapeOk = typeof leadStateJson?.active === "boolean" && typeof leadStateJson?.updatedAt === "string";
+  const replayOk = hookReplay.err === undefined && injected.includes("Agent Teams is available in this session");
+  const soloHits = injected.includes("Teammates unavailable");
+  verdict["3c-no-solo-false-positive"] = {
+    pass: stateShapeOk && leadStateJson?.soloNotifiedAt === undefined && replayOk && !soloHits,
+    stateShapeOk,
+    soloNotifiedAt: leadStateJson?.soloNotifiedAt ?? null,
+    replayOk,
+    soloHits,
+  };
+  checks.check(
+    "3c 第三方模型真会话无单 agent 兜底误报（state 形状合法且无 soloNotifiedAt + 复跑正常退出且注入无 'Teammates unavailable'）",
+    stateShapeOk && leadStateJson?.soloNotifiedAt === undefined && replayOk && !soloHits,
+    { stateShapeOk, soloNotifiedAt: leadStateJson?.soloNotifiedAt ?? null, replayOk, soloHits },
   );
 
   // ── 判定 4：runtime-config 生产链落 auto（daemon 落盘）

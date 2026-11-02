@@ -21,6 +21,7 @@ import crypto from "node:crypto";
 import zlib from "node:zlib";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { checkNodeSyntax, BUNDLE_FILES } from "./check-bundles.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const REGISTRY = "https://registry.npmmirror.com";
@@ -52,7 +53,12 @@ const REQUIRED_FILES = [
   "runtime/team-daemon.mjs",
   "runtime/team-hooks.mjs",
   "runtime/team-ctl.mjs",
+  "runtime/detach-helper.mjs",
+  "runtime/app-server-bridge.mjs",
+  "runtime/ui/panel.js",
+  "runtime/ui/companion.js",
   "runtime/ui/team-panel.html",
+  "runtime/ui/team-companion.html",
   "skills/team-coordination/SKILL.md",
   "commands/team.md",
   "hooks/hooks.json",
@@ -321,6 +327,17 @@ async function verifyPackageLayout(dir, plugin, files) {
   const panel = await fsp.readFile(path.join(dir, "runtime/ui/team-panel.html"));
   if (panel.byteLength > 4 * 1024 * 1024) fail(`team-panel.html exceeds 4MiB: ${panel.byteLength}`);
   if (!panel.includes(Buffer.from("<script"))) fail("team-panel.html has no inline script");
+  if (!panel.toString("utf8").trimEnd().endsWith("</html>")) fail("team-panel.html is truncated (no </html>)");
+  const companion = await fsp.readFile(path.join(dir, "runtime/ui/team-companion.html"));
+  if (!companion.toString("utf8").trimEnd().endsWith("</html>")) fail("team-companion.html is truncated (no </html>)");
+
+  // 〔D31〕产物语法门（staged 与解包树各跑一次）：覆盖 --skip-build 路径与 zip 往返；
+  // 撕裂 bundle（exFAT 偶发）在 build.mjs 已自动重建，这里是最后一道不可绕过的门。
+  // 清单固定为 BUNDLE_FILES（不从「实际存在的文件」推导——缺件会静默缩小校验面）。
+  const missingBundles = BUNDLE_FILES.filter((rel) => !files.includes(rel));
+  if (missingBundles.length) fail(`package missing runtime bundles: ${missingBundles.join(", ")}`);
+  const torn = checkNodeSyntax(BUNDLE_FILES.map((rel) => path.join(dir, rel)));
+  if (torn !== null) fail(`bundle syntax check failed (torn build output?): ${path.relative(dir, torn)}`);
 
   const changelog = await fsp.readFile(path.join(dir, "CHANGELOG.md"), "utf8");
   const first = firstChangelogEntry(changelog);

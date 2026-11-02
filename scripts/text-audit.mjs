@@ -19,7 +19,7 @@ export {
   teamPolicy, IDENTITY_LEAD_TEXT, identityTeammateText, buildSessionStartContext,
   POLICY_PROBE_MARKER, POLICY_TEXT, NO_PROGRESS_MESSAGE, NO_PROGRESS_REASON,
   D7_ORIGINAL_SENTENCE, D7_REPLACEMENT_SENTENCE, HOOK_POLICY_PREFIX, FAIL_LOUD_WARNING,
-  ORCHESTRATOR_SECTION_TEXT, ON_DEMAND_SECTION_TEXT, FIRST_SPAWN_NOTE, DEGRADED_SOLO_NOTE,
+  ORCHESTRATOR_SECTION_TEXT, ON_DEMAND_SECTION_TEXT, FIRST_SPAWN_NOTE, DEGRADED_SOLO_NOTE, SOLO_RETRACT_NOTE,
 } from ${JSON.stringify(path.join(proj, "src/mcp/policy.ts"))};
 export { TEAM_ERROR_CODES, TEAM_ERROR_CATALOG } from ${JSON.stringify(path.join(proj, "src/domain/errors.ts"))};
 export { DICT, DICT_KEYS } from ${JSON.stringify(path.join(proj, "src/ui-core/dict.ts"))};
@@ -201,6 +201,16 @@ try {
       m.DEGRADED_SOLO_NOTE.includes("spawn_teammate will fail") &&
       m.DEGRADED_SOLO_NOTE.includes("Do all work yourself") &&
       m.DEGRADED_SOLO_NOTE.includes("succeeds later, use the team normally"), // 非永久措辞（中途切第三方可恢复）
+  );
+  check(
+    "〔issue #5 / D30〕订阅降级撤回提示形态与口径",
+    typeof m.SOLO_RETRACT_NOTE === "string" &&
+      m.SOLO_RETRACT_NOTE.startsWith("[agent-team] Update: teammates are available") &&
+      m.SOLO_RETRACT_NOTE.includes("no longer an official plan model") &&
+      m.SOLO_RETRACT_NOTE.includes("Use spawn_teammate normally") &&
+      !m.SOLO_RETRACT_NOTE.includes("interrupt_agent") &&
+      !m.SOLO_RETRACT_NOTE.includes("do not resend") &&
+      m.SOLO_RETRACT_NOTE !== m.DEGRADED_SOLO_NOTE,
   );
 } catch (err) {
   check("text-audit 未抛异常", false, { error: String(err?.stack ?? err).slice(0, 2000) });

@@ -8,6 +8,8 @@ import {
   maybeWakeLead,
   readLeadState,
   recordLeadTurnEvent,
+  markSoloNotified,
+  markSoloRetracted,
 } from "../../src/provider/lead-wake.js";
 
 let dir: string;
@@ -100,5 +102,65 @@ describe("lead-wake", () => {
     expect(result.woke).toBe(false);
     expect(result.reason).toContain("spawn-failed");
     expect(readLeadState(dir)?.lastWakeAt).toBeUndefined();
+  });
+});
+
+// 〔D29/D30〕solo 锚字段：写入函数之间互相保留（回合覆写丢锚是 0.5.1 实际踩过的坑）。
+describe("lead-wake · solo 锚", () => {
+  it("markSoloNotified 无先验状态 → active=false + soloNotifiedAt + via 默认 db", () => {
+    markSoloNotified(dir, 1_000);
+    const s = readLeadState(dir);
+    expect(s?.active).toBe(false);
+    expect(s?.soloNotifiedAt).toBe(new Date(1_000).toISOString());
+    expect(s?.soloNotifiedVia).toBe("db");
+    expect(s?.soloRetractedAt).toBeUndefined();
+  });
+
+  it("via=hint 记录 + recordLeadTurnEvent start/stop 均保留三个锚与 lastWakeAt", () => {
+    recordLeadTurnEvent(dir, "stop", 500);
+    // 先造 lastWakeAt（直接写文件，模拟 maybeWakeLead 落盘）
+    const prior = readLeadState(dir)!;
+    fs.writeFileSync(leadStatePath(dir), JSON.stringify({ ...prior, lastWakeAt: new Date(600).toISOString() }));
+    markSoloNotified(dir, 1_000, "hint");
+    markSoloRetracted(dir, 2_000);
+    recordLeadTurnEvent(dir, "start", 3_000);
+    recordLeadTurnEvent(dir, "stop", 4_000);
+    const s = readLeadState(dir);
+    expect(s?.lastWakeAt).toBe(new Date(600).toISOString());
+    expect(s?.soloNotifiedAt).toBe(new Date(1_000).toISOString());
+    expect(s?.soloNotifiedVia).toBe("hint");
+    expect(s?.soloRetractedAt).toBe(new Date(2_000).toISOString());
+    expect(s?.active).toBe(false);
+    expect(s?.updatedAt).toBe(new Date(4_000).toISOString());
+  });
+
+  it("markSoloRetracted 保留通知锚/via/active，不重置 soloNotifiedAt；重复调用覆盖撤回时间", () => {
+    recordLeadTurnEvent(dir, "start", 100);
+    markSoloNotified(dir, 1_000, "hint");
+    markSoloRetracted(dir, 2_000);
+    markSoloRetracted(dir, 2_500);
+    const s = readLeadState(dir);
+    expect(s?.active).toBe(true);
+    expect(s?.soloNotifiedAt).toBe(new Date(1_000).toISOString());
+    expect(s?.soloNotifiedVia).toBe("hint");
+    expect(s?.soloRetractedAt).toBe(new Date(2_500).toISOString());
+  });
+
+  it("markSoloNotified 再次调用（已有锚）→ 覆盖时间与 via，撤回锚保留", () => {
+    markSoloNotified(dir, 1_000, "hint");
+    markSoloRetracted(dir, 1_500);
+    markSoloNotified(dir, 2_000);
+    const s = readLeadState(dir);
+    expect(s?.soloNotifiedAt).toBe(new Date(2_000).toISOString());
+    expect(s?.soloNotifiedVia).toBe("db");
+    expect(s?.soloRetractedAt).toBe(new Date(1_500).toISOString());
+  });
+
+  it("状态目录不可写（路径被文件占位）→ 两个标记函数都静默不抛", () => {
+    const blocked = path.join(dir, "blocked");
+    fs.writeFileSync(blocked, "not a dir");
+    expect(() => markSoloNotified(blocked, 1_000, "hint")).not.toThrow();
+    expect(() => markSoloRetracted(blocked, 2_000)).not.toThrow();
+    expect(readLeadState(blocked)).toBeUndefined();
   });
 });

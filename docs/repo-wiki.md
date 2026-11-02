@@ -2,7 +2,7 @@
 
 本项目是给 **ZCode** 使用的团队协作插件：当前会话充当 Lead，插件创建可持续复用的 teammate 子会话，提供共享任务板、成员消息和团队状态面板。成员共享项目工作目录；团队数据写入插件数据目录。
 
-本文用于理解现有实现、定位源码和选择验证入口。基线为 **2026-10-26、版本 0.4.1、源码提交 `98947bd`，加本轮未提交的 0.4.2 本地候选补丁**；候选补丁的验证结果另计，提交后的变更应同步更新对应条目。本文属于源码仓库工程文档，不进入插件发布包。
+本文用于理解现有实现、定位源码和选择验证入口。基线为 **2026-11-02、版本 0.5.2**（0.5.0 三档化 / 0.5.1 降级自干 / 0.5.2 startup 即知晓+产物门）；提交后的变更应同步更新对应条目。本文属于源码仓库工程文档，不进入插件发布包。
 
 ## 1. 阅读入口
 
@@ -30,7 +30,7 @@
 | 轮次 | 一次 headless ZCode 进程执行；成员可先后经历多个轮次 |
 | 协调者 | 某个团队事件日志当前持有文件锁的唯一写者；进程退出后可由其他实例接任。hooks 仍可独立写回执、预算和 Lead 状态等辅助文件 |
 
-〔issue #9 三档化 D28，2026-11-02〕默认 `leadMode=auto`（按需委派）：未建队时不注入任何模式段（普通单 agent 语义），该会话曾建过队（`members/` 有非 sessionId 成员目录，failed 也算、持久判定）后注入按需段（委派价值判断+正反例）。`always` 档保留原 D26 主动编排段（自主拆活、分派、复核、汇总）；`off` 档完全不注入团队上下文且不注册团队工具。旧值 `orchestrator`/`collaborator` 统一迁移 `auto`；auto/always 使用相同工具和执行权限，off 无工具面。〔issue #5 / D29〕Lead 已确认模型为官方套餐（`account:`/`builtin:`）时，hook 每会话一次性注入单 agent 兜底提示（`DEGRADED_SOLO_NOTE`，lead state `soloNotifiedAt` 锚去重；探针 `src/provider/lead-model-probe.ts` 三源取最新+前缀判定，乐观默认）。
+〔issue #9 三档化 D28，2026-11-02〕默认 `leadMode=auto`（按需委派）：未建队时不注入任何模式段（普通单 agent 语义），该会话曾建过队（`members/` 有非 sessionId 成员目录，failed 也算、持久判定）后注入按需段（委派价值判断+正反例）。`always` 档保留原 D26 主动编排段（自主拆活、分派、复核、汇总）；`off` 档完全不注入团队上下文且不注册团队工具。旧值 `orchestrator`/`collaborator` 统一迁移 `auto`；auto/always 使用相同工具和执行权限，off 无工具面。〔issue #5 / D29〕Lead 已确认模型为官方套餐（`account:`/`builtin:`）时，hook 每会话一次性注入单 agent 兜底提示（`DEGRADED_SOLO_NOTE`，lead state `soloNotifiedAt` 锚去重；探针 `src/provider/lead-model-probe.ts` 三源取最新+前缀判定，乐观默认）。〔D30，0.5.2〕判定优先取宿主 SessionStart 载荷的 `model` 字段（`"providerId/modelId"` 扁平串，startup 全新会话 db 尚空也能判；老宿主无字段回落三源），此后每轮 UPS 与 db 对账：db 确认非套餐（evidence=db）→ 一次性注入 `SOLO_RETRACT_NOTE`（`soloRetractedAt` 锚），覆盖「首条消息前切模型」误报与会话中途切第三方两种自愈；时序实测见 §9.1。
 
 需要区分三组语义：
 
@@ -320,7 +320,7 @@ node scripts/smoke-daemon.mjs
 node scripts/release.mjs --check-only
 ```
 
-`npm run check` 组合 typecheck、插件清单校验和 daemon 冒烟，但其中 ZCode CLI 路径硬编码为 `/Applications/ZCode.app/Contents/Resources/glm/zcode.cjs`；跨环境不能只把该命令失败理解为业务代码失败。冒烟针对 dist，改代码后应先 build。
+`npm run check` 组合 typecheck、插件清单校验和 daemon 冒烟，但其中 ZCode CLI 路径硬编码为 `/Applications/ZCode.app/Contents/Resources/glm/zcode.cjs`；跨环境不能只把该命令失败理解为业务代码失败。冒烟针对 runtime 产物，改代码后应先 build。
 
 [build.mjs](../scripts/build.mjs) 使用 esbuild，服务端目标 node22，浏览器目标 es2022：
 
@@ -334,6 +334,19 @@ node scripts/release.mjs --check-only
 
 面板 HTML 必须自包含且不超过 4MiB。修改以 src 为准，由构建更新 runtime；不要手改生成包作为实现源。`dev-install.mjs` 提供 status/install/uninstall/reinstall；安装直接更新用户 `~/.zcode/cli/config.json` 的 `plugins.dirs` 和 `enabledPlugins`，首次写入前保存备份。该脚本不构建，不调用市场安装命令。
 
+〔D31，0.5.2〕构建自带**产物语法门**：全部产物写完后 [check-bundles.mjs](../scripts/check-bundles.mjs) 对 5 个 `runtime/*.mjs` + `ui/panel.js`/`companion.js` 逐个 `node --check`，坏则整体重建 ≤3 次，仍坏 exit 1（背景：exFAT 外置卷上 ~1MB bundle 偶发落盘撕裂，此前靠人工复检）。手工复核可单独 `node scripts/check-bundles.mjs`。
+
+### 9.1 hook 时序（2026-11-02 实测：宿主 `zcode.cjs` executeTurn + 本机 db 抽样）
+
+| 路径 | 事实 | 对插件的含义 |
+|---|---|---|
+| SessionStart(startup) 全新会话 | hook 先于会话行落库（实测早 ~1.4s）→ db 三源全空 | 套餐判定只能靠载荷 `model` 字段（D30）；老宿主无字段 → 乐观不注 |
+| 首轮 UserPromptSubmit | 宿主顺序 = `ensureSessionPersisted`（写会话行 + `runtime/model_selection` 条目）→ UPS hooks → `persistUserPrompt`；65/65 新建交互会话在首轮 UPS 时源2 已存在 | 首轮 UPS 判定必中（走源2）；源1 提交快照要等本轮回落库（+25ms~1.2s）才可见 |
+| fork / 侧聊 / resume | 选模条目在会话创建即复制（delta ≤0） | SessionStart 即可判（hint 与 db 一致） |
+| 载荷字段 | SessionStart：`model`（扁平串）+ `source`；UPS/Stop：**无** model 字段 | UPS 对账只能走 db 三源，故撤回要求 evidence=db（三源空不算第三方） |
+
+取证提醒（D10）：注入文本不落 transcript，证据链 = `logs/hooks.jsonl` 对时 + `teams/<sid>/lead/state.json` 锚（`soloNotifiedAt`/`soloNotifiedVia`/`soloRetractedAt`）+ 问模型两问法；S9 剧本以出厂 bundle 直跑固化上述矩阵。
+
 ## 10. 测试与验收导航
 
 | 关心的行为 | 现有测试或脚本 |
@@ -346,13 +359,13 @@ node scripts/release.mjs --check-only
 | hooks、面板帧、详情、CLI | `test/hooks/`、`test/panel/`、`test/ui-core/`、`test/cli/` |
 | daemon 协议装配 | `scripts/smoke-daemon.mjs`；先 build |
 | UI 几何、语言、主题、摘要 | `scripts/visual-regress.mjs`、`scripts/f10-companion.mjs`；需 Chromium |
-| 真实协作与 fork、hooks、编排 | `scripts/e2e/run.mjs` 的 S1–S8（S7=显式 always 编排旅程；S8=auto 默认链冒烟，issue #9 D28）；部分剧本使用真实模型 |
+| 真实协作与 fork、hooks、编排 | `scripts/e2e/run.mjs` 的 S1–S9（S7=显式 always 编排旅程；S8=auto 默认链冒烟，issue #9 D28；S9=订阅降级自干确定性矩阵，issue #5 D29/D30）；部分剧本使用真实模型 |
 | 崩溃、升级、性能 | `scripts/crash-matrix.mjs`、`upgrade-drill.mjs`、`perf-baseline.mjs` |
 | 权限和文件边界、策略文本一致性 | `scripts/security-audit.mjs`、`text-audit.mjs` |
 
 Vitest 文件级串行，单用例默认超时 15 秒。覆盖率门槛为 statements / lines / functions 各 90%，branches 85%，按纳入统计代码的总计判断（含 MockProvider），不代表每个模块分别达标；`.mjs` 和浏览器入口等不在该统计面内。`npm test` 使用 mock / fake-zcode / fake-app-server 与临时数据，部分 CLI 测试会重建 dist；它与真实登录态、模型、桌面交互验收的覆盖范围不同。
 
-本轮 **0.4.2 本地候选**于 2026-10-26 完成最终验收：全量覆盖率运行 **72 文件 / 849 用例全部通过**（exit 0，174.72s）；聚合覆盖率 statements **91.61%**、branches **85.15%**、functions **92.55%**、lines **93.40%**。视觉 **76** 项全通过、零漂移，伴生矩阵 **17** 项、文本审计 **23** 项全通过；build、check、release-check 均通过。以上是本地候选验证，未安装或发布。
+本轮 **0.5.2** 于 2026-11-02 完成验收：日常口径 `npm test` **75 文件 / 899 用例全部通过**（227.2s）；覆盖率口径（排除自带阈值的性能基准 `f32.test.ts`）**74 文件 / 898 用例通过**，聚合覆盖率 statements **91.65%**、branches **85.24%**、functions **92.65%**、lines **93.47%**，四项门槛全过。文本审计 **26** 项、S9 **12** 检查、build（D31 产物门）、check 均通过；历史 0.4.2 基线为 72 文件 / 849 用例（保留在 CHANGELOG 中）。
 
 0.4.1 的既有 [v6 脚本](../../zcode-agent-team-plan/stage-8-model-config/e2e-real-model-041.mjs)与[结果报告](../../zcode-agent-team-plan/stage-8-model-config/e2e-real-model-041-evidence.json)记录六场景 `ALL_PASS`，属于**真实模型调用集成验收，切模事件由测试脚本注入，不包含真实输入框或 `/model` UI 交互**。它验证了注入记录后的成员执行、恢复与交付链路，不能替代桌面切模交互验收；两份材料位于本仓库之外。
 
@@ -370,9 +383,9 @@ env -u NO_COLOR -u FORCE_COLOR \
 
 [sync-version.mjs](../scripts/sync-version.mjs) 写入插件 manifest、package.json、marketplace 条目和 package-lock 的版本；CHANGELOG 首条需先人工写好版本与描述，脚本校验通过后才写文件。[release.mjs](../scripts/release.mjs) 只检查上述版本、描述和其他发布元数据的一致性，不代写版本或 CHANGELOG。
 
-release 默认会安装锁定依赖、构建、按白名单装配 staging、过滤工程残留、生成固定排序和时间戳的 zip、解包核验、调用宿主 validate，并记录指纹。它不会自动运行 typecheck、Vitest 或 e2e。`--verify-repro` 对同一构建结果做两次独立 staging/ZIP 并比较 sha256，不重复安装和构建；`--require-tag`、`--require-clean` 可增加发布前置条件。`--check-only` 仅做元数据一致性检查，不产包。
+release 默认会安装锁定依赖、构建、按白名单装配 staging、过滤工程残留、生成固定排序和时间戳的 zip、解包核验、调用宿主 validate，并记录指纹。它不会自动运行 typecheck、Vitest 或 e2e。`--verify-repro` 对同一构建结果做两次独立 staging/ZIP 并比较 sha256，不重复安装和构建（注意：撕裂产物两次打包哈希也一致，故**拦不住撕裂**——该职责由 D31 语法门承担：staging 与解包树各跑一次 `node --check`，覆盖 `--skip-build` 路径）；`--require-tag`、`--require-clean` 可增加发布前置条件。`--check-only` 仅做元数据一致性检查，不产包。
 
-发布包包含 manifest、MCP 配置、dist、skills、commands、hooks、README、CHANGELOG、许可声明和使用手册及其截图；不包含 src、test、scripts、node_modules、内部架构文档或本 Wiki。**工程文档修改不应为了让链接可用而扩大发布白名单。**
+发布包包含 manifest、MCP 配置、runtime、skills、commands、hooks、README、CHANGELOG、许可声明和使用手册及其截图；不包含 src、test、scripts、node_modules、内部架构文档或本 Wiki。**工程文档修改不应为了让链接可用而扩大发布白名单。**
 
 ## 12. 常见定位路径
 
@@ -404,7 +417,7 @@ release 默认会安装锁定依赖、构建、按白名单装配 staging、过�
 | 产品内 team-coordination skill、manifest interrupt 描述及部分源码注释 | 历史上 8→10→9 数度变化 | **当前契约 = 9 工具（`interrupt:false` 时 8）**；0.4.0 注销 `member_set_model`（成员模型唯一路线 = 每轮跟随 Lead） |
 | README 工具表 | wait_agent 标为 Lead 使用 | 执行层仅检查成员资格，所有团队成员可调用 |
 | README 实验开关名称 | `TEAM_LEAD_WAKE=cli` | 当前源码实际读取 `TEAM_WAKE_LEAD=1` |
-| 测试手册数量 | 历史上 75 文件、872/878 用例；0.4.0 为 70 文件 / 787 用例；0.4.1 为 72 文件 / 840 用例 | **本轮 0.4.2 候选实测 72 文件 / 849 用例全部通过**；对应当前未提交补丁，后续结果以当次运行输出为准 |
+| 测试手册数量 | 历史：0.4.0 为 70 文件/787、0.4.1 为 72/840、0.4.2 为 72/849、0.5.0 为 73/869、0.5.1 为 73/882 | **本轮 0.5.2 实测 75 文件 / 899 用例全部通过**；后续结果以当次运行输出为准 |
 | CHANGELOG 0.3.0 双模式说明 | summary/full 和 --mode | 这是历史版本行为；0.3.2 已移除 full 与 mode 参数 |
 | 某些旧描述把 transcript 当全量流 | CLI transcript 可取完整记录 | 当前 CLI 同面板为摘要；原始记录需查轮次输出、事件日志或宿主会话库 |
 

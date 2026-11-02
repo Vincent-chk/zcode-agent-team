@@ -168,6 +168,8 @@
 | 23 | 模型目录脱敏（内部；0.4.0 起 `team://models` 资源已下线） | provider 读目录输出无 `apiKey`/`baseURL`/凭据值；mtime 缓存 | `test/provider/model-catalog.test.ts`；`test/mcp/tools-snapshot.test.ts`（资源面反向断言：无 team://models） |
 | 24 | 成员无配置入口（0.4.0 反向） | 全部渲染路径无 `data-member-gear`/`.member-card`/弹窗节点 | `test/ui-core/render.test.ts`、`scripts/visual-regress.mjs`（gearCount=0 全页断言） |
 | 25 | 零凭据输入（全页面） | 全 76 页无 `input[type=password]`/`textarea`/凭据字段 | `scripts/visual-regress.mjs` |
+| 26 | D29/D30 订阅降级自干与对账 | startup 载荷 `model` 套餐 + 空库 → 注入 DEGRADED_SOLO_NOTE + `soloNotifiedVia=hint`；同会话去重；第三方 hint/快照不注；首轮 UPS「仅选模条目无消息」形态注入（via=db）；源1/源3 各自正反例；off 整体无输出；空库无 hint 乐观不注；db/hint 确认非套餐 → SOLO_RETRACT_NOTE 恰一次（三源空 evidence=none 不撤回）；老宿主无 `model` 时 resume 走三源同样撤回；resume 载荷切第三方 → SessionStart 撤回 | `test/provider/lead-model-probe.test.ts`（9）+ `test/hooks/solo-degraded.test.ts`（16，临时 bundle，零输出用例均断言子进程 exit 0）+ `test/provider/lead-wake.test.ts`（锚保留直测）+ `scripts/e2e/s9-solo-fallback.mjs`（12 检查，出厂 bundle 直跑，含数据隔离与三源逐源正例）+ `scripts/text-audit.mjs`（D29/D30 两项）+ `scripts/e2e/u01-blind.mjs` 判定 3c（第三方真会话无误报）；套餐真人路径 = U-D30 dev 环境桌面旅程 |
+| 27 | D31 构建产物语法门 | build 后 7 个 JS `node --check`（含 0 字节判定）+ 2 个 HTML `</html>` 收尾校验全过才算成功（坏则整体重建 ≤3 次）；release 对 staging 与解包树各再校验一次，且以固定 `BUNDLE_FILES` 清单校验缺件（不从实际文件推导） | `scripts/check-bundles.mjs`（CLI 可单跑）+ `scripts/build.mjs` 重试循环 + `scripts/release.mjs` `verifyPackageLayout` |
 
 ## 16. 不适用项与理由
 
@@ -183,7 +185,8 @@
 
 - 02 规格 §1–§14 全部有映射（含子节）；不适用项 5 条均给出理由。
 - 27 错误码、4 限额、25 词典键、4 事件类型在自动化审计中逐字核对；工具面 0.4.0 起 = 9（§18/§19 记录增删演变）。
-- 偏差登记：D1–D29（D19–D25 见 04；D26/D27 见 stage-6.5；**D28 = issue #9 三档化**：默认 auto（建队前不注入模式段、建队后注入按需段）、always 保留主动编排、off 全关（0 工具）；旧值 orchestrator/collaborator 统一迁移 auto；runtime-config 升 v2（v1 旧文件 leadMode 过期回落默认）；auto 中途首建队以 spawn 首成员结果尾部 FIRST_SPAWN_NOTE 补位；**D29 = issue #5 降级自干（0.5.1）**：Lead 已确认模型为官方套餐 → hook 每会话一次性注入 DEGRADED_SOLO_NOTE（lead state soloNotifiedAt 锚；探针 lead-model-probe.ts 三源+前缀、乐观默认），spawn 报错与工具描述同步给出「自己干」出路）；stage-8 适配登记见 §18；0.4.0 收敛注销见 §19。
+- 偏差登记：D1–D31（D19–D25 见 04；D26/D27 见 stage-6.5；**D28 = issue #9 三档化**：默认 auto（建队前不注入模式段、建队后注入按需段）、always 保留主动编排、off 全关（0 工具）；旧值 orchestrator/collaborator 统一迁移 auto；runtime-config 升 v2（v1 旧文件 leadMode 过期回落默认）；auto 中途首建队以 spawn 首成员结果尾部 FIRST_SPAWN_NOTE 补位；**D29 = issue #5 降级自干（0.5.1）**：Lead 已确认模型为官方套餐 → hook 每会话一次性注入 DEGRADED_SOLO_NOTE（lead state soloNotifiedAt 锚；探针 lead-model-probe.ts 三源+前缀、乐观默认），spawn 报错与工具描述同步给出「自己干」出路；**D30 = startup 即知晓 + 对账撤回（0.5.2）**：探针优先取宿主 SessionStart 载荷 `model` 字段（evidence=hint；全新会话 hook 早于会话行落库 ~1.4s、三源必空，此前 startup 路径不可判）；已通知未撤回时每轮 UPS 以三源对账（首轮 UPS 源2 必可见——宿主 ensureSessionPersisted 先于 UPS hooks），db 确认非套餐 → 一次性 SOLO_RETRACT_NOTE（soloRetractedAt 锚；三源空 evidence=none 不撤回），resume 载荷切第三方亦撤回；state 新增 soloNotifiedVia/soloRetractedAt（recordLeadTurnEvent 经 soloAnchors 保留）；**D31 = 构建产物语法门（0.5.2）**：build.mjs 产物写完后 `node --check` 7 个产物，坏则整体重建 ≤3 次；release.mjs verifyPackageLayout 对 staging/解包树再校验（`--verify-repro` 二次打包比对拦不住撕裂）；stage-8 适配登记见 §18；0.4.0 收敛注销见 §19。
+- 〔2026-11-02 勘误〕0.5.1 发布报告中「全新会话首轮 UPS 三源必空、提示晚 1-2 轮」结论**不成立**：实测宿主 `executeTurn` 顺序为 `ensureSessionPersisted`（写会话行+选模条目）→ UPS hooks → `persistUserPrompt`，首轮 UPS 时源2 已在（65/65 新建交互会话），仅源1 提交快照晚 +25ms~1.2s；真缺口仅 SessionStart(startup) 一处，由 D30 关闭。hooks.ts 原注释「首轮提交后 db 必有源1 记录」口径错误，已改为源2。
 
 ## 18. stage-8 模型可配置化（2026-10-24；F33–F36）
 

@@ -256,6 +256,74 @@ export function createTestSessionDb(dbPath) {
   }
 }
 
+// —— 〔D29/D30 · S9〕Lead 模型探针夹具：三源表（提交快照 message / 选模条目 session_entry /
+//     main_turn model_usage），与 test/provider/kit.ts createTestDb 同构（.mjs 版，供出厂 bundle 直跑）。
+export function createProbeDb(dbPath) {
+  createTestSessionDb(dbPath);
+  const db = new DatabaseSync(dbPath);
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS session_entry (id TEXT PRIMARY KEY, session_id TEXT, type TEXT, time_created INTEGER, time_updated INTEGER, data TEXT);
+      CREATE TABLE IF NOT EXISTS model_usage (id TEXT PRIMARY KEY, session_id TEXT, provider_id TEXT, model_id TEXT, variant TEXT, status TEXT, started_at INTEGER, query_source TEXT);
+    `);
+  } finally {
+    db.close();
+  }
+}
+
+/** 源1：真实用户提交快照（宿主保存用户消息时写入 modelSelection）。 */
+export function insertProbeSubmission(dbPath, { sessionId, providerId, modelId, timeCreated }) {
+  const db = new DatabaseSync(dbPath);
+  try {
+    db.prepare("INSERT OR REPLACE INTO message (id, session_id, time_created, time_updated, data, sequence) VALUES (?, ?, ?, ?, ?, ?)").run(
+      `msg-${sessionId}-${timeCreated}`,
+      sessionId,
+      timeCreated,
+      timeCreated,
+      JSON.stringify({ role: "user", semantics: { origin: "real_user" }, modelSelection: { providerId, modelId } }),
+      1,
+    );
+  } finally {
+    db.close();
+  }
+}
+
+/** 源2：会话选模条目（宿主轮首 ensureSessionPersisted 即写；UPSERT 单行）。 */
+export function insertProbeSelection(dbPath, { sessionId, providerId, modelId, timeCreated }) {
+  const db = new DatabaseSync(dbPath);
+  try {
+    db.prepare("INSERT OR REPLACE INTO session_entry (id, session_id, type, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?, ?)").run(
+      `${sessionId}:runtime-model-selection`, // 与宿主/kit.test canonical id 同拼写
+      sessionId,
+      "runtime/model_selection",
+      timeCreated,
+      timeCreated,
+      JSON.stringify({ modelSelection: { providerId, modelId } }),
+    );
+  } finally {
+    db.close();
+  }
+}
+
+/** 源3：主轮实际调用（query_source='main_turn'）。 */
+export function insertProbeUsage(dbPath, { sessionId, providerId, modelId, startedAt }) {
+  const db = new DatabaseSync(dbPath);
+  try {
+    db.prepare("INSERT OR REPLACE INTO model_usage (id, session_id, provider_id, model_id, variant, status, started_at, query_source) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(
+      `usage-${sessionId}-${startedAt}`,
+      sessionId,
+      providerId,
+      modelId,
+      null,
+      "completed",
+      startedAt,
+      "main_turn",
+    );
+  } finally {
+    db.close();
+  }
+}
+
 /** 只读查询（参数绑定；禁止拼接 SQL）。 */
 export function queryDb(dbPath, sql, params = []) {
   const db = new DatabaseSync(dbPath, { readOnly: true });

@@ -114,6 +114,14 @@ export const DEGRADED_SOLO_NOTE =
   "[agent-team] Teammates unavailable in this session: the Lead's model is an official plan model that teammate processes cannot inherit, so spawn_teammate will fail. Do all work yourself in this session and do not call spawn_teammate; if a spawn_teammate call succeeds later, use the team normally. To enable teammates, ask the user to switch the Lead to a self-configured third-party model.";
 
 /**
+ * 订阅降级撤回提示（〔issue #5 / D30〕2026-11-02）：startup 提示按宿主 SessionStart 载荷判定，
+ * 用户在首条消息前（或会话中途）切到第三方模型时该提示已过时 → 对账（UPS 复探三源 / resume 载荷）
+ * 确认非套餐后**一次性**撤回（soloRetractedAt 锚）。红线：不含 interrupt_agent / do not resend。
+ */
+export const SOLO_RETRACT_NOTE =
+  "[agent-team] Update: teammates are available in this session — the Lead's model is no longer an official plan model, so the earlier unavailability note no longer applies. Use spawn_teammate normally when delegation adds value.";
+
+/**
  * 按身份分支构建 SessionStart 注入全文（策略 + 身份 + 可选模式段 + 可选暗号行，各一行 [agent-team] 前缀）。
  * 〔issue #9 三档化 D28〕第三参从 leadMode 枚举改为 **模式段文本**（调用方算好传入）：
  *   always → ORCHESTRATOR_SECTION_TEXT；auto 且已建队 → ON_DEMAND_SECTION_TEXT；

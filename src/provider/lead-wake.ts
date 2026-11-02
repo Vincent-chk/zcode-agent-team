@@ -21,6 +21,10 @@ export interface LeadState {
   lastWakeAt?: string;
   /** 〔D29〕单 agent 降级提示已注入时间（每会话一次锚；缺 = 未通知）。读取方容忍缺字段。 */
   soloNotifiedAt?: string;
+  /** 〔D30〕solo 提示的判定依据（hint=宿主 SessionStart model 载荷；db=三源探针）。仅诊断用。 */
+  soloNotifiedVia?: "hint" | "db";
+  /** 〔D30〕solo 撤回提示已注入时间（对账发现模型已非套餐；缺 = 未撤回，仍需对账）。 */
+  soloRetractedAt?: string;
 }
 
 export interface LeadWakeResult {
@@ -70,17 +74,40 @@ function writeLeadState(teamDir: string, state: LeadState): void {
   fs.renameSync(tmp, file);
 }
 
-/** hook 侧：Lead 回合开始/结束。teammate 不写本文件。〔D29〕spread 须保留 soloNotifiedAt（否则每回合覆写丢失）。 */
+/** 〔D29/D30〕solo 锚字段集合：任何 writeLeadState 都须原样保留（回合覆写丢锚的坑）。 */
+function soloAnchors(prior: LeadState | undefined): Pick<LeadState, "soloNotifiedAt" | "soloNotifiedVia" | "soloRetractedAt"> {
+  return {
+    ...(prior?.soloNotifiedAt !== undefined ? { soloNotifiedAt: prior.soloNotifiedAt } : {}),
+    ...(prior?.soloNotifiedVia !== undefined ? { soloNotifiedVia: prior.soloNotifiedVia } : {}),
+    ...(prior?.soloRetractedAt !== undefined ? { soloRetractedAt: prior.soloRetractedAt } : {}),
+  };
+}
+
+/**
+ * 读失败保护：文件存在但不可读/非法 JSON 时读回 undefined，此时**不得覆盖**（否则锚被静默清空）。
+ * 返回 true = 可以安全写入（文件不存在或可正常解析）。
+ */
+function writableState(teamDir: string): boolean {
+  try {
+    fs.accessSync(leadStatePath(teamDir));
+  } catch {
+    return true; // 不存在 → 首次写入
+  }
+  return readLeadState(teamDir) !== undefined;
+}
+
+/** hook 侧：Lead 回合开始/结束。teammate 不写本文件。〔D29〕spread 须保留 solo 锚（否则每回合覆写丢失）。 */
 export function recordLeadTurnEvent(
   teamDir: string,
   event: "start" | "stop",
   now: number = Date.now(),
 ): void {
   try {
+    if (!writableState(teamDir)) return;
     const prior = readLeadState(teamDir);
     writeLeadState(teamDir, {
       ...(prior?.lastWakeAt !== undefined ? { lastWakeAt: prior.lastWakeAt } : {}),
-      ...(prior?.soloNotifiedAt !== undefined ? { soloNotifiedAt: prior.soloNotifiedAt } : {}),
+      ...soloAnchors(prior),
       active: event === "start",
       updatedAt: new Date(now).toISOString(),
     });
@@ -89,16 +116,44 @@ export function recordLeadTurnEvent(
   }
 }
 
-/** 〔D29〕标记单 agent 降级提示已注入（每会话一次锚；幂等，保留既有字段；失败不抛）。 */
-export function markSoloNotified(teamDir: string, now: number = Date.now()): void {
+/**
+ * 〔D29/D30〕标记单 agent 降级提示已注入（每会话一次锚；保留既有字段；失败不抛）。
+ * 注意：重复调用会覆盖 soloNotifiedAt/soloNotifiedVia（调用方以 soloNotifiedAt 是否存在做门）。
+ */
+export function markSoloNotified(
+  teamDir: string,
+  now: number = Date.now(),
+  via: "hint" | "db" = "db",
+): void {
   try {
+    if (!writableState(teamDir)) return;
     const prior = readLeadState(teamDir);
+    const at = new Date(now).toISOString();
     writeLeadState(teamDir, {
       ...(prior?.lastWakeAt !== undefined ? { lastWakeAt: prior.lastWakeAt } : {}),
-      ...(prior?.soloNotifiedAt !== undefined ? { soloNotifiedAt: prior.soloNotifiedAt } : {}),
+      ...soloAnchors(prior),
       active: prior?.active ?? false,
-      updatedAt: new Date(now).toISOString(),
-      soloNotifiedAt: new Date(now).toISOString(),
+      updatedAt: at,
+      soloNotifiedAt: at,
+      soloNotifiedVia: via,
+    });
+  } catch {
+    /* 状态文件失败不阻断注入 */
+  }
+}
+
+/** 〔D30〕标记 solo 撤回提示已注入（一次性；保留通知锚与诊断字段；失败不抛）。 */
+export function markSoloRetracted(teamDir: string, now: number = Date.now()): void {
+  try {
+    if (!writableState(teamDir)) return;
+    const prior = readLeadState(teamDir);
+    const at = new Date(now).toISOString();
+    writeLeadState(teamDir, {
+      ...(prior?.lastWakeAt !== undefined ? { lastWakeAt: prior.lastWakeAt } : {}),
+      ...soloAnchors(prior),
+      active: prior?.active ?? false,
+      updatedAt: at,
+      soloRetractedAt: at,
     });
   } catch {
     /* 状态文件失败不阻断注入 */
@@ -198,7 +253,13 @@ export async function maybeWakeLead(args: {
         stdoutFile,
       });
     }
-    writeLeadState(args.teamDir, { ...state, lastWakeAt: new Date(now).toISOString() });
+    writeLeadState(args.teamDir, {
+      ...state,
+      // 竞态保护：await launch 期间被拉起的 resume 回合可能已写锚/回合状态 → 重读合并，
+      // 不让这次 lastWakeAt 旧快照覆盖（soloNotifiedAt 丢失 = 下回合重复注入）。
+      ...(readLeadState(args.teamDir) ?? {}),
+      lastWakeAt: new Date(now).toISOString(),
+    });
     return { woke: true, reason: "launched" };
   } catch (err) {
     return { woke: false, reason: `spawn-failed: ${err instanceof Error ? err.message : String(err)}` };

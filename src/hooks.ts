@@ -17,6 +17,7 @@ import {
   ORCHESTRATOR_SECTION_TEXT,
   ON_DEMAND_SECTION_TEXT,
   DEGRADED_SOLO_NOTE,
+  SOLO_RETRACT_NOTE,
 } from "./mcp/policy.js";
 import { validateLeadMode } from "./domain/config.js";
 import { readSessionRegistry, upsertSessionEntry, safeSessionKey } from "./mcp/identity.js";
@@ -33,7 +34,7 @@ import {
   nextBudget,
 } from "./hooks/inbox.js";
 import { readStopBudget, writeStopBudget, memberPaths, teamEverCreated } from "./provider/member-files.js";
-import { recordLeadTurnEvent, readLeadState, markSoloNotified } from "./provider/lead-wake.js";
+import { recordLeadTurnEvent, readLeadState, markSoloNotified, markSoloRetracted } from "./provider/lead-wake.js";
 import { probeLeadPlanModel } from "./provider/lead-model-probe.js";
 
 
@@ -46,6 +47,8 @@ interface HookInput {
   stop_hook_active?: boolean;
   source?: string;
   matcher?: string;
+  /** 〔D30〕宿主 SessionStart 载荷自带（"providerId/modelId" 扁平串；UPS/Stop 载荷无此字段）。 */
+  model?: string;
   [k: string]: unknown;
 }
 
@@ -82,6 +85,14 @@ for (const k of Object.keys(process.env)) {
 }
 const rawSessionId = input.session_id ?? process.env.ZCODE_SESSION_ID ?? process.env.CLAUDE_SESSION_ID ?? null;
 const promptText = input.prompt ? String(input.prompt) : null;
+/** 〔D30〕SessionStart 载荷 model 的分类（account / builtin / custom / null=未下发）。
+ *  只记形态、不记 modelId——排障需要的是「套餐档 vs 第三方」这一位，且避免落模型明细。 */
+function modelCategory(model: unknown): "account" | "builtin" | "custom" | null {
+  if (typeof model !== "string" || model.trim().length === 0) return null;
+  if (model.startsWith("account:")) return "account";
+  if (model.startsWith("builtin:")) return "builtin";
+  return "custom";
+}
 const logLine = {
   ts: ts(),
   event,
@@ -93,6 +104,9 @@ const logLine = {
   // 不落 prompt 原文（可能含私有任务/代码）；只记长度供排障。
   prompt_chars: promptText !== null ? promptText.length : null,
   source: input.source ?? null,
+  // 〔D30〕宿主是否下发 model + 其形态（account/builtin/custom/null）。只记分类、不记 model；
+  // 让「startup 能否凭载荷判定套餐」从源码推断变成日志实证。
+  model_category: modelCategory(input.model),
 };
 appendJsonl(path.join(DATA, "logs", "hooks.jsonl"), logLine);
 
@@ -205,18 +219,32 @@ if (event === "sessionstart") {
   }
   let context = buildSessionStartContext(identityText, interrupt, modeSection);
 
-  // 〔issue #5 / D29〕订阅套餐降级：Lead 最新已确认模型为官方套餐 → 队友不可孵化。每会话
-  // **首次**注入单 agent 兜底提示（lead state soloNotifiedAt 锚去重；三源全空/读库失败 =
-  // 乐观跳过，绝不误报；off 档整体不输出已天然门控）。
+  // 〔issue #5 / D29·D30〕订阅套餐降级：Lead 最新已确认模型为官方套餐 → 队友不可孵化。每会话
+  // **首次**注入单 agent 兜底提示（lead state soloNotifiedAt 锚去重；off 档整体不输出已天然门控）。
+  // 〔D30〕SessionStart 载荷自带 model 字段（宿主当前选模快照，"providerId/modelId" 扁平串）：
+  // startup 全新会话 hook 早于会话行/选模条目落库（实测 ~1.4s）→ 三源必空，hint 补齐该路径；
+  // 老宿主无该字段 → 回落三源（resume/派生路径条目已就位）。已通知且未撤回时的对账：
+  // 有 hint 走 hint（宿主权威），无 hint 走三源（老宿主 resume 也能自愈）；evidence=none 不撤回。
   if (role.role === "lead" && !leadOff && rawSessionId !== null) {
     const soloTeamDir = safeTeamDir(role.teamId);
-    if (
-      soloTeamDir !== null &&
-      readLeadState(soloTeamDir)?.soloNotifiedAt === undefined &&
-      probeLeadPlanModel(rawSessionId).blocked
-    ) {
-      context += `\n${DEGRADED_SOLO_NOTE}`;
-      markSoloNotified(soloTeamDir);
+    if (soloTeamDir !== null) {
+      const soloState = readLeadState(soloTeamDir);
+      const modelHint =
+        typeof input.model === "string" && input.model.trim().length > 0 ? input.model.trim() : undefined;
+      if (soloState?.soloNotifiedAt === undefined) {
+        const probe = probeLeadPlanModel(rawSessionId, undefined, modelHint);
+        if (probe.blocked) {
+          context += `\n${DEGRADED_SOLO_NOTE}`;
+          markSoloNotified(soloTeamDir, Date.now(), probe.evidence === "hint" ? "hint" : "db");
+        }
+      } else if (soloState.soloRetractedAt === undefined) {
+        // 已通知未撤回：只要有判定证据（hint 或三源）且已非套餐 → 一次性撤回。
+        const recheck = probeLeadPlanModel(rawSessionId, undefined, modelHint);
+        if (recheck.evidence !== "none" && !recheck.blocked) {
+          context += `\n${SOLO_RETRACT_NOTE}`;
+          markSoloRetracted(soloTeamDir);
+        }
+      }
     }
   }
 
@@ -261,14 +289,25 @@ if (event === "sessionstart") {
       recordLeadTurnEvent(teamDir, "start");
       // 〔issue #9 D28〕off 档：不投递收件箱（插件对模型不可见）；轮次记录保留。
       const pending = leadOff ? [] : await pendingForLead(teamDir, role.teamId);
-      // 〔issue #5 / D29〕降级提示（每会话一次）：与收件箱合并为一次 additionalContext
-      // （hook 单输出）；首轮提交后 db 必有源1 记录 → 判定必中。
-      const soloNeeded =
-        !leadOff &&
-        readLeadState(teamDir)?.soloNotifiedAt === undefined &&
-        probeLeadPlanModel(rawSessionId).blocked;
-      if (pending.length > 0 || soloNeeded) {
+      // 〔issue #5 / D29·D30〕降级提示与对账（每会话一次），与收件箱合并为一次 additionalContext：
+      //   未通知 → 三源探针（UPS 载荷无 model 字段；宿主轮首 ensureSessionPersisted 已写会话行+
+      //   选模条目 → 源2 首轮必可见；消息快照源1 要等本轮回落库 +25ms~1.2s）；
+      //   已通知未撤回 → 对账：三源确认非套餐（evidence=db）→ 一次性撤回（startup hint 误报 /
+      //   会话中途切第三方都自愈）；三源全空（evidence=none，异常时序）→ 留待下一轮。
+      const soloState = readLeadState(teamDir);
+      let soloNeeded = false;
+      let soloRetractNeeded = false;
+      if (!leadOff) {
+        if (soloState?.soloNotifiedAt === undefined) {
+          soloNeeded = probeLeadPlanModel(rawSessionId).blocked;
+        } else if (soloState.soloRetractedAt === undefined) {
+          const recheck = probeLeadPlanModel(rawSessionId);
+          if (recheck.evidence === "db" && !recheck.blocked) soloRetractNeeded = true;
+        }
+      }
+      if (pending.length > 0 || soloNeeded || soloRetractNeeded) {
         const parts: string[] = [];
+        if (soloRetractNeeded) parts.push(SOLO_RETRACT_NOTE);
         if (soloNeeded) parts.push(DEGRADED_SOLO_NOTE);
         if (pending.length > 0) parts.push(buildInboxContext(pending.map((m) => m.text)));
         await out({
@@ -277,7 +316,8 @@ if (event === "sessionstart") {
             additionalContext: parts.join("\n"),
           },
         });
-        if (soloNeeded) markSoloNotified(teamDir);
+        if (soloNeeded) markSoloNotified(teamDir, Date.now(), "db");
+        if (soloRetractNeeded) markSoloRetracted(teamDir);
         if (pending.length > 0) {
           writeReceipts(DATA, role.teamId, pending.map((m) => m.messageId), "userpromptsubmit");
           await boundedAck("mailbox.ack", { session_id: rawSessionId, messageIds: pending.map((m) => m.messageId) });

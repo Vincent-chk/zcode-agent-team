@@ -23776,7 +23776,13 @@ async function maybeWakeLead(args) {
         stdoutFile
       });
     }
-    writeLeadState(args.teamDir, { ...state, lastWakeAt: new Date(now2).toISOString() });
+    writeLeadState(args.teamDir, {
+      ...state,
+      // 竞态保护：await launch 期间被拉起的 resume 回合可能已写锚/回合状态 → 重读合并，
+      // 不让这次 lastWakeAt 旧快照覆盖（soloNotifiedAt 丢失 = 下回合重复注入）。
+      ...readLeadState(args.teamDir) ?? {},
+      lastWakeAt: new Date(now2).toISOString()
+    });
     return { woke: true, reason: "launched" };
   } catch (err) {
     return { woke: false, reason: `spawn-failed: ${err instanceof Error ? err.message : String(err)}` };
