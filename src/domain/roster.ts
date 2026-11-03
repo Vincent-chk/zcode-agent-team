@@ -36,6 +36,10 @@ export interface SpawnArgs {
   context?: "fresh" | "fork";
   // 0.4.0 注销 model/modelSelection/thoughtLevel：成员模型唯一路线 = provider 每轮跟随 Lead。
   signal?: AbortSignal;
+  /** 协调者失锁（非显式 dispose）→ pending，不写成成员失败。 */
+  ownershipSignal?: AbortSignal;
+  /** MCP → 协调者 → origin 的稳定请求关联。 */
+  requestId?: string;
 }
 
 /** MEMBER_VIEW 行（§9.4；listMembers 输出）。 */
@@ -80,14 +84,24 @@ export class TeamRoster {
   private readonly statusListeners = new Set<() => void>();
   /** 〔D33〕defer 复核定时器（成员 id → timer；一次性、unref）。 */
   private readonly recheckTimers = new Map<string, NodeJS.Timeout>();
-  readonly recoveryDone: Promise<void>;
+  private readonly recoveryStopped = new Set<string>();
+  private recoveryDone: Promise<void> | undefined;
 
-  constructor(private readonly deps: RosterDeps) {
-    // C6：构造时对已存活成员全量调度恢复（对账自身抛错仅警告，C3）
-    this.recoveryDone = this.reconcileProvisioning().then(
+  constructor(private readonly deps: RosterDeps) {}
+
+  /** 仅由宿主在完整意图/轮次恢复后启动；构造对象不得提前判 provisioning 失败。 */
+  startRecovery(): Promise<void> {
+    this.recoveryDone ??= this.reconcileProvisioning().then(
       () => undefined,
       () => undefined,
     );
+    return this.recoveryDone;
+  }
+
+  cancelPendingRecovery(): void {
+    for (const timer of this.recheckTimers.values()) clearTimeout(timer);
+    this.recheckTimers.clear();
+    this.recoveryStopped.clear();
   }
 
   /** 成员状态变化边（Activity 唤醒源之二；settle/interrupt 后触发）。 */
@@ -119,11 +133,11 @@ export class TeamRoster {
 
   // ---------------------------------------------------------------- spawn（§5.3）
 
-  async spawnTeammate(callerId: string, args: SpawnArgs): Promise<{ member: MemberRow }> {
+  async spawnTeammate(callerId: string, args: SpawnArgs): Promise<{ member: MemberRow; creation?: "pending"; message?: string }> {
     return this.deps.lifecycle.track(this.spawnInner(callerId, args));
   }
 
-  private async spawnInner(callerId: string, args: SpawnArgs): Promise<{ member: MemberRow }> {
+  private async spawnInner(callerId: string, args: SpawnArgs): Promise<{ member: MemberRow; creation?: "pending"; message?: string }> {
     const { state } = this.requireMember(callerId); // F11：非成员 → TEAM_NOT_MEMBER
     this.deps.lifecycle.requireOpen(); // F11：处置中 → TEAM_DISPOSED（is disposing）
     if (callerId !== state.id) {
@@ -148,6 +162,17 @@ export class TeamRoster {
     const context: "fresh" | "fork" = args.context ?? "fresh";
     const providerName = requiredText("provider", context === "fork" ? providers.fork : providers.fresh, 200);
     const childId = (this.deps.newId ?? defaultNewId)();
+    const requestId = args.requestId ?? defaultNewId();
+    // 完整意图是唯一恢复来源，必须先于 provisioning 登记与宿主副作用。
+    this.deps.provider.prepareContinuable?.({
+      teamId: this.deps.teamId,
+      memberId: childId,
+      name,
+      description,
+      firstPrompt: args.prompt,
+      context,
+      requestId,
+    });
 
     // 步骤 2：事务内重读 + 限额 + 模型预检 + provisioning 落盘（store.append = flush 完成）
     await this.deps.store.transact(async () => {
@@ -176,6 +201,8 @@ export class TeamRoster {
     // 步骤 3–4：startContinuable（含首轮 prompt 持久接收检查：accepted 口径）+ 中止映射（C2③）
     const run = (async () => {
       const signal = combineSignals(args.signal, this.deps.lifecycle.runtimeSignal());
+      const ownershipSignal = args.ownershipSignal;
+      const runSignal = ownershipSignal === undefined ? signal : AbortSignal.any([signal, ownershipSignal]);
       try {
         return await this.deps.provider.startContinuable({
           teamId: this.deps.teamId,
@@ -184,42 +211,22 @@ export class TeamRoster {
           description,
           firstPrompt: args.prompt, // 对齐轮：0.2.1 初始任务不含身份前缀
           context,
-          signal,
+          requestId,
+          signal: runSignal,
         });
       } catch (err) {
+        if (ownershipSignal?.aborted) throw new ProvisioningPending("协调者代次已撤销，创建结果待确认");
         throw this.mapAbortToDisposed(err);
       }
     })();
 
+    let started: Awaited<typeof run>;
     try {
-      const started = await run;
-      if (started.memberId !== childId) {
-        throw new Error(`provider returned memberId ${started.memberId} != provisioned ${childId}`);
-      }
-      if (!started.accepted) {
-        // 未持久接收（02 §5.3 步骤 4）
-        throw new TeamError(
-          "TEAM_PROVISIONING_CONFLICT",
-          `teammate "${childId}" initial prompt was not durably accepted`,
-        );
-      }
-      // 步骤 5：事务内 settleProvisioning(active)；恢复流程抢先定 failed → 冲突 + 清理
-      const settled = await this.settleProvisioning(childId, "active");
-      if (settled === "failed") {
-        const conflict = new TeamError(
-          "TEAM_PROVISIONING_CONFLICT",
-          `teammate "${name}" was reconciled as failed while creation was in progress`,
-        );
-        try {
-          await this.deps.provider.interrupt({ memberId: childId });
-        } catch (cleanupError) {
-          throw new AggregateError([conflict, cleanupError], "provisioning conflict cleanup failed");
-        }
-        throw conflict;
-      }
-      this.notifyStatus();
-      return { member: this.rowOf(childId) };
+      started = await run;
     } catch (originalError) {
+      if (originalError instanceof ProvisioningPending) {
+        return { member: this.rowOf(childId), creation: "pending", message: originalError.message };
+      }
       // 步骤 6：失败路径 —— failed 落盘（error=单行 errorMessage）→ 清理 → 原错误上抛
       let becameActiveConflict: TeamError | undefined;
       let recordError: unknown;
@@ -259,6 +266,35 @@ export class TeamRoster {
       this.notifyStatus();
       throw originalError;
     }
+    if (started.memberId !== childId) {
+      throw new Error(`provider returned memberId ${started.memberId} != provisioned ${childId}`);
+    }
+    if (started.creation === "pending") {
+      return { member: this.rowOf(childId), creation: "pending", message: "结果待确认" };
+    }
+    if (!started.accepted) {
+      const rejection = new TeamError("TEAM_PROVISIONING_CONFLICT", `teammate "${childId}" initial prompt was not durably accepted`);
+      await this.settleProvisioning(childId, "failed", rejection.message);
+      await this.deps.provider.interrupt({ memberId: childId });
+      this.notifyStatus();
+      throw rejection;
+    }
+    // 首轮已确认后，本地 active 提交失败绝不进入失败清理。
+    const settled = await this.settleProvisioning(childId, "active");
+    if (settled === "failed") {
+      const conflict = new TeamError(
+        "TEAM_PROVISIONING_CONFLICT",
+        `teammate "${name}" was reconciled as failed while creation was in progress`,
+      );
+      try {
+        await this.deps.provider.interrupt({ memberId: childId });
+      } catch (cleanupError) {
+        throw new AggregateError([conflict, cleanupError], "provisioning conflict cleanup failed");
+      }
+      throw conflict;
+    }
+    this.notifyStatus();
+    return { member: this.rowOf(childId) };
   }
 
   /** settleProvisioning（幂等）：已非 provisioning → 返回现有相位不追加；成员消失 → C1 冲突。 */
@@ -313,12 +349,13 @@ export class TeamRoster {
     for (const member of pending) {
       try {
         let failure: string | undefined;
+        let missingRecord = false;
         let active = false;
         let recoveryThrew = false;
         try {
           const record = this.deps.recon.readProvisioningRecord(member.id);
           if (record === undefined) {
-            failure = "provisioning did not leave a resumable child Session";
+            missingRecord = true;
           } else if (
             record.rootSessionId === this.deps.teamId &&
             record.descriptor !== undefined &&
@@ -327,6 +364,14 @@ export class TeamRoster {
             record.initialUserMessageAccepted
           ) {
             active = true;
+          } else if (
+            record.rootSessionId === this.deps.teamId &&
+            record.descriptor !== undefined &&
+            record.descriptor.mode === "continuable" &&
+            record.descriptor.provider === member.provider &&
+            !record.initialUserMessageAccepted
+          ) {
+            missingRecord = true; // 身份匹配的已保存 child 仅待首轮确认。
           } else {
             failure = "persisted child Session does not match the provisioned continuation";
           }
@@ -334,13 +379,49 @@ export class TeamRoster {
           recoveryThrew = true;
           failure = `child Session recovery failed: ${errorMessage(err)}`;
         }
-        // 〔D33〕宽限：「尚无可用记录」或「记录在但首轮未受理」都属 pre-turn 瞬态窗口
-        // （isAlive 已排除首轮已启动者）；恢复自身抛错 = 真故障，不 defer。
-        const ageMs = ages?.get(member.id);
-        if (!active && !recoveryThrew && ageMs !== undefined && ageMs < PROVISIONING_GRACE_MS) {
-          deferred.push(member.id);
-          this.scheduleProvisioningRecheck(member.id);
+        // 〔0.5.4〕origin 是创建进度与预算的唯一来源；未知结果不按固定年龄定 failed。
+        if (!active && !recoveryThrew && !missingRecord && failure !== undefined) {
+          // 记录明确不匹配 = 可证失败；缺失/读取异常一律不是该结论。
+          await this.settleProvisioning(member.id, "failed", failure);
+          settled.push(member.id);
+          this.notifyStatus();
           continue;
+        }
+        if (!active) {
+          if (this.deps.provider.noteProvisioningRecovery?.(member.id) === true) {
+            this.recoveryStopped.add(member.id);
+            deferred.push(member.id);
+            this.notifyStatus();
+            continue;
+          }
+          if (this.deps.provider.resumeContinuable !== undefined) {
+            try {
+              const resumed = await this.deps.provider.resumeContinuable(
+                member.id,
+                this.deps.lifecycle.runtimeSignal(),
+              );
+              if (resumed.creation === "pending" || !resumed.accepted) {
+                deferred.push(member.id);
+                this.scheduleProvisioningRecheck(member.id);
+                continue;
+              }
+              active = true;
+            } catch (err) {
+              if (err instanceof ProvisioningPending) {
+                deferred.push(member.id);
+                this.scheduleProvisioningRecheck(member.id);
+                continue;
+              }
+              throw err;
+            }
+          } else {
+            const ageMs = ages?.get(member.id);
+            if (!recoveryThrew && ageMs !== undefined && ageMs < PROVISIONING_GRACE_MS) {
+              deferred.push(member.id);
+              this.scheduleProvisioningRecheck(member.id);
+              continue;
+            }
+          }
         }
         // 事务内重查：创建方已定案 → settle 幂等返回，放弃（竞态双方结局之一）
         await this.settleProvisioning(member.id, active ? "active" : "failed", failure);
@@ -394,6 +475,14 @@ export class TeamRoster {
     }, PROVISIONING_RECHECK_MS);
     timer.unref?.();
     this.recheckTimers.set(memberId, timer);
+  }
+
+  hasPendingAutomaticProgress(callerId: string): boolean {
+    const { state } = this.requireMember(callerId);
+    return state.members.some((member) =>
+      (member.phase === "active" && this.deps.inspector.isAlive(member.id)) ||
+      (member.phase === "provisioning" && !this.recoveryStopped.has(member.id))
+    );
   }
 
   // ---------------------------------------------------------------- listMembers（§5.5）
@@ -504,6 +593,13 @@ function memberSnapshotOf(
   error?: string,
 ): TeamMemberSnapshot {
   return { id, name, description, provider, context, phase, ...(error !== undefined ? { error } : {}) };
+}
+
+export class ProvisioningPending extends Error {
+  constructor(message = "结果待确认") {
+    super(message);
+    this.name = "ProvisioningPending";
+  }
 }
 
 function defaultNewId(): string {

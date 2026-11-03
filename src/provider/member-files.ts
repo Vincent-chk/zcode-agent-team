@@ -46,6 +46,20 @@ export interface OriginRecord {
   logicalParentSessionId?: string;
   /** 宿主会话类型（仅记录；child = selection_side_chat）。 */
   sessionKind?: "selection_side_chat" | "interactive";
+  /** 0.5.4：一次 MCP 创建请求的稳定身份；用于外层断连后的登记查询。 */
+  requestId?: string;
+  /** 在任何宿主调用前固定；恢复不得重新生成。 */
+  anchorCommandId?: string;
+  childCommandId?: string;
+  /** 创建意图已保存，但尚无宿主终态/首轮确认。 */
+  creationPending?: boolean;
+  /** 已从宿主确认的 anchor 证据；预分配 ID 本身不算已创建。 */
+  hostAnchorConfirmed?: boolean;
+  creationDiagnostic?: string;
+  confirmationAttempts?: number;
+  confirmationDeadlineAt?: string;
+  /** 自动恢复预算耗尽；wait_agent 不把它视为必然推进的成员。 */
+  confirmationStopped?: boolean;
 }
 
 export interface TurnRecord {

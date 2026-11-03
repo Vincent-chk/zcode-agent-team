@@ -48,7 +48,10 @@ export class JournalTeamStore implements TeamStore {
       owned = true;
     }
     const journal = TeamJournal.open(paths.teamDir, teamId, opts.journal);
-    const loaded = await journal.openWriter(writerId());
+    const identity = writerId();
+    const loaded = await journal.openWriter(
+      lock.info?.token === undefined ? identity : `${identity}:${lock.info.token}`,
+    );
     const store = new JournalTeamStore(journal, owned ? lock : undefined);
     store.lastLoad = { seq: loaded.seq, fromCheckpoint: loaded.fromCheckpoint };
     return store;
@@ -94,11 +97,11 @@ export class JournalTeamStore implements TeamStore {
     return off;
   }
 
-  /** 释放（自有锁则释放；journal close 落 checkpoint）。 */
-  async close(): Promise<void> {
+  /** 释放（自有锁则释放）；失锁路径不得再发布需要当前所有权的 checkpoint。 */
+  async close(opts: { checkpoint?: boolean } = {}): Promise<void> {
     for (const off of this.unsubs) off();
     this.unsubs.length = 0;
-    await this.journal.close();
+    await this.journal.close(opts);
     await this.ownedLock?.release();
   }
 }

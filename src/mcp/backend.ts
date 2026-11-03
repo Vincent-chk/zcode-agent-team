@@ -226,16 +226,35 @@ export class TeamToolBackend {
       prompt: unknown;
       context?: unknown;
     },
-  ): Promise<{ member: MemberRow }> {
-    return this.withHost(identity.teamId, async (host) =>
-      (await host.dispatch("member.spawn", {
-        session_id: identity.agentId,
-        name: args.name,
-        description: args.description,
-        prompt: args.prompt,
-        ...(args.context !== undefined ? { context: args.context } : {}),
-      })) as { member: MemberRow },
-    );
+  ): Promise<{ member: MemberRow; creation?: "pending"; message?: string }> {
+      const requestId = crypto.randomUUID();
+    try {
+      return await this.withHost(identity.teamId, async (host) =>
+        (await host.dispatch("member.spawn", {
+          session_id: identity.agentId,
+          name: args.name,
+          description: args.description,
+          prompt: args.prompt,
+          requestId,
+          ...(args.context !== undefined ? { context: args.context } : {}),
+        })) as { member: MemberRow; creation?: "pending"; message?: string },
+      );
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (!/rpc connection closed|rpc (?:method|call) member\.spawn timed out|coordinator is unavailable/.test(message)) throw err;
+      const host = await this.backendFor(identity.teamId);
+      const provider = host.providerForRead;
+      const registered = provider?.requestStatus?.(requestId);
+      if (registered === undefined) {
+        throw new Error("成员创建请求结果未确认，无法关联原登记；不会自动重放");
+      }
+      const rows = await this.memberRows(host, identity);
+      const member = rows.find((row) => row.target === args.name);
+      if (member === undefined) throw new Error("原创建请求已登记，但成员状态暂不可读");
+      return member.status === "provisioning"
+        ? { member, creation: "pending", message: "结果待确认" }
+        : { member };
+    }
   }
 
   // 0.4.0 注销 setMemberModel / resolveModelArgs / leadProviderId / catalog / wireModelSelection /
@@ -333,6 +352,12 @@ export class TeamToolBackend {
       if (runtime !== null) {
         // 捷径：除己外无 running|provisioning 成员 → 立即返回 noProgress 常量文本（逐字）
         const rows = runtime.roster.listMembers(identity.agentId).members;
+        if (!runtime.roster.hasPendingAutomaticProgress(identity.agentId)) {
+          const stopped = rows.find((row) => row.status === "provisioning");
+          return stopped !== undefined
+            ? { ...noProgressResult(), content: [{ type: "text" as const, text: `成员 ${stopped.target} 已停止自动确认，需要 Lead 接管；旧 turn 仍可能执行，不得重复启动。` }] }
+            : noProgressResult();
+        }
         const selfTarget = identity.role === "lead" ? "lead" : identity.name;
         const hasActivePeer = rows.some(
           (row) =>

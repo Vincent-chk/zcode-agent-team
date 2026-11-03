@@ -11,7 +11,7 @@ export interface AppServerClientOptions {
 export class AppServerClient {
   static spawn(opts: AppServerClientOptions): AppServerClient;
   waitReady(timeoutMs?: number): Promise<boolean>;
-  rpc<T = unknown>(method: string, params: unknown, timeoutMs?: number): Promise<T>;
+  rpc<T = unknown>(method: string, params: unknown, timeoutMs?: number, opts?: { signal?: AbortSignal }): Promise<T>;
   getStderr(): string;
   close(): Promise<void>;
 }

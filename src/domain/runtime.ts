@@ -23,6 +23,8 @@ export interface RuntimeDeps {
   clock?: Clock;
   warn?: (message: string) => void;
   newId?: () => string;
+  /** 每次获锁独立代次；撤销后恢复/取消等待，不自动接管新代次。 */
+  signal?: AbortSignal;
 }
 
 export class TeamRuntime {
@@ -35,6 +37,11 @@ export class TeamRuntime {
   private readonly unsubscribeStatus: () => void;
 
   constructor(deps: RuntimeDeps) {
+    const generationAbort = new AbortController();
+    deps.signal?.addEventListener("abort", () => {
+      this.lifecycle.revokeGeneration(deps.signal?.reason);
+      this.roster.cancelPendingRecovery();
+    }, { once: true });
     this.lifecycle = new TeamLifecycle({
       teamId: deps.teamId,
       store: deps.store,
@@ -81,7 +88,7 @@ export class TeamRuntime {
 
   /** 冷启动恢复对账：roster 对账完成 + 全量邮箱续投。 */
   async recoverAll(): Promise<void> {
-    await this.roster.recoveryDone;
+    await this.roster.startRecovery();
     await this.mailbox.recoverFor("all");
   }
 
@@ -93,5 +100,7 @@ export class TeamRuntime {
   close(): void {
     this.unsubscribeCommit();
     this.unsubscribeStatus();
+    this.roster.cancelPendingRecovery();
+    this.activity.closeAll();
   }
 }

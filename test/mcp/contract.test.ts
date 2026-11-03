@@ -134,6 +134,52 @@ describe("F02/F03 · spawn_teammate 契约", () => {
     );
   });
 
+  it("0.5.4 pending = 已登记未确认；保留 provisioning，不误报可执行成员", async () => {
+    rig.provider.programWith({ startOutcome: { kind: "pending" } });
+    const result = await call(rig, "spawn_teammate", { name: "pending-worker", description: "d", prompt: "p" });
+    const body = okJson(result) as { member: { status: string }; creation: string; message: string };
+    expect(Object.keys(body).sort()).toEqual(["creation", "member", "message"]);
+    expect(body.member.status).toBe("provisioning");
+    expect(body.creation).toBe("pending");
+    expect(body.message).toBe("结果待确认");
+  });
+
+  it("外层断连后只有原 requestId 已登记才返回 pending；不能自动重放", async () => {
+    const { TeamCoordinatorHost } = await import("../../src/coord/host.js");
+    const { TeamClient } = await import("../../src/coord/client.js");
+    const { teamPaths } = await import("../../src/coord/paths.js");
+    const original = await TeamCoordinatorHost.open({ dataRoot: rig.dataRoot, teamId: "sess_lead_a", provider: rig.provider });
+    const socket = original.socketPath!;
+    const raw = await import("node:net");
+    const { readRpcToken } = await import("../../src/coord/rpc.js");
+    const token = readRpcToken(teamPaths(rig.dataRoot, "sess_lead_a").teamDir)!;
+    const client = raw.connect(socket);
+    const replies: unknown[] = [];
+    client.on("data", (chunk) => replies.push(String(chunk)));
+    await new Promise<void>((resolve, reject) => {
+      client.once("connect", resolve);
+      client.once("error", reject);
+    });
+    client.write(JSON.stringify({ id: 1, method: "member.spawn", token, params: {
+      session_id: "sess_lead_a", name: "original", description: "d", prompt: "p", requestId: "req-disconnected",
+    } }) + "\n");
+    for (let i = 0; i < 100; i++) {
+      const board = await original.readBoard();
+      if (board.view.members.some((member) => member.name === "original")) break;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect((await original.readBoard()).view.members.some((member) => member.name === "original"), JSON.stringify({ replies, prepared: rig.provider.prepared })).toBe(true);
+    client.destroy();
+    await original.close().catch(() => undefined);
+    expect(rig.provider.prepared.some((entry) => entry.requestId === "req-disconnected")).toBe(true);
+    // 读取同一 origin，而非再次 member.spawn。
+    const registered = rig.provider.requestStatus?.("req-disconnected");
+    expect(registered?.memberId).toBeDefined();
+    expect(rig.provider.startCalls).toBeLessThanOrEqual(1);
+    const unknown = rig.provider.requestStatus?.("req-never-registered");
+    expect(unknown).toBeUndefined();
+  });
+
   it("F03（〔对齐轮〕0.2.1）：MockProvider 捕获首轮 prompt = 任务原文（身份前缀块已删除，改由运行时上下文承载）", async () => {
     await call(rig, "spawn_teammate", {
       name: "worker",

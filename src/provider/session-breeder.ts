@@ -37,6 +37,15 @@ export interface BreedInput {
    */
   modelSelection?: MemberModelSelection;
   timeoutMs?: number;
+  /** 由完整 origin 预写的固定身份；恢复沿用同一命令/预分配 anchor。 */
+  anchorCommandId?: string;
+  childCommandId?: string;
+  anchorSessionId?: string;
+  /** 只有已获得宿主 anchor/child 证据才进入重启查询路径。 */
+  recoveryEvidence?: boolean;
+  signal?: AbortSignal;
+  /** 只在取得宿主新证据时回调，供 origin 原子更新。 */
+  onProgress?: (progress: { anchorSessionId?: string; childSessionId?: string; stage: string }) => boolean | void;
 }
 
 export interface BreedResult {
@@ -55,7 +64,8 @@ export type BreedFailure =
   | "startup-timeout"
   | "create-rejected"
   | "command-rejected"
-  | "model-rejected";
+  | "model-rejected"
+  | "outcome-unknown";
 
 export class BreedError extends Error {
   constructor(
@@ -148,35 +158,106 @@ export class AppServerSessionBreeder {
     }
   }
 
-  /** 造一个隐藏子会话；失败抛 BreedError（不回退成可见会话——DSH 口径：失败即 failed 成员）。 */  async createChild(input: BreedInput): Promise<BreedResult> {
+  /** 造一个隐藏子会话；失败抛 BreedError（不回退成可见会话——DSH 口径：失败即 failed 成员）。 */
+  async createChild(input: BreedInput): Promise<BreedResult> {
     const startedAt = this.now();
     const workspacePath = this.resolveWorkspace(input.teamId, input.workspacePath);
     const client = this.#spawnClient(workspacePath);
-    let anchorSessionId: string | null = null;
+    const anchorCommandId =
+      input.anchorCommandId ?? `team-anchor-${startedAt}-${Math.random().toString(36).slice(2, 8)}`;
+    const childCommandId =
+      input.childCommandId ?? `team-child-${this.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const commandTimeoutMs = input.timeoutMs ?? 30_000;
+    const queryTimeoutMs = Math.min(input.timeoutMs ?? 5_000, 5_000);
+    // 预分配 id 不是宿主已创建的证据；只有 accepted/duplicate 才允许失败清理。
+    let anchorSessionId: string | null = input.anchorSessionId ?? null;
     let childSessionId: string | null = null;
+    let anchorEvidence = false;
     try {
-      const ready = await client.waitReady(input.timeoutMs ?? this.readyTimeoutMs);
+      // timeoutMs 限制单个命令/恢复查询；进程启动始终使用 readyTimeoutMs。
+      const readyTimeoutMs = this.readyTimeoutMs;
+      const ready = await client.waitReady(readyTimeoutMs);
       if (!ready) {
         throw new BreedError(
           "startup-timeout",
-          `app-server did not become ready within ${input.timeoutMs ?? this.readyTimeoutMs}ms`,
+          `app-server did not become ready within ${readyTimeoutMs}ms`,
         );
       }
-
-      const anchorAck = await client.rpc<CommandAck>("v4/command", {
-        commandId: `team-anchor-${startedAt}-${Math.random().toString(36).slice(2, 8)}`,
-        clientId: "agent-team",
-        sessionId: null,
-        issuedAt: startedAt,
-        type: "createSession",
-        payload: { workspaceId: workspacePath, permissionScope: "session" },
-      });
-      const createdAnchorId = anchorAck?.result?.sessionId;
-      if (typeof createdAnchorId !== "string" || createdAnchorId.length === 0) {
-        throw new BreedError("create-rejected", describeAck("createSession", anchorAck));
+      if (input.signal?.aborted) {
+        throw new BreedError("outcome-unknown", abortDescription(input.signal, "session breeding aborted"));
       }
-      anchorSessionId = createdAnchorId;
 
+      let priorChild: CommandAck | "unknown" | undefined;
+      const hasRecoveryIdentity =
+        input.anchorCommandId !== undefined &&
+        input.childCommandId !== undefined &&
+        input.anchorSessionId !== undefined && input.recoveryEvidence === true;
+      if (hasRecoveryIdentity) {
+        // origin 已经固定了身份：每次调用先查，而不是先重发。恢复时因此可以零条 v4/command。
+        const priorAnchor = await this.#queryCommand(client, {
+          commandId: anchorCommandId,
+          sessionId: null,
+          type: "createSession",
+          signal: input.signal,
+          timeoutMs: queryTimeoutMs,
+        });
+        if (priorAnchor !== "unknown") {
+          anchorSessionId = createdSessionId(priorAnchor, {
+            type: "createSession",
+            expectedSessionId: input.anchorSessionId,
+            failure: "create-rejected",
+            mismatchFailure: "outcome-unknown",
+          });
+          anchorEvidence = true;
+        } else {
+          anchorSessionId = await this.#findPreallocatedAnchor(client, {
+            anchorSessionId: input.anchorSessionId!,
+            workspacePath,
+            signal: input.signal,
+            timeoutMs: queryTimeoutMs,
+          });
+          anchorEvidence = anchorSessionId !== null;
+        }
+        if (anchorEvidence && anchorSessionId !== null) {
+          this.reportProgress(input,{ anchorSessionId, stage: "anchor-recovered" });
+          priorChild = await this.#queryCommand(client, {
+            commandId: childCommandId,
+            sessionId: anchorSessionId,
+            type: "createSelectionSideSession",
+            signal: input.signal,
+            timeoutMs: queryTimeoutMs,
+          });
+        }
+      }
+      if (!anchorEvidence) {
+        const anchorCall = await this.#runCommand(client, {
+          commandId: anchorCommandId,
+          sessionId: null,
+          issuedAt: startedAt,
+          type: "createSession",
+          payload: {
+            ...(input.anchorSessionId !== undefined ? { sessionId: input.anchorSessionId } : {}),
+            workspaceId: workspacePath,
+            permissionScope: "session",
+          },
+          signal: input.signal,
+          commandTimeoutMs,
+          queryTimeoutMs,
+        });
+        const createdAnchorId = createdSessionId(anchorCall.ack, {
+          type: "createSession",
+          expectedSessionId: input.anchorSessionId,
+          failure: "create-rejected",
+          mismatchFailure: anchorCall.recovered ? "outcome-unknown" : "create-rejected",
+        });
+        anchorSessionId = createdAnchorId;
+        anchorEvidence = true;
+        this.reportProgress(input,{ anchorSessionId: createdAnchorId, stage: "anchor-created" });
+      }
+
+      if (anchorSessionId === null) {
+        throw new BreedError("outcome-unknown", "anchor has no confirmed session id; not creating a replacement");
+      }
       // anchor 必须先永久隐藏，再创建 child：child 失败时 anchor 也不会在任务栏露出。
       // tombstone（行不存在则先插入，避免基线补登后露出）。
       const tombstone = tombstoneAnchor({
@@ -194,19 +275,44 @@ export class AppServerSessionBreeder {
         );
       }
 
-      const sideAck = await client.rpc<CommandAck>("v4/command", {
-        commandId: `team-child-${this.now()}-${Math.random().toString(36).slice(2, 8)}`,
-        clientId: "agent-team",
+      const commandArgs = {
+        commandId: childCommandId,
         sessionId: anchorSessionId,
         issuedAt: this.now(),
         type: "createSelectionSideSession",
         payload: {},
-      });
-      const createdChildId = sideAck?.result?.sessionId;
-      if (typeof createdChildId !== "string" || createdChildId.length === 0) {
-        throw new BreedError("command-rejected", describeAck("createSelectionSideSession", sideAck));
+        signal: input.signal,
+        commandTimeoutMs,
+        queryTimeoutMs,
+      } as const;
+      let sideCall: CommandCallResult;
+      let recoveredChildNeedsResume = false;
+      if (priorChild !== undefined && priorChild !== "unknown") {
+        recoveredChildNeedsResume = input.modelSelection !== undefined;
+        sideCall = { ack: priorChild, recovered: true };
+      } else {
+        // 仅在本次调用尚未发过 child 命令且 query 确定无终态时，用原固定 id 首发。
+        sideCall = await this.#runCommand(client, commandArgs);
       }
+      const createdChildId = createdSessionId(sideCall.ack, {
+        type: "createSelectionSideSession",
+        failure: "command-rejected",
+        mismatchFailure: sideCall.recovered ? "outcome-unknown" : "command-rejected",
+      });
       childSessionId = createdChildId;
+      this.reportProgress(input,{
+        anchorSessionId,
+        childSessionId: createdChildId,
+        stage: "child-created",
+      });
+      if (recoveredChildNeedsResume) {
+        await client.rpc(
+          "session/resume",
+          { sessionId: createdChildId },
+          queryTimeoutMs,
+          { signal: input.signal },
+        );
+      }
 
       // 同实例内 child 活跃（Round A PoC-1 已证）：setModel 落 runtime/model_selection 条目，
       // 后续 `--resume` 每轮生效。0.4.0「同步失败即阻止」：继承选择应用失败 = 直接抛错并回收
@@ -214,7 +320,7 @@ export class AppServerSessionBreeder {
       let appliedModel: MemberModelSelection | undefined;
       if (input.modelSelection !== undefined) {
         try {
-          await this.#setModel(client, childSessionId, input.modelSelection);
+          await this.#setModel(client, childSessionId, input.modelSelection, input.signal);
           appliedModel = input.modelSelection;
           this.log({
             event: "model-set",
@@ -223,6 +329,11 @@ export class AppServerSessionBreeder {
             providerId: input.modelSelection.providerId,
             modelId: input.modelSelection.modelId,
             reasoningLevel: input.modelSelection.reasoningLevel ?? null,
+          });
+          this.reportProgress(input,{
+            anchorSessionId,
+            childSessionId,
+            stage: "model-applied",
           });
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
@@ -234,6 +345,9 @@ export class AppServerSessionBreeder {
             modelId: input.modelSelection.modelId,
             message,
           });
+          if (input.signal?.aborted) {
+            throw new BreedError("outcome-unknown", abortDescription(input.signal, message));
+          }
           throw new BreedError(
             "model-rejected",
             `member could not use the inherited model ${input.modelSelection.providerId}/${input.modelSelection.modelId}: ${message}`,
@@ -262,8 +376,10 @@ export class AppServerSessionBreeder {
       };
     } catch (err) {
       const stderr = client.getStderr().slice(-800);
+      // outcome-unknown/abort 可能有迟到的宿主编排副作用；不得把它当成确定失败回收。
+      const mayDispose =
+        anchorEvidence && !(err instanceof BreedError && err.code === "outcome-unknown") && !input.signal?.aborted;
       if (err instanceof BreedError) {
-        // BreedError 也要留痕（此前直接 throw → 关键失败没有 anchor/child id）。
         this.log({
           event: "session-breed-failed",
           teamId: input.teamId,
@@ -273,17 +389,19 @@ export class AppServerSessionBreeder {
           anchorSessionId,
           childSessionId,
         });
-        if (anchorSessionId !== null) {
+        if (mayDispose && anchorSessionId !== null) {
           this.disposeBredSessions({ anchorSessionId, workspacePath });
         }
         throw err;
       }
       const message = err instanceof Error ? err.message : String(err);
-      const code: BreedFailure = /timeout/i.test(message)
-        ? "startup-timeout"
-        : /exited|ENOENT|EACCES|spawn/i.test(message)
-          ? "spawn-failed"
-          : "unsupported";
+      const code: BreedFailure = input.signal?.aborted
+        ? "outcome-unknown"
+        : /timeout/i.test(message)
+          ? "startup-timeout"
+          : /exited|ENOENT|EACCES|spawn/i.test(message)
+            ? "spawn-failed"
+            : "unsupported";
       this.log({
         event: "session-breed-failed",
         teamId: input.teamId,
@@ -293,7 +411,7 @@ export class AppServerSessionBreeder {
         anchorSessionId,
         childSessionId,
       });
-      if (anchorSessionId !== null) {
+      if (mayDispose && anchorSessionId !== null) {
         this.disposeBredSessions({ anchorSessionId, workspacePath });
       }
       throw new BreedError(code, `${message}${stderr.length > 0 ? ` | stderr: ${stderr}` : ""}`);
@@ -355,6 +473,7 @@ export class AppServerSessionBreeder {
     client: AppServerClient,
     sessionId: string,
     selection: MemberModelSelection,
+    signal?: AbortSignal,
   ): Promise<void> {
     await client.rpc(
       "session/setModel",
@@ -370,7 +489,132 @@ export class AppServerSessionBreeder {
         persistAsWorkspaceLastUsed: false,
       },
       20_000,
+      { signal },
     );
+  }
+
+  private reportProgress(input: BreedInput, progress: { anchorSessionId?: string; childSessionId?: string; stage: string }): void {
+    if (input.onProgress?.(progress) === false) {
+      throw new BreedError("outcome-unknown", "coordinator generation revoked; host evidence is retained for recovery");
+    }
+  }
+
+  async #runCommand(
+    client: AppServerClient,
+    input: CommandRequest & { commandTimeoutMs: number; queryTimeoutMs: number },
+  ): Promise<CommandCallResult> {
+    try {
+      const ack = await client.rpc<CommandAck>("v4/command", commandEnvelope(input), input.commandTimeoutMs, {
+        signal: input.signal,
+      });
+      return { ack, recovered: false };
+    } catch (err) {
+      if (input.signal?.aborted) {
+        throw new BreedError("outcome-unknown", abortDescription(input.signal, errorDescription(err)));
+      }
+      const message = errorDescription(err);
+      // 协议/传输异常也不能证明命令未落库；在 client 仍存活时有且仅有一次查询机会。
+      // 明确缺参/协议版本拒绝没有未知副作用，保留旧的 unsupported 分类。
+      if (/invalid params|method not found|invalid request/i.test(message)) throw err;
+      const ack = await this.#queryCommand(client, {
+        commandId: input.commandId,
+        sessionId: input.sessionId,
+        type: input.type,
+        signal: input.signal,
+        timeoutMs: input.queryTimeoutMs,
+      });
+      if (ack === "unknown") {
+        throw new BreedError("outcome-unknown", `${input.type} outcome is unknown; original command was not replayed`);
+      }
+      return { ack, recovered: true };
+    }
+  }
+
+  async #queryCommand(
+    client: AppServerClient,
+    input: CommandQuery,
+  ): Promise<CommandAck | "unknown"> {
+    let queried: CommandsQueryResult;
+    try {
+      queried = await client.rpc<CommandsQueryResult>(
+        "v4/commands/query",
+        { commands: [{ sessionId: input.sessionId, commandId: input.commandId }] },
+        input.timeoutMs,
+        { signal: input.signal },
+      );
+    } catch (err) {
+      const message = errorDescription(err);
+      throw new BreedError(
+        "outcome-unknown",
+        `${input.type} outcome is unknown; command query could not establish a final result: ${message}`,
+      );
+    }
+    const matches = (queried?.results ?? []).filter(
+      (entry) => entry?.key?.commandId === input.commandId && entry.key.sessionId === input.sessionId,
+    );
+    const result = matches.length === 1 ? matches[0]!.result : "unknown";
+    if (result === "unknown") return "unknown";
+    if (typeof result !== "object" || result === null) {
+      throw new BreedError(
+        "outcome-unknown",
+        `${input.type} outcome is unknown; malformed command result for "${input.commandId}"`,
+      );
+    }
+    if (result.status === "accepted" || result.status === "duplicate") {
+      return result;
+    }
+    if (isExplicitRejection(result)) {
+      throw new BreedError(
+        input.type === "createSession" ? "create-rejected" : "command-rejected",
+        describeAck(input.type, result),
+      );
+    }
+    throw new BreedError(
+      "outcome-unknown",
+      `${input.type} outcome is unknown; command "${input.commandId}" has non-final status "${result.status ?? "missing"}"`,
+    );
+  }
+
+  /** 仅对预分配 anchor 使用：必须同时证明 id、workspace 和非子会话类型，绝不认领近似对象。 */
+  async #findPreallocatedAnchor(
+    client: AppServerClient,
+    input: {
+      anchorSessionId: string;
+      workspacePath: string;
+      signal?: AbortSignal;
+      timeoutMs: number;
+    },
+  ): Promise<string | null> {
+    let listed: SessionListResult;
+    try {
+      listed = await client.rpc<SessionListResult>(
+        "session/list",
+        { sessionIds: [input.anchorSessionId] },
+        input.timeoutMs,
+        { signal: input.signal },
+      );
+    } catch (err) {
+      throw new BreedError(
+        "outcome-unknown",
+        `createSession outcome is unknown; anchor lookup failed: ${errorDescription(err)}`,
+      );
+    }
+    const matches = (listed?.sessions ?? []).filter((session) => session?.sessionId === input.anchorSessionId);
+    if (matches.length === 0) return null;
+    const session = matches[0]!;
+    const sessionWorkspace = session.workspace?.workspacePath;
+    if (
+      matches.length !== 1 ||
+      typeof sessionWorkspace !== "string" ||
+      path.resolve(sessionWorkspace) !== path.resolve(input.workspacePath) ||
+      session.sessionKind !== "interactive"
+    ) {
+      throw new BreedError(
+        "outcome-unknown",
+        `createSession outcome is unknown; preallocated anchor "${input.anchorSessionId}" failed workspace/type verification`,
+      );
+    }
+    return input.anchorSessionId;
   }
 
   #spawnClient(workspacePath: string): AppServerClient {
@@ -391,10 +635,104 @@ export class AppServerSessionBreeder {
 }
 
 interface CommandAck {
+  commandId?: string;
   status?: string;
   reasonCode?: string;
   message?: string;
   result?: { type?: string; sessionId?: string };
+}
+
+type BreedCommandType = "createSession" | "createSelectionSideSession";
+
+interface CommandRequest {
+  commandId: string;
+  sessionId: string | null;
+  issuedAt: number;
+  type: BreedCommandType;
+  payload: Record<string, unknown>;
+  signal?: AbortSignal;
+}
+
+interface CommandQuery {
+  commandId: string;
+  sessionId: string | null;
+  type: BreedCommandType;
+  signal?: AbortSignal;
+  timeoutMs: number;
+}
+
+interface CommandCallResult {
+  ack: CommandAck;
+  recovered: boolean;
+}
+
+interface CommandsQueryResult {
+  results?: Array<{
+    key?: { sessionId?: string | null; commandId?: string };
+    result?: CommandAck | "unknown";
+  }>;
+}
+
+interface SessionListResult {
+  sessions?: Array<{
+    sessionId?: string;
+    sessionKind?: string;
+    workspace?: { workspacePath?: string };
+  }>;
+}
+
+function commandEnvelope(input: CommandRequest): Record<string, unknown> {
+  return {
+    commandId: input.commandId,
+    clientId: "agent-team",
+    sessionId: input.sessionId,
+    issuedAt: input.issuedAt,
+    type: input.type,
+    payload: input.payload,
+  };
+}
+
+function createdSessionId(
+  ack: CommandAck,
+  input: {
+    type: BreedCommandType;
+    expectedSessionId?: string;
+    failure: "create-rejected" | "command-rejected";
+    mismatchFailure: BreedFailure;
+  },
+): string {
+  if (ack.status === "accepted" || ack.status === "duplicate") {
+    const id = ack.result?.sessionId;
+    if (
+      ack.result?.type === input.type &&
+      typeof id === "string" &&
+      id.length > 0 &&
+      (input.expectedSessionId === undefined || id === input.expectedSessionId)
+    ) {
+      return id;
+    }
+    // 查询结果必须精确匹配命令类型及（预分配的）session id；绝不认领另一条命令的会话。
+    throw new BreedError(
+      input.mismatchFailure,
+      `${input.type} returned mismatched result: ${describeAck(input.type, ack)}`,
+    );
+  }
+  if (isExplicitRejection(ack)) throw new BreedError(input.failure, describeAck(input.type, ack));
+  // accepted 之外的状态绝不能被当成创建成功；stale/noop 等无法证明副作用已落定。
+  throw new BreedError("outcome-unknown", describeAck(input.type, ack));
+}
+
+function isExplicitRejection(ack: CommandAck): boolean {
+  return ack.status === "rejected" || ack.status === "failed" || ack.status === undefined;
+}
+
+function abortDescription(signal: AbortSignal, fallback: string): string {
+  const reason: unknown = signal.reason;
+  return reason instanceof Error ? reason.message : typeof reason === "string" ? reason : fallback;
+}
+
+function errorDescription(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
 
 function describeAck(type: string, ack: CommandAck | undefined): string {

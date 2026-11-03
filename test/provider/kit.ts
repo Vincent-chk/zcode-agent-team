@@ -207,6 +207,12 @@ export function buildProviderKit(opts: {
     termGraceMs: 800,
     log: (record) => logs.push(record),
   });
+  const start = provider.startContinuable.bind(provider);
+  provider.startContinuable = (args) => {
+    const requestId = args.requestId ?? `test-${args.memberId}`;
+    provider.prepareContinuable({ ...args, requestId });
+    return start({ ...args, requestId });
+  };
   return {
     root,
     dataRoot,

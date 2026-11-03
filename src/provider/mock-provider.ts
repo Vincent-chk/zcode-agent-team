@@ -11,6 +11,7 @@ import type { ProvisioningRecord, ReconciliationSource, TargetInspector } from "
 export type StartOutcome =
   | { kind: "accept" }
   | { kind: "reject" } // 返回 accepted:false（未持久接收）
+  | { kind: "pending" }
   | { kind: "throw"; error: unknown }
   | { kind: "hang" }; // 挂起直到 signal 中止（模拟首轮 prompt 未持久接收的等待）
 
@@ -63,7 +64,27 @@ export class MockProvider implements TeammateProvider, ReconciliationSource, Tar
   drainedTeamIds: string[] = [];
   drainCalls = 0;
   startCalls = 0;
+  readonly prepared: Array<{ name: string; prompt: string; requestId: string; context: "fresh" | "fork" }> = [];
   deliverCalls = 0;
+  interruptCalls = 0;
+  /** 默认无自动恢复能力（保留纯域 mock 旧语义）；专项测试可注入持久预算行为。 */
+  noteProvisioningRecovery?: (memberId: string) => boolean;
+  resumeContinuable?: TeammateProvider["resumeContinuable"];
+  private generationAbort = new AbortController();
+
+  activateGeneration(): AbortSignal {
+    this.generationAbort = new AbortController();
+    return this.generationAbort.signal;
+  }
+
+  get generationSignal(): AbortSignal {
+    return this.generationAbort.signal;
+  }
+
+  detach(): void {
+    this.generationAbort.abort(new Error("coordinator generation revoked"));
+  }
+
   private program: MockProviderProgram = {};
   private deliverScript: Array<"accepted" | "queued" | "throw" | "lost"> = [];
 
@@ -71,6 +92,16 @@ export class MockProvider implements TeammateProvider, ReconciliationSource, Tar
     this.program = program;
     this.deliverScript = program.deliverResults ? [...program.deliverResults] : [];
     return this;
+  }
+
+  prepareContinuable(args: { name: string; firstPrompt: string; requestId: string; context: "fresh" | "fork" }): void {
+    this.prepared.push({ name: args.name, prompt: args.firstPrompt, requestId: args.requestId, context: args.context });
+  }
+
+  requestStatus(requestId: string): { memberId: string; accepted: boolean } | undefined {
+    const intent = this.prepared.find((entry) => entry.requestId === requestId);
+    const member = intent === undefined ? undefined : [...this.teamChildren.values()].find((child) => child.name === intent.name);
+    return intent === undefined ? undefined : { memberId: member?.memberId ?? `mock-${intent.name}`, accepted: member?.received.has("") ?? false };
   }
 
   async startContinuable(args: {
@@ -81,7 +112,7 @@ export class MockProvider implements TeammateProvider, ReconciliationSource, Tar
     firstPrompt: string;
     context: "fresh" | "fork";
     signal?: AbortSignal;
-  }): Promise<{ memberId: string; accepted: boolean }> {
+  }): Promise<{ memberId: string; accepted: boolean; creation?: "pending" }> {
     this.startCalls += 1;
     const outcome = this.program.startOutcome ?? { kind: "accept" as const };
     if (this.program.startDelayMs && this.program.startDelayMs > 0) {
@@ -95,6 +126,7 @@ export class MockProvider implements TeammateProvider, ReconciliationSource, Tar
       });
     }
     if (outcome.kind === "throw") throw outcome.error;
+    if (outcome.kind === "pending") return { memberId: args.memberId, accepted: false, creation: "pending" };
     const child: MockChild = {
       memberId: args.memberId,
       name: args.name,
@@ -170,6 +202,7 @@ export class MockProvider implements TeammateProvider, ReconciliationSource, Tar
 
   async interrupt(args: { memberId: string }): Promise<{ previousStatus: string }> {
     if (this.program.interruptError !== undefined) throw this.program.interruptError;
+    this.interruptCalls += 1;
     const child = this.teamChildren.get(args.memberId);
     if (child === undefined || !child.alive) return { previousStatus: "inactive" };
     const previousStatus = child.status;

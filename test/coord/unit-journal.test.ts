@@ -99,6 +99,18 @@ describe("journal · appendAndFlush 与行格式", () => {
     await lock.release();
   });
 
+  it("失锁关闭只释放描述符，不发布 checkpoint", async () => {
+    const id = `${TEAM_ID}-revoked-close`;
+    const { journal, lock } = await freshJournal(id);
+    await journal.appendAndFlush(memberEvent({ id: "a1", name: "w1" }, id));
+    const checkpoint = path.join(dir, "revoked-close", "checkpoint.json");
+    fs.mkdirSync(path.dirname(checkpoint), { recursive: true });
+    fs.writeFileSync(checkpoint, "sentinel");
+    await journal.close({ checkpoint: false });
+    expect(fs.readFileSync(checkpoint, "utf8")).toBe("sentinel");
+    await lock.release();
+  });
+
   it("单写者纪律：无锁 → openWriter 拒绝；enforceLock:false 放行（测试形态）；进程内单例", async () => {
     const teamDir = path.join(dir, "discipline");
     fs.mkdirSync(teamDir, { recursive: true });

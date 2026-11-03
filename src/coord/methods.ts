@@ -81,7 +81,7 @@ export function buildTeamMethodTable(deps: MethodTableDeps): Map<string, TeamMet
     return { role: membership.role };
   });
 
-  const memberSpawn: TeamMethodHandler = async (raw) => {
+  const memberSpawn: TeamMethodHandler = async (raw, ctx) => {
     const p = asParams(raw, "member.spawn");
     assertTeamTarget(p, "member.spawn", deps);
     const sessionId = requireSessionId(p, "member.spawn");
@@ -96,6 +96,8 @@ export function buildTeamMethodTable(deps: MethodTableDeps): Map<string, TeamMet
       name: requireString(p, "name", "member.spawn", { allowEmpty: true }),
       description: requireString(p, "description", "member.spawn", { allowEmpty: true }),
       prompt: requireString(p, "prompt", "member.spawn", { allowEmpty: true }),
+      ...(typeof p.requestId === "string" && p.requestId.length > 0 ? { requestId: p.requestId } : {}),
+      ...(ctx?.signal !== undefined ? { signal: ctx.signal, ownershipSignal: ctx.signal } : {}),
       ...(context !== undefined ? { context } : {}),
     });
   };

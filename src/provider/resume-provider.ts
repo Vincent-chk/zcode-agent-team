@@ -12,6 +12,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import type { TeammateProvider } from "./teammate-provider.js";
+import { ProvisioningPending } from "../domain/roster.js";
 import type { ProvisioningRecord } from "../domain/ports.js";
 import { leadWakeEnabled, maybeWakeLead, type LeadWakeResult } from "./lead-wake.js";
 import {
@@ -117,6 +118,12 @@ export interface SessionBreederLike {
     workspacePath: string;
     modelSelection?: MemberModelSelection;
     timeoutMs?: number;
+    anchorCommandId?: string;
+    childCommandId?: string;
+    anchorSessionId?: string;
+    recoveryEvidence?: boolean;
+    signal?: AbortSignal;
+    onProgress?: (progress: { anchorSessionId?: string; childSessionId?: string; stage: string }) => boolean | void;
   }): Promise<{
     anchorSessionId: string;
     childSessionId: string;
@@ -179,6 +186,9 @@ export class ResumePerTurnProvider implements TeammateProvider {
   private lastLaunchFailureAt = 0;
   private pendingLookup: PendingLookup | null = null;
   private closed = false;
+  private generation = 0;
+  private generationAbort = new AbortController();
+  private backgroundDeferred = false;
   /** 失败记录变化监听（0.4.1：host 接线 → roster.notifyStatusChanged 刷新成员展示）。 */
   private modelFailureListeners = new Set<() => void>();
 
@@ -255,6 +265,13 @@ export class ResumePerTurnProvider implements TeammateProvider {
     this.resolveLeadInheritance();
   }
 
+  /** 仅在当前代次内写 origin；旧进度回调/后台恢复只读，不覆盖新代次。 */
+  private writeCurrentOrigin(paths: MemberPaths, origin: OriginRecord): boolean {
+    if (this.closed || this.generationAbort.signal.aborted) return false;
+    writeOrigin(paths, origin);
+    return true;
+  }
+
   /** 协调者启动纳管：孤儿轮次定案/再收养 + drain 标记处置 + lead 回执折叠（T4.4/触发点②）。 */
   adoptOrphans(): { finalized: string[]; adopted: string[] } {
     const finalized: string[] = [];
@@ -264,6 +281,16 @@ export class ResumePerTurnProvider implements TeammateProvider {
       this.handleDrainMarker(paths);
       for (const turn of listTurns(paths.runDir)) {
         if (turn.status !== "running" && turn.status !== "starting") continue;
+        if (turn.pid === null) {
+          const receipt = readSpawnReceipt(path.join(paths.runDir, `${turn.turnId}.spawn.json`));
+          if (receipt?.pid !== undefined) {
+            writeTurn(paths.runDir, { ...turn, pid: receipt.pid, pgid: receipt.pid, status: "running" });
+            this.adoptedPids.add(receipt.pid);
+            adopted.push(turn.turnId);
+          }
+          // 无回执：启动意图仍在，未知结果不重复启动，也不写 exited。
+          continue;
+        }
         if (this.finalizeIfDead(memberId, turn)) {
           finalized.push(turn.turnId);
         } else if (turn.pid !== null) {
@@ -277,9 +304,23 @@ export class ResumePerTurnProvider implements TeammateProvider {
     return { finalized, adopted };
   }
 
-  /** 协调者关闭：停 watcher（轮次进程不杀——独立进程组纪律）。 */
+  /** 协调者每次获锁都启用新代次；旧 watcher/恢复回调不能借用下一次获锁的权限。 */
+  activateGeneration(): AbortSignal {
+    this.generation += 1;
+    this.generationAbort = new AbortController();
+    this.closed = false;
+    this.backgroundDeferred = true;
+    return this.generationAbort.signal;
+  }
+
+  private generationIsCurrent(generation: number): boolean {
+    return generation === this.generation && !this.closed;
+  }
+
+  /** 协调者关闭：先撤销本代次，再停 watcher；轮次进程不杀。 */
   detach(): void {
     this.closed = true;
+    this.generationAbort.abort(new Error("coordinator generation revoked"));
     if (this.watcherTimer !== null) {
       clearInterval(this.watcherTimer);
       this.watcherTimer = null;
@@ -298,9 +339,11 @@ export class ResumePerTurnProvider implements TeammateProvider {
   }
 
   private startWatcher(): void {
-    if (this.watcherTimer !== null || this.closed) return;
+    if (this.watcherTimer !== null || this.closed || this.backgroundDeferred) return;
+    const generation = this.generation;
     const timer = setInterval(() => {
-      void this.watchTick().catch((err: unknown) => {
+      if (!this.generationIsCurrent(generation)) return;
+      void this.watchTick(generation).catch((err: unknown) => {
         // 坏 turn/回执文件或 db 瞬态失败不得变成 unhandled rejection（会杀 daemon）；
         // 单次 tick 失败在下一次轮询重试。
         this.log({ ts: iso(this.now()), kind: "watcher-error", error: errText(err) });
@@ -310,11 +353,12 @@ export class ResumePerTurnProvider implements TeammateProvider {
     this.watcherTimer = timer;
   }
 
-  private async watchTick(): Promise<void> {
-    if (this.watcherBusy || this.closed) return;
+  private async watchTick(generation = this.generation): Promise<void> {
+    if (this.watcherBusy || !this.generationIsCurrent(generation)) return;
     this.watcherBusy = true;
     try {
       for (const memberId of listMembers(this.teamDir)) {
+        if (!this.generationIsCurrent(generation)) return;
         const paths = memberPaths(this.teamDir, memberId);
         const turnId = readCurrentTurnId(paths);
         if (turnId === undefined) continue;
@@ -322,8 +366,8 @@ export class ResumePerTurnProvider implements TeammateProvider {
         if (turn === undefined) continue;
         if (turn.status === "running" || turn.status === "starting") {
           if (turn.interruptRequestedAt !== undefined) {
-            // 协调者在 interrupt 中途崩溃：接任者补杀并收尾。
             const dead = await killProcessGroup(turn.pgid, this.termGraceMs);
+            if (!this.generationIsCurrent(generation)) return;
             if (dead) {
               const landed =
                 turn.sessionId !== null && this.reader.hasUserText(turn.sessionId, turn.promptText);
@@ -342,10 +386,10 @@ export class ResumePerTurnProvider implements TeammateProvider {
             }
             continue;
           }
-          this.finalizeIfDead(memberId, turn);
+          if (this.generationIsCurrent(generation)) this.finalizeIfDead(memberId, turn);
         }
       }
-      this.foldLeadReceipts(false);
+      if (this.generationIsCurrent(generation)) this.foldLeadReceipts(false);
     } finally {
       this.watcherBusy = false;
     }
@@ -353,7 +397,8 @@ export class ResumePerTurnProvider implements TeammateProvider {
 
   /** 轮次进程已死 → 定案（landed 实查）+ 边界事件；返回是否已定案。 */
   private finalizeIfDead(memberId: string, turn: TurnRecord): boolean {
-    if (turn.pid !== null && pidAlive(turn.pid)) {
+    if (turn.pid === null) return false; // starting 意图不是未启动/已死亡证明。
+    if (pidAlive(turn.pid)) {
       this.adoptedPids.add(turn.pid);
       return false;
     }
@@ -407,6 +452,104 @@ export class ResumePerTurnProvider implements TeammateProvider {
 
   // ---------------------------------------------------------------- TeammateProvider
 
+  prepareContinuable(args: {
+    teamId: string;
+    memberId: string;
+    name: string;
+    description: string;
+    firstPrompt: string;
+    context: "fresh" | "fork";
+    requestId: string;
+  }): void {
+    const paths = memberPaths(this.teamDir, args.memberId);
+    const existing = readOrigin(paths);
+    if (existing !== undefined) {
+      if (existing.requestId === args.requestId) return;
+      throw new Error(`member ${args.memberId} already has a creation intent`);
+    }
+    const prompt = args.context === "fork"
+      ? buildForkFirstPrompt(this.reader, this.opts.teamId, args.firstPrompt).prompt
+      : args.firstPrompt;
+    const request = args.requestId;
+    const anchorSessionId = `sess_team_${request.replace(/[^A-Za-z0-9_-]/g, "")}`;
+    writeOrigin(paths, {
+      teamId: args.teamId,
+      memberId: args.memberId,
+      name: args.name,
+      provider: args.context === "fork" ? "fork" : "spawn",
+      mode: "continuable",
+      context: args.context,
+      createdAt: iso(this.now()),
+      cwd: this.cwd,
+      firstPromptText: prompt,
+      firstPromptSha256: sha256(prompt),
+      sessionId: null,
+      initialUserMessageAccepted: false,
+      sessionIsolation: this.sessionIsolation,
+      ...(this.sessionIsolation === "child"
+        ? {
+            anchorSessionId,
+            logicalParentSessionId: args.teamId,
+            sessionKind: "selection_side_chat" as const,
+            hostAnchorConfirmed: false,
+          }
+        : { sessionKind: "interactive" as const }),
+      requestId: args.requestId,
+      ...(this.sessionIsolation === "child"
+        ? { anchorCommandId: `team-anchor-${request}`, childCommandId: `team-child-${request}` }
+        : {}),
+      creationPending: true,
+      creationDiagnostic: "creation intent persisted; awaiting host confirmation",
+      confirmationAttempts: 0,
+      confirmationDeadlineAt: iso(this.now() + this.firstTurnTimeoutMs),
+    });
+  }
+
+  async resumeContinuable(memberId: string, signal?: AbortSignal): Promise<{ memberId: string; accepted: boolean; creation?: "pending" }> {
+    const paths = memberPaths(this.teamDir, memberId);
+    const origin = readOrigin(paths);
+    if (origin === undefined || origin.requestId === undefined) {
+      throw new ProvisioningPending("创建意图缺失，无法自动恢复；不会重新生成创建请求");
+    }
+    if (origin.confirmationStopped === true) {
+      throw new ProvisioningPending("创建结果待确认，自动恢复预算已耗尽；请由 Lead 接管");
+    }
+    return this.startContinuable({
+      teamId: origin.teamId,
+      memberId,
+      name: origin.name,
+      description: "",
+      firstPrompt: origin.firstPromptText,
+      context: origin.context,
+      requestId: origin.requestId,
+      ...(signal !== undefined ? { signal } : {}),
+    });
+  }
+
+  noteProvisioningRecovery(memberId: string): boolean {
+    const paths = memberPaths(this.teamDir, memberId);
+    let origin: OriginRecord | undefined;
+    try {
+      origin = readOrigin(paths);
+    } catch {
+      return true;
+    }
+    if (origin === undefined || origin.confirmationStopped === true) return true;
+    const attempts = (origin.confirmationAttempts ?? 0) + 1;
+    const stopped = attempts >= 3 || (origin.confirmationDeadlineAt !== undefined && Date.parse(origin.confirmationDeadlineAt) <= this.now());
+    this.writeCurrentOrigin(paths, {
+      ...origin,
+      confirmationAttempts: attempts,
+      ...(stopped ? { confirmationStopped: true, creationDiagnostic: "结果待确认；自动恢复已停止，请由 Lead 接管" } : {}),
+    });
+    return stopped;
+  }
+
+  startBackground(): void {
+    this.backgroundDeferred = false;
+    this.startWatcher();
+  }
+
   async startContinuable(args: {
     teamId: string;
     memberId: string;
@@ -414,16 +557,53 @@ export class ResumePerTurnProvider implements TeammateProvider {
     description: string;
     firstPrompt: string;
     context: "fresh" | "fork";
+    requestId?: string;
     signal?: AbortSignal;
-  }): Promise<{ memberId: string; accepted: boolean }> {
+  }): Promise<{ memberId: string; accepted: boolean; creation?: "pending" }> {
     if (args.teamId !== this.opts.teamId) {
       throw new Error(`provider serves team ${this.opts.teamId} but spawn targets ${args.teamId}`);
     }
     const paths = memberPaths(this.teamDir, args.memberId);
-    const prompt =
-      args.context === "fork"
-        ? buildForkFirstPrompt(this.reader, this.opts.teamId, args.firstPrompt).prompt
-        : args.firstPrompt; // D2：fresh 首轮 = 任务原文逐字（无身份前缀块）
+    const persistedOrigin: OriginRecord | undefined = readOrigin(paths);
+    if (persistedOrigin === undefined || persistedOrigin.requestId !== args.requestId) {
+      throw new ProvisioningPending("创建意图缺失或不匹配；不会重新生成创建请求");
+    }
+    const persisted: OriginRecord = persistedOrigin;
+    if (persisted.confirmationStopped === true) {
+      throw new ProvisioningPending("结果待确认，自动恢复预算已耗尽；请由 Lead 接管");
+    }
+    const prompt = persisted.firstPromptText;
+    const existingTurnId = readCurrentTurnId(paths);
+    const existingTurn = existingTurnId === undefined
+      ? listTurns(paths.runDir).findLast((turn) => turn.kind === "first")
+      : readTurn(paths.runDir, existingTurnId);
+    if (existingTurn !== undefined && existingTurn.memberId !== args.memberId) {
+      throw new ProvisioningPending("现有 turn 与成员意图不匹配；停止自动恢复");
+    }
+    if (existingTurn?.kind === "first") {
+      if (existingTurn.promptText !== prompt) {
+        throw new ProvisioningPending("现有首轮输入与 origin 不一致；停止自动恢复");
+      }
+      if (existingTurn.status === "exited" || existingTurn.status === "failed" || existingTurn.status === "spawn-error" || existingTurn.status === "interrupted") {
+        throw new ProvisioningPending("已有首轮终态记录；不会自动重复启动");
+      }
+      const persistedWithSession = persisted.sessionId === null && existingTurn.sessionId !== null
+        ? { ...persisted, sessionId: existingTurn.sessionId }
+        : persisted;
+      try {
+        const accepted = await this.awaitFirstAccept({
+          paths,
+          origin: persistedWithSession,
+          turn: existingTurn,
+          spawnT0: Date.parse(existingTurn.startedAt),
+          ...(args.signal !== undefined ? { signal: args.signal } : {}),
+        });
+        return { memberId: args.memberId, accepted: accepted !== null };
+      } catch (err) {
+        if (err instanceof ProvisioningPending) throw err;
+        throw new ProvisioningPending("已有首轮启动意图，结果待确认；不会重复启动");
+      }
+    }
 
     // 0.4.0 成员模型唯一路线：child 隔离模式跟随 Lead 最新**已确认**选择（三源判定，
     // 见 resolveLeadInheritance）。解析不出 / 官方套餐 / 目录外 = 孵化前抛错（fail-fast：
@@ -447,12 +627,34 @@ export class ResumePerTurnProvider implements TeammateProvider {
           teamId: this.opts.teamId,
           workspacePath: this.cwd,
           ...(inheritedSelection !== undefined ? { modelSelection: inheritedSelection } : {}),
+          ...(persisted.anchorCommandId !== undefined ? { anchorCommandId: persisted.anchorCommandId } : {}),
+          ...(persisted.childCommandId !== undefined ? { childCommandId: persisted.childCommandId } : {}),
+          ...(persisted.anchorSessionId !== undefined ? { anchorSessionId: persisted.anchorSessionId } : {}),
+          ...(persisted.hostAnchorConfirmed === true || persisted.sessionId !== null ? { recoveryEvidence: true } : {}),
+          ...(args.signal !== undefined ? { signal: args.signal } : {}),
+          onProgress: (progress) => {
+            if (this.generationAbort.signal.aborted) return;
+            const latest = readOrigin(paths) ?? persisted;
+            if (latest.requestId !== args.requestId) return;
+            return this.writeCurrentOrigin(paths, {
+              ...latest,
+              ...(progress.anchorSessionId !== undefined
+                ? { anchorSessionId: progress.anchorSessionId, hostAnchorConfirmed: true }
+                : {}),
+              ...(progress.childSessionId !== undefined ? { sessionId: progress.childSessionId } : {}),
+              creationDiagnostic: progress.stage,
+            });
+          },
         });
       } catch (err) {
         // 继承模型被宿主拒绝 → 统一失败记录路径（成员卡诊断兜底 + 重试控制字段；主报错已从
         // spawn 返回值透出），原错误继续上抛（roster 失败路径落 failed 成员）。其他培育失败
         // 与模型无关，直接上抛。
         const message = err instanceof Error ? err.message : String(err);
+        if ((err as { code?: string }).code === "outcome-unknown") {
+          if (args.signal?.aborted && !this.generationAbort.signal.aborted) throw err;
+          throw new ProvisioningPending("宿主创建结果待确认；不会重新生成创建请求");
+        }
         if (inheritedSelection !== undefined && /inherited model/.test(message)) {
           // 记录 reason = 中文包装（「成员模型无法继承：…」；0.4.0 起诊断断言口径）。
           this.recordModelFailure(
@@ -467,35 +669,21 @@ export class ResumePerTurnProvider implements TeammateProvider {
       }
     }
     // 培育器可能从会话库解析出 Lead 的真实目录；轮次/探针必须使用同一目录。
-    const spawnCwd = bred?.workspacePath ?? this.cwd;
+    const spawnCwd = bred?.workspacePath ?? persisted.cwd;
 
     const origin: OriginRecord = {
-      teamId: this.opts.teamId,
-      memberId: args.memberId,
-      name: args.name,
-      provider: args.context === "fork" ? "fork" : "spawn",
-      mode: "continuable",
-      context: args.context,
-      createdAt: iso(this.now()),
+          ...persisted,
       cwd: spawnCwd,
-      firstPromptText: prompt,
-      firstPromptSha256: sha256(prompt),
-      sessionId: bred?.childSessionId ?? null,
-      initialUserMessageAccepted: false,
-      // 只记实际生效者（createChild 失败即抛，走到这里 appliedModel 与继承选择一致或 legacy 无）。
+      sessionId: bred?.childSessionId ?? persisted.sessionId,
+      initialUserMessageAccepted: persisted.initialUserMessageAccepted,
       ...(bred?.appliedModel !== undefined
         ? { modelSelection: bred.appliedModel, modelSource: "inherited" as const }
         : {}),
-      sessionIsolation: bred !== null ? "child" : "legacy",
-      ...(bred !== null
-        ? {
-            anchorSessionId: bred.anchorSessionId,
-            logicalParentSessionId: this.opts.teamId,
-            sessionKind: "selection_side_chat" as const,
-          }
-        : { sessionKind: "interactive" as const }),
+      ...(bred !== null ? { anchorSessionId: bred.anchorSessionId } : {}),
     };
-    writeOrigin(paths, origin); // 落盘先于投递（接口草案 §1 冻结纪律）
+    if (!this.writeCurrentOrigin(paths, origin)) {
+      throw new ProvisioningPending("创建代次已撤销；保留宿主证据供接任者确认，不启动首轮");
+    }
 
     const spawnT0 = this.now();
     const turn = await this.launchTurn({
@@ -510,6 +698,7 @@ export class ResumePerTurnProvider implements TeammateProvider {
       cwd: spawnCwd,
       // createChild 刚把继承选择应用进子会话（0.4.1 验收：首轮不重复应用同一选择）。
       modelJustApplied: bred?.appliedModel,
+      ...(args.signal !== undefined ? { signal: args.signal } : {}),
     });
     this.startWatcher();
 
@@ -523,10 +712,10 @@ export class ResumePerTurnProvider implements TeammateProvider {
       });
       return { memberId: args.memberId, accepted: sessionId !== null };
     } catch (err) {
-      if (args.signal?.aborted) throw err;
-      // 探针异常（db 读失败等）→ 按未持久接收处理（上游 TEAM_PROVISIONING_CONFLICT / 失败路径）
+      if (args.signal?.aborted && !this.generationAbort.signal.aborted) throw args.signal.reason ?? err;
+      if (err instanceof ProvisioningPending) throw err;
       this.log({ ts: iso(this.now()), kind: "first-probe-error", memberId: args.memberId, error: errText(err) });
-      return { memberId: args.memberId, accepted: false };
+      throw new ProvisioningPending("首轮持久接收结果待确认；不会重复启动");
     }
   }
 
@@ -542,9 +731,9 @@ export class ResumePerTurnProvider implements TeammateProvider {
     const deadline = spawnT0 + this.firstTurnTimeoutMs;
     // 隔离模式：session id 在孵化前已确定（隐藏子会话）→ 直接以它为探针目标；
     // 旧模式（legacy）仍走 hook 领地 / db 首条文本兜底认领。
-    let sessionId: string | null = origin.sessionId;
+    let sessionId: string | null = origin.sessionId ?? this.claimedSessionId(origin.memberId);
     for (;;) {
-      if (args.signal?.aborted) throw args.signal.reason ?? new Error("aborted");
+      if (args.signal?.aborted && !this.generationAbort.signal.aborted) throw args.signal.reason ?? new Error("aborted");
       sessionId ??= this.claimedSessionId(origin.memberId);
       if (sessionId === null) {
         const exclude = this.claimedSessionsExcluding(origin.memberId);
@@ -557,15 +746,24 @@ export class ResumePerTurnProvider implements TeammateProvider {
         if (found !== undefined) sessionId = found;
       }
       if (sessionId !== null) {
-        const landed = this.reader.hasUserText(sessionId, origin.firstPromptText);
+        let landed: boolean;
+        try {
+          landed = this.reader.hasUserText(sessionId, origin.firstPromptText);
+        } catch (err) {
+          throw new ProvisioningPending(`首轮接收暂不可确认：${errText(err)}`);
+        }
         if (landed) {
           // 再读一次 origin：同步/恢复对账可能已写入 modelSelection（不覆盖）。
           const nextOrigin: OriginRecord = {
             ...(readOrigin(paths) ?? origin),
             sessionId,
             initialUserMessageAccepted: true,
+            creationPending: false,
+            creationDiagnostic: undefined,
           };
-          writeOrigin(paths, nextOrigin);
+          if (!this.writeCurrentOrigin(paths, nextOrigin)) {
+            throw new ProvisioningPending("首轮已被宿主确认，但旧代次不得覆盖恢复状态");
+          }
           const current = readTurn(paths.runDir, turn.turnId) ?? turn;
           writeTurn(paths.runDir, { ...current, sessionId, landed: true });
           this.writeTeammateMapping(sessionId, nextOrigin);
@@ -583,8 +781,10 @@ export class ResumePerTurnProvider implements TeammateProvider {
       }
       const turnNow = readTurn(paths.runDir, turn.turnId);
       const pid = turnNow?.pid ?? turn.pid;
-      if (pid === null || !pidAlive(pid)) {
-        // 进程已死仍未落库 → 未持久接收（F04：进程起但会话未落）
+      if (pid === null) {
+        throw new ProvisioningPending("已有启动意图但尚无 PID/回执确认；保持待恢复，不重复启动");
+      }
+      if (!pidAlive(pid)) {
         this.log({
           ts: iso(this.now()),
           kind: "first-not-accepted",
@@ -596,7 +796,6 @@ export class ResumePerTurnProvider implements TeammateProvider {
         return null;
       }
       if (this.now() >= deadline) {
-        await killProcessGroup(turnNow?.pgid ?? turn.pgid, this.termGraceMs).catch(() => undefined);
         this.log({
           ts: iso(this.now()),
           kind: "first-probe-timeout",
@@ -604,7 +803,7 @@ export class ResumePerTurnProvider implements TeammateProvider {
           memberId: origin.memberId,
           turnId: turn.turnId,
         });
-        return null;
+        throw new ProvisioningPending("首轮接收结果待确认；旧 turn 可能仍在执行，不会重复启动");
       }
       await this.sleep(150);
     }
@@ -741,6 +940,9 @@ export class ResumePerTurnProvider implements TeammateProvider {
   }
 
   async drain(args: { teamId: string; timeoutMs: number }): Promise<void> {
+    if (this.closed || this.generationAbort.signal.aborted) {
+      throw new Error("coordinator generation revoked; drain requires current ownership");
+    }
     const memberIds = listMembers(this.teamDir);
     if (this.drainPolicy === "keep") {
       // D9 休眠态默认：只落 drain 标记（宽限 ~260ms 内可完成）；轮次进程保留待唤醒
@@ -785,8 +987,8 @@ export class ResumePerTurnProvider implements TeammateProvider {
     let sessionId = origin.sessionId;
     if (sessionId === null) {
       sessionId = this.resolveSessionId(origin); // 冷启动补探（hook 认领 → db 兜底）
-      if (sessionId !== null) {
-        writeOrigin(paths, { ...origin, sessionId }); // 回填：后续读/投递直接命中
+      if (sessionId !== null && !this.closed) {
+        writeOrigin(paths, { ...origin, sessionId }); // 仅当前代次回填；失锁只返回读取证据。
       }
     }
     // 四条件中可独立验证的部分：会话行存在、隔离类型/parent 匹配、目录匹配、首条 real_user
@@ -936,6 +1138,8 @@ export class ResumePerTurnProvider implements TeammateProvider {
     sessionId: string | null;
     resume: boolean;
     cwd?: string;
+    signal?: AbortSignal;
+    /**
     /**
      * createChild 刚成功应用的选择。首轮仍复核最新 Lead，仅相同选择免重复 RPC。
      */
@@ -944,6 +1148,9 @@ export class ResumePerTurnProvider implements TeammateProvider {
     const turnId = nextTurnId(args.paths.runDir);
     const stdoutFile = path.join(args.paths.runDir, `${turnId}.out`);
     const turnCwd = args.cwd ?? this.cwd;
+    if (this.generationAbort.signal.aborted || args.signal?.aborted) {
+      throw new ProvisioningPending("创建代次已撤销；不会启动新 turn");
+    }
     // 0.4.0 执行前同步（每轮唯一入口，覆盖续跑/恢复）：Lead 最新已确认选择与成员
     // 宿主实际选择不一致 → 先 setModel 再启动本轮；失败 = 抛错阻止本轮（绝不带着旧模型
     // 或宿主缺省悄悄开跑）。Lead 已切官方套餐同样阻止并报错——「同步失败即明确报告」。
@@ -982,6 +1189,9 @@ export class ResumePerTurnProvider implements TeammateProvider {
     };
     writeTurn(args.paths.runDir, turn); // 落盘先于孵化（恰一次锚点）
     setCurrentTurn(args.paths, turnId);
+    if (this.generationAbort.signal.aborted || args.signal?.aborted) {
+      throw new ProvisioningPending("启动意图已保存但代次已撤销；保持待恢复，不启动");
+    }
     const env: NodeJS.ProcessEnv = {
       ...process.env,
       TEAM_SPAWN_IDENTITY: JSON.stringify({
@@ -993,6 +1203,7 @@ export class ResumePerTurnProvider implements TeammateProvider {
     if (this.opts.dbPath !== undefined) env.TEAM_DB_PATH = this.opts.dbPath;
 
     let spawned;
+    const receiptFile = path.join(args.paths.runDir, `${turnId}.spawn.json`);
     try {
       spawned = await spawnDetached({
         command: this.zcode.command,
@@ -1001,12 +1212,20 @@ export class ResumePerTurnProvider implements TeammateProvider {
         env,
         cwd: turnCwd,
         stdoutFile,
+        resultFile: receiptFile,
       });
     } catch (err) {
-      writeTurn(args.paths.runDir, { ...turn, status: "spawn-error", exitedAt: iso(this.now()), exitCode: null });
-      this.lastLaunchFailureAt = this.now();
-      this.log({ ts: iso(this.now()), kind: "spawn-error", teamId: this.opts.teamId, memberId: args.memberId, turnId, error: errText(err) });
-      throw err;
+      const receipt = readSpawnReceipt(receiptFile);
+      if (receipt?.error !== undefined) {
+        writeTurn(args.paths.runDir, { ...turn, status: "spawn-error", exitedAt: iso(this.now()), exitCode: null });
+        throw new Error(`turn process launch failed: ${receipt.error}`);
+      }
+      if (receipt !== undefined && receipt.pid !== undefined) {
+        spawned = { pid: receipt.pid, pgid: receipt.pid, stdoutFile, specFile: "", resultFile: receiptFile };
+      } else {
+        // helper 超时/回执缺失不能证明未 spawn；保留 starting + 既有 spec 供接任者确认。
+        throw new ProvisioningPending("启动结果待确认；不会重复启动首轮");
+      }
     }
     const running: TurnRecord = { ...turn, pid: spawned.pid, pgid: spawned.pgid, status: "running" };
     writeTurn(args.paths.runDir, running);
@@ -1034,7 +1253,13 @@ export class ResumePerTurnProvider implements TeammateProvider {
     const turn = readTurn(paths.runDir, turnId);
     if (turn === undefined) return null;
     if (turn.status !== "running" && turn.status !== "starting") return null;
-    if (turn.pid === null || !pidAlive(turn.pid)) return null;
+    if (turn.pid === null) {
+      const receipt = readSpawnReceipt(path.join(paths.runDir, `${turn.turnId}.spawn.json`));
+      if (receipt?.pid === undefined) return null;
+      writeTurn(paths.runDir, { ...turn, pid: receipt.pid, pgid: receipt.pid, status: "running" });
+      return { ...turn, pid: receipt.pid, pgid: receipt.pid, status: "running" };
+    }
+    if (!pidAlive(turn.pid)) return null;
     return turn;
   }
 
@@ -1186,7 +1411,7 @@ export class ResumePerTurnProvider implements TeammateProvider {
         originNow !== undefined &&
         (originNow.modelSelection === undefined || !sameModelSelection(originNow.modelSelection, lead))
       ) {
-        writeOrigin(paths, { ...originNow, modelSelection: lead, modelSource: "inherited" });
+        this.writeCurrentOrigin(paths, { ...originNow, modelSelection: lead, modelSource: "inherited" });
       }
       return;
     }
@@ -1219,7 +1444,7 @@ export class ResumePerTurnProvider implements TeammateProvider {
     }
     // 同步成功后才更新 origin（不谎报；崩溃在两者之间 → 下次以宿主实际状态判断，见上）。
     if (origin !== undefined) {
-      writeOrigin(paths, { ...(readOrigin(paths) ?? origin), modelSelection: lead, modelSource: "inherited" });
+      this.writeCurrentOrigin(paths, { ...(readOrigin(paths) ?? origin), modelSelection: lead, modelSource: "inherited" });
     }
     this.clearFailureIfVerified(paths);
     this.log({
@@ -1402,13 +1627,17 @@ export class ResumePerTurnProvider implements TeammateProvider {
    */
   diagnosticsOf(memberId: string): string[] {
     const paths = memberPaths(this.teamDir, memberId);
+    const origin = readOrigin(paths);
+    const pending = origin?.creationPending === true && origin.creationDiagnostic !== undefined
+      ? [origin.creationDiagnostic]
+      : [];
     let record;
     try {
       record = readModelFailed(paths);
     } catch {
-      return [];
+      return pending;
     }
-    if (record === undefined) return [];
+    if (record === undefined) return pending;
     // 落盘 reason 已截断（首句≤80），这里原样呈现。
     const reason = typeof record.reason === "string" ? record.reason : "";
     const selection = parseModelSelection(record.modelSelection);
@@ -1417,9 +1646,20 @@ export class ResumePerTurnProvider implements TeammateProvider {
         ? `成员模型继承失败：${selection.providerId}/${selection.modelId}${reason.length > 0 ? `（${reason}）` : ""}`
         : `成员模型继承失败：${reason}`;
     if ((record.kind ?? "deterministic") === "transient" && (record.attempts ?? 1) > 1) {
-      return [`${head}（临时故障，已自动重试 ${record.attempts! - 1} 次）`];
+      return [`${head}（临时故障，已自动重试 ${record.attempts! - 1} 次）`, ...pending];
     }
-    return [head];
+    return [head, ...pending];
+  }
+
+  /** 外层断连只读原请求登记；没有 requestId 关联不能声称已受理。 */
+  requestStatus(requestId: string): { memberId: string; accepted: boolean } | undefined {
+    for (const memberId of listMembers(this.teamDir)) {
+      const origin = readOrigin(memberPaths(this.teamDir, memberId));
+      if (origin?.requestId === requestId) {
+        return { memberId, accepted: origin.initialUserMessageAccepted };
+      }
+    }
+    return undefined;
   }
 
   /** daemon 侧补写 teammate 映射（hook 未及写时的兜底；不覆盖已有 teammate 映射）。 */
@@ -1476,6 +1716,18 @@ function safeDir(teamId: string): string {
 
 function sha256(text: string): string {
   return createHash("sha256").update(text).digest("hex");
+}
+
+function readSpawnReceipt(file: string): { pid?: number; error?: string } | undefined {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as { pid?: unknown; error?: unknown };
+    return {
+      ...(typeof parsed.pid === "number" && Number.isInteger(parsed.pid) && parsed.pid > 0 ? { pid: parsed.pid } : {}),
+      ...(typeof parsed.error === "string" ? { error: parsed.error } : {}),
+    };
+  } catch {
+    return undefined;
+  }
 }
 
 function iso(ms: number): string {

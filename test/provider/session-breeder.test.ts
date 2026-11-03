@@ -5,6 +5,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { createTasksIndexFixture } from "./tasks-index.js";
 import { AppServerSessionBreeder, isolationModeFromEnv } from "../../src/provider/session-breeder.js";
 
 const PROJ = path.resolve(import.meta.dirname, "../..");
@@ -26,11 +27,7 @@ let root: string;
 let tasksIndexPath: string;
 let recordPath: string;
 
-function createTasksIndex(file: string): void {
-  const db = new DatabaseSync(file);
-  db.prepare(DDL).run();
-  db.close();
-}
+const createTasksIndex = createTasksIndexFixture;
 
 function taskRow(taskId: string): { title: string; archived: number; deleted: number } | undefined {
   const db = new DatabaseSync(tasksIndexPath, { readOnly: true });
@@ -41,6 +38,14 @@ function taskRow(taskId: string): { title: string; archived: number; deleted: nu
   } finally {
     db.close();
   }
+}
+
+function readRequests(): Array<{ method: string; params: Record<string, unknown> }> {
+  if (!fs.existsSync(recordPath)) return [];
+  const text = fs.readFileSync(recordPath, "utf8").trim();
+  return text.length === 0
+    ? []
+    : text.split("\n").map((line) => JSON.parse(line) as { method: string; params: Record<string, unknown> });
 }
 
 function breeder(): AppServerSessionBreeder {
@@ -64,6 +69,13 @@ afterEach(() => {
   delete process.env.FAKE_APP_SERVER_RECORD;
   delete process.env.FAKE_APP_SERVER_FAIL;
   delete process.env.FAKE_APP_SERVER_CHILD;
+  delete process.env.FAKE_APP_SERVER_ANCHOR;
+  delete process.env.FAKE_APP_SERVER_ANCHOR_KIND;
+  delete process.env.FAKE_APP_SERVER_DROP;
+  delete process.env.FAKE_APP_SERVER_COMMAND_TIMEOUT;
+  delete process.env.FAKE_APP_SERVER_QUERY;
+  delete process.env.FAKE_APP_SERVER_STATE;
+  delete process.env.FAKE_APP_SERVER_SESSIONS;
   fs.rmSync(root, { recursive: true, force: true });
 });
 
@@ -216,11 +228,274 @@ describe("AppServerSessionBreeder.createChild", () => {
     });
   });
 
-  it("协议层 RPC error → BreedError(unsupported)", async () => {
+  it("固定 commandId + 预分配 anchor：接受后上报宿主证据，不重造 id", async () => {
+    const progress: Array<{ anchorSessionId?: string; childSessionId?: string; stage: string }> = [];
+    const result = await breeder().createChild({
+      teamId: "sess_lead",
+      workspacePath: root,
+      anchorCommandId: "cmd-anchor-fixed",
+      childCommandId: "cmd-child-fixed",
+      anchorSessionId: "sess_preallocated_anchor",
+      recoveryEvidence: true,
+      onProgress: (event) => { progress.push(event); },
+    });
+    expect(result).toMatchObject({
+      anchorSessionId: "sess_preallocated_anchor",
+      childSessionId: "sess_fake_child",
+    });
+    expect(progress).toEqual([
+      { anchorSessionId: "sess_preallocated_anchor", stage: "anchor-created" },
+      {
+        anchorSessionId: "sess_preallocated_anchor",
+        childSessionId: "sess_fake_child",
+        stage: "child-created",
+      },
+    ]);
+    const requests = readRequests();
+    expect(requests.map((request) => request.method)).toEqual([
+      "v4/commands/query",
+      "session/list",
+      "v4/command",
+      "v4/command",
+    ]);
+    const anchorCommand = requests.find((request) => request.params.type === "createSession")!;
+    const childCommand = requests.find((request) => request.params.type === "createSelectionSideSession")!;
+    expect(anchorCommand.params).toMatchObject({
+      commandId: "cmd-anchor-fixed",
+      sessionId: null,
+      payload: { sessionId: "sess_preallocated_anchor", workspaceId: root },
+    });
+    expect(childCommand.params).toMatchObject({
+      commandId: "cmd-child-fixed",
+      sessionId: "sess_preallocated_anchor",
+    });
+  });
+
+  it("anchor 响应在副作用后丢失：同 client query 恢复，child 只建一次", async () => {
+    process.env.FAKE_APP_SERVER_DROP = "create";
+    const progress: Array<{ stage: string }> = [];
+    const result = await breeder().createChild({
+      teamId: "sess_lead",
+      workspacePath: root,
+      timeoutMs: 100,
+      anchorCommandId: "cmd-late-anchor",
+      childCommandId: "cmd-late-child",
+      anchorSessionId: "sess_late_anchor",
+      onProgress: (event) => { progress.push(event); },
+    });
+    expect(result.anchorSessionId).toBe("sess_late_anchor");
+    expect(result.childSessionId).toBe("sess_fake_child");
+    const requests = readRequests();
+    expect(requests.map((request) => request.method)).toEqual([
+      "v4/command",
+      "v4/commands/query",
+      "v4/command",
+    ]);
+    expect(requests[1]!.params).toEqual({
+      commands: [{ sessionId: null, commandId: "cmd-late-anchor" }],
+    });
+    expect(progress.map((event) => event.stage)).toEqual(["anchor-created", "child-created"]);
+    expect(taskRow("sess_late_anchor")).toMatchObject({ deleted: 1 });
+  });
+
+  it("child 响应在副作用后丢失：query 恢复同一 child，不重复 createSelectionSideSession", async () => {
+    process.env.FAKE_APP_SERVER_DROP = "side";
+    const result = await breeder().createChild({
+      teamId: "sess_lead",
+      workspacePath: root,
+      timeoutMs: 100,
+      anchorCommandId: "cmd-late-side-anchor",
+      childCommandId: "cmd-late-side-child",
+    });
+    expect(result).toMatchObject({ anchorSessionId: "sess_fake_anchor", childSessionId: "sess_fake_child" });
+    const requests = readRequests();
+    expect(requests.map((request) => request.method)).toEqual([
+      "v4/command",
+      "v4/command",
+      "v4/commands/query",
+    ]);
+    expect(requests[2]!.params).toEqual({
+      commands: [{ sessionId: "sess_fake_anchor", commandId: "cmd-late-side-child" }],
+    });
+    expect(requests.filter((request) => request.params.type === "createSelectionSideSession")).toHaveLength(1);
+  });
+
+  it("query 无终态 → outcome-unknown；不换 commandId、不重复命令、不回收 anchor", async () => {
+    process.env.FAKE_APP_SERVER_DROP = "side";
+    process.env.FAKE_APP_SERVER_QUERY = "unknown";
+    await expect(
+      breeder().createChild({
+        teamId: "sess_lead",
+        workspacePath: root,
+        timeoutMs: 100,
+        anchorCommandId: "cmd-unknown-anchor",
+        childCommandId: "cmd-unknown-child",
+      }),
+    ).rejects.toMatchObject({ code: "outcome-unknown" });
+    const requests = readRequests();
+    expect(requests).toHaveLength(3);
+    expect(requests.filter((request) => request.method === "v4/command")).toHaveLength(2);
+    // child 的迟到副作用仍可能存在：失败 catch 不得重写 anchor tombstone。
+    expect(taskRow("sess_fake_anchor")).toMatchObject({ deleted: 1 });
+  });
+
+  it("query 自身超时 → outcome-unknown；已知 anchor 保留原 tombstone", async () => {
+    process.env.FAKE_APP_SERVER_DROP = "query";
+    process.env.FAKE_APP_SERVER_COMMAND_TIMEOUT = "side";
+    const records: Array<Record<string, unknown>> = [];
+    const b = new AppServerSessionBreeder({
+      zcode: { command: process.execPath, argvPrefix: [FAKE], source: "env" },
+      tasksIndexPath,
+      readyTimeoutMs: 8_000,
+      log: (record) => records.push(record),
+    });
+    await expect(
+      b.createChild({ teamId: "sess_lead", workspacePath: root, timeoutMs: 100 }),
+    ).rejects.toMatchObject({ code: "outcome-unknown" });
+    expect(readRequests().map((request) => request.method)).toEqual([
+      "v4/command",
+      "v4/command",
+      "v4/commands/query",
+    ]);
+    expect(taskRow("sess_fake_anchor")).toMatchObject({ deleted: 1 });
+    expect(records.some((record) => record.event === "session-breed-dispose")).toBe(false);
+  });
+
+  it("query 返回明确拒绝 → 保留 command-rejected 分类", async () => {
+    process.env.FAKE_APP_SERVER_DROP = "side";
+    process.env.FAKE_APP_SERVER_QUERY = "rejected";
+    await expect(
+      breeder().createChild({ teamId: "sess_lead", workspacePath: root, timeoutMs: 100 }),
+    ).rejects.toMatchObject({ code: "command-rejected" });
+    expect(readRequests().filter((request) => request.method === "v4/command")).toHaveLength(2);
+  });
+
+  it("取消传播到 RPC：不 tombstone 已知 anchor，也不再发 child 命令", async () => {
+    process.env.FAKE_APP_SERVER_DROP = "create";
+    const controller = new AbortController();
+    const pending = breeder().createChild({
+      teamId: "sess_lead",
+      workspacePath: root,
+      timeoutMs: 10_000,
+      anchorSessionId: "sess_abort_anchor",
+      signal: controller.signal,
+    });
+    const deadline = Date.now() + 2_000;
+    while (Date.now() < deadline && !readRequests().some((request) => request.method === "v4/command")) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    controller.abort();
+    await expect(pending).rejects.toMatchObject({ code: "outcome-unknown" });
+    expect(readRequests().map((request) => request.method)).toEqual(["v4/command"]);
+    expect(taskRow("sess_abort_anchor")).toBeUndefined();
+  });
+
+  it("重启恢复：新 client 查 anchor duplicate，再查/补原 child；绝不重发 createSession", async () => {
+    process.env.FAKE_APP_SERVER_STATE = path.join(root, "host-state.json");
+    process.env.FAKE_APP_SERVER_DROP = "create-exit";
+    const identity = {
+      teamId: "sess_lead",
+      workspacePath: root,
+      timeoutMs: 100,
+      anchorCommandId: "cmd-restart-anchor",
+      childCommandId: "cmd-restart-child",
+      anchorSessionId: "sess_restart_anchor",
+      recoveryEvidence: true,
+    } as const;
+    await expect(breeder().createChild(identity)).rejects.toMatchObject({ code: "outcome-unknown" });
+    delete process.env.FAKE_APP_SERVER_DROP;
+    const result = await breeder().createChild(identity);
+    expect(result).toMatchObject({ anchorSessionId: "sess_restart_anchor", childSessionId: "sess_fake_child" });
+    const requests = readRequests();
+    expect(requests.filter((request) => request.method === "v4/commands/query")).toHaveLength(3);
+    expect(requests.filter((request) => request.params.type === "createSession")).toHaveLength(1);
+    expect(requests.filter((request) => request.params.type === "createSelectionSideSession")).toHaveLength(1);
+  });
+
+  it("重启时 child 已落库：两个 query 都恢复，零条新 v4/command", async () => {
+    process.env.FAKE_APP_SERVER_STATE = path.join(root, "host-state.json");
+    const identity = {
+      teamId: "sess_lead",
+      workspacePath: root,
+      timeoutMs: 100,
+      anchorCommandId: "cmd-complete-anchor",
+      childCommandId: "cmd-complete-child",
+      anchorSessionId: "sess_complete_anchor",
+      recoveryEvidence: true,
+    } as const;
+    await breeder().createChild(identity);
+    fs.truncateSync(recordPath);
+    const result = await breeder().createChild(identity);
+    expect(result.childSessionId).toBe("sess_fake_child");
+    const requests = readRequests();
+    expect(requests.map((request) => request.method)).toEqual(["v4/commands/query", "v4/commands/query"]);
+    expect(requests.filter((request) => request.method === "v4/command")).toHaveLength(0);
+  });
+
+  it("anchor 查询无法重启恢复：session/list 校验预分配 id/workspace/type 后只发原 child id", async () => {
+    process.env.FAKE_APP_SERVER_STATE = path.join(root, "host-state.json");
+    process.env.FAKE_APP_SERVER_DROP = "create-exit";
+    const identity = {
+      teamId: "sess_lead",
+      workspacePath: root,
+      timeoutMs: 100,
+      anchorCommandId: "cmd-list-anchor",
+      childCommandId: "cmd-list-child",
+      anchorSessionId: "sess_list_anchor",
+      recoveryEvidence: true,
+    } as const;
+    await expect(breeder().createChild(identity)).rejects.toMatchObject({ code: "outcome-unknown" });
+    delete process.env.FAKE_APP_SERVER_DROP;
+    // 模拟 anchor receipt 只保存在已退出 client；持久 session 仍可枚举。
+    const state = JSON.parse(fs.readFileSync(process.env.FAKE_APP_SERVER_STATE, "utf8")) as { commands: unknown[] };
+    state.commands = [];
+    fs.writeFileSync(process.env.FAKE_APP_SERVER_STATE, JSON.stringify(state));
+    // 用独立的 session 存储模拟真实宿主的持久 session 与易失 command receipt。
+    process.env.FAKE_APP_SERVER_SESSIONS = path.join(root, "sessions.json");
+    fs.writeFileSync(process.env.FAKE_APP_SERVER_SESSIONS, JSON.stringify([{
+      sessionId: "sess_list_anchor",
+      sessionKind: "interactive",
+      workspace: { workspacePath: root, workspaceKey: root },
+    }]));
+    const result = await breeder().createChild(identity);
+    expect(result.childSessionId).toBe("sess_fake_child");
+    const requests = readRequests();
+    expect(requests.slice(-4).map((request) => request.method)).toEqual([
+      "v4/commands/query",
+      "session/list",
+      "v4/commands/query",
+      "v4/command",
+    ]);
+    expect(requests.at(-1)!.params).toMatchObject({ commandId: "cmd-list-child", type: "createSelectionSideSession" });
+    expect(requests.filter((request) => request.params.type === "createSession")).toHaveLength(1);
+  });
+
+  it("session/list 的 sessionKind 不匹配 → outcome-unknown，不重建 anchor/child", async () => {
+    process.env.FAKE_APP_SERVER_SESSIONS = path.join(root, "sessions.json");
+    fs.writeFileSync(process.env.FAKE_APP_SERVER_SESSIONS, JSON.stringify([{
+      sessionId: "sess_wrong_kind",
+      sessionKind: "selection_side_chat",
+      workspace: { workspacePath: root, workspaceKey: root },
+    }]));
+    await expect(breeder().createChild({
+      teamId: "sess_lead",
+      workspacePath: root,
+      timeoutMs: 100,
+      anchorCommandId: "cmd-wrong-kind-anchor",
+      childCommandId: "cmd-wrong-kind-child",
+      anchorSessionId: "sess_wrong_kind",
+      recoveryEvidence: true,
+    })).rejects.toMatchObject({ code: "outcome-unknown" });
+    expect(readRequests().map((request) => request.method)).toEqual(["v4/commands/query", "session/list"]);
+    expect(taskRow("sess_wrong_kind")).toBeUndefined();
+  });
+
+  it("协议层 RPC error 不再假定未执行：query unknown → BreedError(outcome-unknown)", async () => {
     process.env.FAKE_APP_SERVER_FAIL = "error";
     await expect(breeder().createChild({ teamId: "sess_lead", workspacePath: root })).rejects.toMatchObject({
-      code: "unsupported",
+      code: "outcome-unknown",
     });
+    expect(readRequests().map((request) => request.method)).toEqual(["v4/command", "v4/commands/query"]);
   });
 
   it("任务索引文件缺失 → 仍建 child（tombstone 跳过，不报错）", async () => {

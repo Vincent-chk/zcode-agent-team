@@ -109,6 +109,8 @@ function parseArgs(argv) {
     verifyRepro: false,
     skipInstall: false,
     skipBuild: false,
+    commit: null,
+    remoteBaseline: null,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -120,6 +122,8 @@ function parseArgs(argv) {
     else if (a === "--verify-repro") args.verifyRepro = true;
     else if (a === "--skip-install") args.skipInstall = true;
     else if (a === "--skip-build") args.skipBuild = true;
+    else if (a === "--commit") args.commit = argv[++i];
+    else if (a === "--remote-baseline") args.remoteBaseline = argv[++i];
     else if (a === "--help" || a === "-h") {
       console.log(awaitHelp());
       process.exit(0);
@@ -310,6 +314,11 @@ async function verifyPackageLayout(dir, plugin, files) {
     return false;
   });
   if (forbidden.length) fail(`package contains engineering residue: ${forbidden.slice(0, 10).join(", ")}`);
+
+  const command = await fsp.readFile(path.join(dir, "commands/team.md"), "utf8");
+  if (command.includes("先输出状态摘要") || !command.includes("不输出状态摘要")) {
+    fail("commands/team.md has contradictory /team <task> summary semantics");
+  }
 
   const manifest = await readJson(path.join(dir, ".zcode-plugin/plugin.json"));
   if (manifest.version !== plugin.version) fail(`packaged manifest version ${manifest.version} != ${plugin.version}`);
@@ -547,6 +556,18 @@ async function main() {
   log(`four-way sync OK: ${PACKAGE_NAME}@${plugin.version}`);
 
   if (args.checkOnly) return;
+  if (args.requireTag || args.requireClean || args.commit !== null) {
+    if (args.commit === null || args.remoteBaseline === null) {
+      fail("frozen release requires --commit <sha> and --remote-baseline <remote/ref>");
+    }
+    if (!/^[0-9a-f]{40}$/.test(args.commit)) fail("--commit must be a full 40-character commit SHA");
+    const head = git(["rev-parse", "HEAD"]).stdout.trim();
+    const tag = git(["rev-parse", `v${plugin.version}^{commit}`]).stdout.trim();
+    const remote = git(["rev-parse", args.remoteBaseline]).stdout.trim();
+    if (head !== args.commit || tag !== args.commit || remote !== args.commit) {
+      fail(`release SHA mismatch: expected=${args.commit} HEAD=${head} tag=${tag} remote=${remote}`);
+    }
+  }
 
   if (args.requireClean) {
     const st = git(["status", "--porcelain"]);

@@ -44,6 +44,7 @@ async function spawnHostDaemon(args: {
   mode: "coordinator" | "proxy";
   proxyCalls?: unknown[];
   postPromotionCalls?: unknown[];
+  selfStopMs?: number;
 }): Promise<DaemonHandle> {
   const extra: Array<[string, unknown[] | undefined]> = [
     ["proxy-calls", args.proxyCalls],
@@ -60,7 +61,14 @@ async function spawnHostDaemon(args: {
   }
   return spawnBundled(
     ENTRY,
-    (bundle) => [bundle, "--root", args.root, "--team", args.team, "--mode", args.mode, ...argvFlags],
+    (bundle) => [
+      bundle,
+      "--root", args.root,
+      "--team", args.team,
+      "--mode", args.mode,
+      ...argvFlags,
+      ...(args.selfStopMs !== undefined ? ["--self-stop-ms", String(args.selfStopMs)] : []),
+    ],
     files,
   );
 }
@@ -231,6 +239,52 @@ describe("S1 · 方法表全量接线（socket 载体）", () => {
       });
     },
   );
+});
+
+describe("S0 · 活持有者唯一写者门（0.5.4）", () => {
+  it("SIGSTOP 停住已持锁旧进程 → 多竞争者不得接任 → SIGCONT 后原写者仍独占", { timeout: 50_000 }, async () => {
+    const caseRoot = under(rootBase, `s0-live-${attemptTag()}`);
+    fs.mkdirSync(caseRoot, { recursive: true });
+    const holder = await spawnHostDaemon({ root: caseRoot, team: TEAM, mode: "coordinator", selfStopMs: 100 });
+    await holder.waitFor("ready", 20_000);
+    await holder.waitFor("self-stopping", 10_000);
+    const contenders = await Promise.all([
+      spawnHostDaemon({ root: caseRoot, team: TEAM, mode: "proxy" }),
+      spawnHostDaemon({ root: caseRoot, team: TEAM, mode: "proxy" }),
+    ]);
+    try {
+      for (const contender of contenders) {
+        const ready = await contender.waitFor("ready", 20_000);
+        expect(ready.mode).toBe("proxy");
+      }
+      // 超过旧 hardExpiryMs=15s：进程仍存活，任何竞争者都不能取得共用 journal 写权。
+      await new Promise((resolve) => setTimeout(resolve, 16_500));
+      for (const contender of contenders) {
+        expect(contender.events.some((event) => event.type === "promoted")).toBe(false);
+        expect(contender.events.some((event) => event.type === "ready" && event.mode === "coordinator")).toBe(false);
+      }
+      const before = await load(teamDirOf(caseRoot, TEAM), TEAM);
+      expect(before.state.failure).toBeUndefined();
+
+      process.kill(holder.pid, "SIGCONT");
+      await callCoordinator(teamDirOf(caseRoot, TEAM), TEAM, "task.create", {
+        session_id: TEAM,
+        subject: "original-holder-after-resume",
+        description: "only the original live writer may commit",
+      });
+      const after = await load(teamDirOf(caseRoot, TEAM), TEAM);
+      expect(after.state.failure).toBeUndefined();
+      expect(after.view.tasks.map((task) => task.subject)).toContain("original-holder-after-resume");
+      for (const contender of contenders) {
+        expect(contender.events.some((event) => event.type === "promoted")).toBe(false);
+      }
+    } finally {
+      process.kill(holder.pid, "SIGCONT");
+      killDaemon(holder, "SIGINT");
+      for (const contender of contenders) killDaemon(contender, "SIGINT");
+      await Promise.all([holder.exited, ...contenders.map((contender) => contender.exited)]);
+    }
+  });
 });
 
 describe("S2 · kill -9 接任（A3）+ 代理写入与缺位窗口重试（B）", () => {

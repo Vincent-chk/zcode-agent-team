@@ -142,16 +142,36 @@ export class AppServerClient {
     return false;
   }
 
-  rpc(method, params, timeoutMs = 30_000) {
+  rpc(method, params, timeoutMs = 30_000, opts = {}) {
     if (this.#closed) return Promise.reject(new Error("app-server client is closed"));
+    if (opts.signal?.aborted) return Promise.reject(opts.signal.reason ?? new Error("aborted"));
     const id = this.#nextId++;
     return new Promise((resolve, reject) => {
+      const onAbort = () => {
+        this.#pending.delete(id);
+        clearTimeout(timer);
+        reject(opts.signal.reason ?? new Error("aborted"));
+      };
+      opts.signal?.addEventListener("abort", onAbort, { once: true });
       const timer = setTimeout(() => {
         this.#pending.delete(id);
-        reject(new Error(`app-server rpc timeout: ${method}`));
+        opts.signal?.removeEventListener("abort", onAbort);
+        const error = new Error(`app-server rpc timeout: ${method}`);
+        error.outcome = "unknown";
+        reject(error);
       }, timeoutMs);
       timer.unref?.();
-      this.#pending.set(id, { resolve, reject, timer });
+      this.#pending.set(id, {
+        resolve: (result) => {
+          opts.signal?.removeEventListener("abort", onAbort);
+          resolve(result);
+        },
+        reject: (error) => {
+          opts.signal?.removeEventListener("abort", onAbort);
+          reject(error);
+        },
+        timer,
+      });
       this.#write({ id, method, params });
     });
   }

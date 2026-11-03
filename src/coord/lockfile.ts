@@ -21,13 +21,17 @@ export function observeLockFileFor(lockFile: string, writer: string): LockOwners
   } catch (err) {
     return { ok: false, reason: `lock unreadable: ${(err as NodeJS.ErrnoException).code ?? String(err)}` };
   }
-  let parsed: { pid?: unknown; bootId?: unknown };
+  let parsed: { pid?: unknown; bootId?: unknown; token?: unknown };
   try {
-    parsed = JSON.parse(raw) as { pid?: unknown; bootId?: unknown };
+    parsed = JSON.parse(raw) as { pid?: unknown; bootId?: unknown; token?: unknown };
   } catch {
     return { ok: false, reason: "lock file is not valid JSON" };
   }
-  if (parsed.pid !== identity.pid || parsed.bootId !== identity.bootId) {
+  if (
+    parsed.pid !== identity.pid ||
+    parsed.bootId !== identity.bootId ||
+    (identity.token !== undefined && parsed.token !== identity.token)
+  ) {
     return {
       ok: false,
       reason: `lock held by pid=${String(parsed.pid)} bootId=${String(parsed.bootId)}`,

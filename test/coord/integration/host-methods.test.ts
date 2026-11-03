@@ -9,6 +9,7 @@ import { TeamClient, isCoordinatorUnavailable } from "../../../src/coord/client.
 import { teamMethodNames, WAIT_AGENT_GRACE_MS } from "../../../src/coord/methods.js";
 import { load } from "../../../src/coord/replay.js";
 import { TeamError } from "../../../src/domain/errors.js";
+import { CoordinatorLock } from "../../../src/coord/lock.js";
 import { MockProvider } from "../../../src/provider/mock-provider.js";
 
 const TEAM = "sess_real_host_lead";
@@ -375,6 +376,28 @@ describe("降级服务 · failure 日志冷启动（G1/G2 回归：C5 在 wire �
 });
 
 describe("真实装配 · 代理路径与接任（进程内干净释放）", () => {
+  it("实际失锁：撤销旧代次、不执行 drain、不发布 checkpoint", async () => {
+    const teamId = "sess_actual_loss";
+    const provider = new MockProvider();
+    const host = await TeamCoordinatorHost.open({ dataRoot: root, teamId, provider });
+    const ready = await host.readyInfo();
+    const signal = provider.generationSignal;
+    const teamDir = under(under(root, "teams"), teamId);
+    const lockPath = path.join(teamDir, "coordinator.lock");
+    const checkpoint = path.join(teamDir, "checkpoint.json");
+    fs.writeFileSync(checkpoint, "sentinel");
+    // 将原锁移到独立路径（仅用于让原持有者发现 token/inode 不符；不授权任何活进程接任）。
+    fs.renameSync(lockPath, `${lockPath}.test-old`);
+    const replacement = new CoordinatorLock(lockPath);
+    await replacement.acquire();
+    for (let i = 0; i < 100 && !signal.aborted; i++) await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(signal.aborted).toBe(true);
+    expect(provider.drainCalls).toBe(0);
+    expect(fs.readFileSync(checkpoint, "utf8")).toBe("sentinel");
+    await host.close().catch(() => undefined);
+    await replacement.release();
+  });
+
   it("host1 持锁 → host2 代理模式 → host1.close() → tryPromote 立即晋升 → 写入继续", async () => {
     const teamId = "sess_promote_team";
     const host1 = await openHost(teamId);
@@ -395,6 +418,31 @@ describe("真实装配 · 代理路径与接任（进程内干净释放）", () 
     expect(final.view.tasks.map((t) => t.subject)).toEqual(["before", "after"]);
     expect(final.state.failure).toBeUndefined();
     await host2.close();
+  });
+
+  it("失锁退出：撤销原代次、不 drain；checkpoint 不发布旧写者快照", async () => {
+    const teamId = "sess_lost_generation";
+    const provider = new MockProvider();
+    const first = await TeamCoordinatorHost.open({ dataRoot: root, teamId, provider });
+    const signal = provider.generationSignal;
+    const teamDir = under(under(root, "teams"), teamId);
+    const checkpoint = path.join(teamDir, "checkpoint.json");
+    await first.dispatch("task.create", { session_id: teamId, subject: "before-loss", description: "d" });
+    fs.writeFileSync(checkpoint, "sentinel");
+    const second = await TeamCoordinatorHost.open({
+      dataRoot: root,
+      teamId,
+      provider: new MockProvider(),
+      autoTakeover: false,
+    });
+    expect(second.currentMode).toBe("proxy");
+    // 用已确认死亡的旧持有者语义进行真实接任；不能抢占仍活着的 first。
+    await first.close();
+    expect(await second.tryPromote()).toBe(true);
+    // 旧 provider 代次已撤销：即使 close 后再次调用也不得 drain 新宿主资源。
+    expect(signal?.aborted).toBe(true);
+    expect(provider.drainCalls).toBe(1); // 仅正常 close 的当前代次 drain；不是失锁降级。
+    await second.close();
   });
 
   it("TeamClient：读本地 / 写经宿主直执行；未持锁且无协调者 → 缺位窗口可读错误", async () => {

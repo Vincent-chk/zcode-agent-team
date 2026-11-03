@@ -18,6 +18,45 @@ function expectTeamError(p: Promise<unknown>, code: string, message: string): Pr
   );
 }
 
+describe("Roster · 0.5.4 持久意图与非终态结果", () => {
+  it("完整 origin 先于登记与宿主调用；requestId 作为唯一恢复关联", async () => {
+    const { runtime, provider } = buildKit();
+    await runtime.roster.spawnTeammate(LEAD, {
+      name: "worker", description: "d", prompt: "p", requestId: "req-stable",
+    });
+    expect(provider.prepared).toEqual([
+      { name: "worker", prompt: "p", requestId: "req-stable", context: "fresh" },
+    ]);
+  });
+
+  it("pending 保留 provisioning，不写 failed、不 interrupt，并携带可观察成员", async () => {
+    const { runtime, provider, store } = buildKit();
+    provider.programWith({ startOutcome: { kind: "pending" } });
+    const result = await runtime.roster.spawnTeammate(LEAD, { name: "worker", description: "d", prompt: "p" });
+    expect(result.creation).toBe("pending");
+    expect(result.member.status).toBe("provisioning");
+    expect(store.state().members[0]?.phase).toBe("provisioning");
+    expect(provider.interruptCalls).toBe(0);
+  });
+
+  it("首轮已确认后 active 本地提交失败：不写 failed、不 interrupt", async () => {
+    const { runtime, provider, store } = buildKit();
+    const append = store.append.bind(store);
+    let memberWrites = 0;
+    store.append = async (event) => {
+      if ((event as { type?: string }).type === "team/member") {
+        memberWrites += 1;
+        if (memberWrites === 2) throw new Error("local active commit failed");
+      }
+      return append(event);
+    };
+    await expect(runtime.roster.spawnTeammate(LEAD, { name: "worker", description: "d", prompt: "p" }))
+      .rejects.toThrow("local active commit failed");
+    expect(store.state().members[0]?.phase).toBe("provisioning");
+    expect(provider.interruptCalls).toBe(0);
+  });
+});
+
 describe("Roster · 名字校验与预留（F08）", () => {
   it.each(["Bad-Case", "UPPER", "x".repeat(65), "lead", "a_b", "-no", "no-"])(
     "非法名 %j → TEAM_INVALID_MEMBER_NAME 逐字",
@@ -170,7 +209,7 @@ describe("Roster · spawn 全流程顺序（F09）", () => {
   });
 
   it("settle 冲突清理失败 → AggregateError `provisioning conflict cleanup failed` 逐字（F09 第二条）", async () => {
-    // interrupt 第一次抛错（settle 冲突清理）→ 第二次成功（外层失败路径清理）→ 消息② 作为终态错误上抛
+    // 冲突清理只尝试一次；失败不得再经通用 catch 对同一资源重复 interrupt。
     const { runtime, provider } = buildKit();
     provider.programWith({ startOutcome: { kind: "accept" }, startDelayMs: 40 });
     const original = provider.interrupt.bind(provider);
@@ -188,7 +227,7 @@ describe("Roster · spawn 全流程顺序（F09）", () => {
     const caught = (await spawn) as AggregateError;
     expect(caught).toBeInstanceOf(AggregateError);
     expect(caught.message).toBe("provisioning conflict cleanup failed");
-    expect(interruptCalls).toBe(2);
+    expect(interruptCalls).toBe(1);
     const conflict = caught.errors[0] as TeamError;
     expect(conflict.code).toBe("TEAM_PROVISIONING_CONFLICT");
     expect(conflict.message).toBe('teammate "worker" was reconciled as failed while creation was in progress');
@@ -300,9 +339,17 @@ describe("Roster · 恢复对账（F12 + C3/C6）", () => {
     event: { type: "team/member", version: 2, teamId: TEAM, member: { id: "agent-ghost", name: "ghost", phase: "provisioning" } },
   });
 
-  // ——〔D33〕provisioning 对账宽限：in-flight spawn 不被 reconcile 误杀 ——
-  it("〔D33〕事件年龄 < 宽限 + 记录缺失 → defer（不定 failed）；返回 deferred 摘要", async () => {
+  function stopUnknownRecovery(kit: ReturnType<typeof buildKit>): void {
+    kit.provider.noteProvisioningRecovery = () => true;
+    kit.provider.resumeContinuable = async () => {
+      throw new Error("must not restart an unknown member creation");
+    };
+  }
+
+  // —— 0.5.4：缺失/读取异常不等于可证失败；真实 provider 按 origin 持久预算停止恢复 ——
+  it("意图缺失：保持 provisioning、停止自动恢复，不按事件年龄定 failed", async () => {
     const kit = await kitWithProvisioningMember();
+    stopUnknownRecovery(kit);
     kit.store.syntheticEventLines = [provisioningLine(7_000)];
     const summary = await kit.runtime.roster.reconcileProvisioning();
     expect(summary.deferred).toContain("agent-ghost");
@@ -311,26 +358,27 @@ describe("Roster · 恢复对账（F12 + C3/C6）", () => {
     expect(member?.phase).toBe("provisioning"); // 未被误杀
   });
 
-  it("〔D33〕事件年龄 ≥ 宽限 + 记录缺失 → 照旧定 failed（真故障不被掩盖）", async () => {
+  it("事件年龄超过旧宽限仍不按缺记录定 failed；自动恢复停止并可诊断", async () => {
     const kit = await kitWithProvisioningMember();
+    stopUnknownRecovery(kit);
     kit.store.syntheticEventLines = [provisioningLine(90_000)];
     const summary = await kit.runtime.roster.reconcileProvisioning();
-    expect(summary.deferred).not.toContain("agent-ghost");
-    expect(summary.settled).toContain("agent-ghost");
-    const member = kit.store.state().members.find((m) => m.id === "agent-ghost");
-    expect(member?.phase).toBe("failed");
-    expect(member?.error).toBe("provisioning did not leave a resumable child Session");
+    expect(summary.deferred).toContain("agent-ghost");
+    expect(summary.settled).not.toContain("agent-ghost");
+    expect(kit.store.state().members[0].phase).toBe("provisioning");
   });
 
-  it("〔D33〕恢复抛错 = 真故障：即使年龄 < 宽限也不 defer", async () => {
+  it("恢复读取异常 = 结果未知：保持 provisioning，不清理或编造成员失败", async () => {
     const kit = await kitWithProvisioningMember();
+    stopUnknownRecovery(kit);
     kit.store.syntheticEventLines = [provisioningLine(3_000)];
     (kit.provider as unknown as { readProvisioningRecord: () => unknown }).readProvisioningRecord = () => {
       throw new Error("disk error");
     };
     const summary = await kit.runtime.roster.reconcileProvisioning();
-    expect(summary.deferred).not.toContain("agent-ghost");
-    expect(kit.store.state().members[0].error).toBe("child Session recovery failed: disk error");
+    expect(summary.deferred).toContain("agent-ghost");
+    expect(kit.store.state().members[0].phase).toBe("provisioning");
+    expect(kit.store.state().members[0].error).toBeUndefined();
   });
 
   it("〔D33〕无事件行（内存桩缺省）→ 旧语义：记录缺失即 failed", async () => {
@@ -340,27 +388,28 @@ describe("Roster · 恢复对账（F12 + C3/C6）", () => {
     expect(kit.store.state().members[0].phase).toBe("failed");
   });
 
-  it("四条件逐项缺失 → failed 三条文本逐字", async () => {
-    const cases: Array<[string, () => { rootSessionId: string; descriptor?: { provider: string; mode: string }; initialUserMessageAccepted: boolean } | undefined, string]> = [
-      ["no-record", () => undefined, "provisioning did not leave a resumable child Session"],
+  it("实际记录不匹配仍可 failed；缺记录与未确认不伪装成失败", async () => {
+    const cases: Array<[string, () => { rootSessionId: string; descriptor?: { provider: string; mode: string }; initialUserMessageAccepted: boolean } | undefined, string | undefined]> = [
+      ["no-record", () => undefined, undefined],
       ["wrong-root", () => ({ rootSessionId: "sess-other", descriptor: { provider: "spawn", mode: "continuable" }, initialUserMessageAccepted: true }), "persisted child Session does not match the provisioned continuation"],
       ["no-descriptor", () => ({ rootSessionId: TEAM, initialUserMessageAccepted: true }), "persisted child Session does not match the provisioned continuation"],
       ["wrong-mode", () => ({ rootSessionId: TEAM, descriptor: { provider: "spawn", mode: "once" }, initialUserMessageAccepted: true }), "persisted child Session does not match the provisioned continuation"],
       ["wrong-provider", () => ({ rootSessionId: TEAM, descriptor: { provider: "fork", mode: "continuable" }, initialUserMessageAccepted: true }), "persisted child Session does not match the provisioned continuation"],
-      ["prompt-not-accepted", () => ({ rootSessionId: TEAM, descriptor: { provider: "spawn", mode: "continuable" }, initialUserMessageAccepted: false }), "persisted child Session does not match the provisioned continuation"],
+      ["prompt-not-accepted", () => ({ rootSessionId: TEAM, descriptor: { provider: "spawn", mode: "continuable" }, initialUserMessageAccepted: false }), undefined],
     ];
     for (const [name, tamper, expected] of cases) {
       const kit = await kitWithProvisioningMember();
       const record = tamper();
+      if (expected === undefined) stopUnknownRecovery(kit);
       kit.provider.setProvisioningRecord("agent-ghost", record);
       await kit.runtime.roster.reconcileProvisioning();
       const member = kit.store.state().members.find((m) => m.id === "agent-ghost");
-      expect(member?.phase, `${name}:phase`).toBe("failed");
+      expect(member?.phase, `${name}:phase`).toBe(expected === undefined ? "provisioning" : "failed");
       expect(member?.error, `${name}:error`).toBe(expected);
     }
   });
 
-  it("四条件全满足 → active；读取抛错 → child Session recovery failed 逐字", async () => {
+  it("四条件全满足 → active；读取抛错 → 保持待恢复而非成员失败", async () => {
     const kit = await kitWithProvisioningMember();
     kit.provider.setProvisioningRecord("agent-ghost", {
       rootSessionId: TEAM,
@@ -377,8 +426,10 @@ describe("Roster · 恢复对账（F12 + C3/C6）", () => {
       throw new Error("disk error");
     };
     void original;
+    stopUnknownRecovery(kit2);
     await kit2.runtime.roster.reconcileProvisioning();
-    expect(kit2.store.state().members[0].error).toBe("child Session recovery failed: disk error");
+    expect(kit2.store.state().members[0].phase).toBe("provisioning");
+    expect(kit2.store.state().members[0].error).toBeUndefined();
   });
 
   it("竞态：创建方先定案 → 对账放弃（无重复事件）；对账先定 failed → 创建方冲突②逐字 + 清理", async () => {

@@ -17,14 +17,22 @@ export function writerId(): string {
 export interface WriterIdentity {
   bootId: string;
   pid: number;
+  /** 每次获锁唯一；旧 writer 缺省只能操作旧格式锁。 */
+  token?: string;
 }
 
-/** 解析 writerId（"bootId:pid"）；不合法返回 undefined（审计容错）。 */
+/** 解析 writerId（"bootId:pid" / "bootId:pid:lockToken"）；不合法返回 undefined。 */
 export function parseWriterId(writer: string): WriterIdentity | undefined {
-  const sep = writer.lastIndexOf(":");
-  if (sep <= 0) return undefined;
-  const pid = Number(writer.slice(sep + 1));
-  const id = writer.slice(0, sep);
-  if (!Number.isInteger(pid) || id.length === 0) return undefined;
-  return { bootId: id, pid };
+  const parts = writer.split(":");
+  if (parts.length === 3) {
+    const [boot, rawPid, token] = parts;
+    const pid = Number(rawPid);
+    if (boot.length > 0 && token.length > 0 && Number.isInteger(pid)) return { bootId: boot, pid, token };
+    return undefined;
+  }
+  if (parts.length !== 2) return undefined;
+  const [boot, rawPid] = parts;
+  const pid = Number(rawPid);
+  if (boot.length === 0 || !Number.isInteger(pid)) return undefined;
+  return { bootId: boot, pid };
 }

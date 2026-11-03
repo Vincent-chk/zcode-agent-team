@@ -304,9 +304,9 @@ describe("ResumePerTurnProvider · sessionIsolation=child", () => {
           context: "fresh",
         }),
       ).rejects.toThrow(/unsupported/);
-      // 没有落 origin（失败发生在落盘前）
+      // 0.5.4：完整意图先于宿主调用保存；失败不能抹掉恢复所需的身份证据。
       const paths = memberPaths(kit.provider.teamDir, "m-iso-fail");
-      expect(fs.existsSync(paths.originFile)).toBe(false);
+      expect(readOrigin(paths)).toMatchObject({ requestId: "test-m-iso-fail", creationPending: true });
       expect(fs.existsSync(path.join(paths.runDir))).toBe(false);
     } finally {
       await kit.cleanup();
@@ -511,7 +511,7 @@ describe("ResumePerTurnProvider · 模型继承（0.4.0：唯一路线 = 跟随 
       // fail-fast：培育未发生（零 setModel 尝试的等价口径 = createChild 未被调用）
       expect(breeder.calls).toHaveLength(0);
       const paths = memberPaths(kit.provider.teamDir, "m-plan");
-      expect(fs.existsSync(paths.originFile)).toBe(false); // 没有产生成员
+      expect(readOrigin(paths)).toMatchObject({ requestId: "test-m-plan", creationPending: true }); // 仅意图，无登记/宿主调用
       const message = await kit.provider
         .startContinuable({
           teamId: kit.teamId,

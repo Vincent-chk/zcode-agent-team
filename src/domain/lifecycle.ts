@@ -65,6 +65,11 @@ export class TeamLifecycle implements LifecyclePort {
     return p;
   }
 
+  /** 代次撤销只取消当前等待，不进入需要所有权的 drain/turn 清理。 */
+  revokeGeneration(reason?: unknown): void {
+    this.abort.abort(reason ?? new TeamError("TEAM_DISPOSED", "coordinator generation revoked"));
+  }
+
   /** dispose(reason)：D9 抽象触发；幂等（重复调用等首次结果）。 */
   dispose(reason?: unknown): Promise<void> {
     void reason; // 触发来源仅审计用（D9：域核心不假设来源）

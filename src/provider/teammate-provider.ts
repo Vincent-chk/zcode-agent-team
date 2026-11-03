@@ -22,8 +22,30 @@ export interface TeammateProvider {
     description: string;
     firstPrompt: string;
     context: "fresh" | "fork";
+    requestId?: string;
     signal?: AbortSignal;
-  }): Promise<{ memberId: string; accepted: boolean }>;
+  }): Promise<{ memberId: string; accepted: boolean; creation?: "pending" }>;
+
+  /** 完整意图必须先于 roster 登记/宿主副作用持久化；无文件能力的测试 provider 可省略。 */
+  prepareContinuable?(args: {
+    teamId: string;
+    memberId: string;
+    name: string;
+    description: string;
+    firstPrompt: string;
+    context: "fresh" | "fork";
+    requestId: string;
+  }): void;
+  /** 只从已保存 origin 续接，不生成新命令/新会话。 */
+  resumeContinuable?(memberId: string, signal?: AbortSignal): Promise<{ memberId: string; accepted: boolean; creation?: "pending" }>;
+  /** 持久累计查询预算；返回 true 表示预算耗尽、停止自动恢复。 */
+  noteProvisioningRecovery?(memberId: string): boolean;
+  /** 每次宿主获锁开启独立代次。 */
+  activateGeneration?(): AbortSignal;
+  /** 恢复与纳管结束后才允许 watcher。 */
+  startBackground?(): void;
+  /** 原请求是否已登记；不含此能力的 provider 不能确认断连结果。 */
+  requestStatus?(requestId: string): { memberId: string; accepted: boolean } | undefined;
 
   /** 向成员会话投递一条已框架化消息（「Team message from <name>: 」前缀，逐字；〔对齐轮〕0.2.1 无消息 id）。
    *  返回 "accepted"（本轮调用内完成拉起/写入）或 "queued"（目标运行中，已入 pending 持久化；〔对齐轮〕0.2.1 已删 pending 上限）。

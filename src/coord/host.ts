@@ -5,8 +5,8 @@
 //
 // 接任：代理模式默认开启 autoTakeover 观察者（poll lock；持有者心跳过期/锁消失 → 抢锁晋升
 // 协调者，kill -9 → 接任 ≤5s 由 lock 调参保证：4500ms 过期 + 200ms 轮询）。
-// 〔D32〕心跳过期但持有者进程仍存活（事件循环被同步 fsync 卡住）时不立即抢：宽限 graceMs
-// 复核，硬上限 hardExpiryMs 兜底；真崩溃（PID 已死）仍走 ≤5s 快路径（lock.ts 双信号判定）。
+// 〔D32 修订〕活持有者即使心跳超龄也不接任：文件锁不能撤销其已准备好的写入。
+// 确认 PID 退出才走 ≤5s 快路径；活进程/存活未知接受暂时不可用。
 
 import { CoordinatorLock, AcquireTimeout, type LockInfo } from "./lock.js";
 import { JournalTeamStore } from "./store-adapter.js";
@@ -97,6 +97,7 @@ export class TeamCoordinatorHost {
     const lock = new CoordinatorLock(paths.lockFile, paths.auditFile, {
       // 失锁 = 立即降级；不能继续以 coordinator 身份写 journal/占用 socket。
       onLost: () => {
+        if (providerHasGeneration(host.provider)) host.provider.detach?.();
         void host.demoteToProxy("coordinator lock lost");
       },
     });
@@ -131,6 +132,11 @@ export class TeamCoordinatorHost {
 
   get coordinatorBootId(): string {
     return this.lock.info?.bootId ?? bootId();
+  }
+
+  /** 外层断连后只读原请求登记，不通过此入口执行写操作。 */
+  get providerForRead(): (TeammateProvider & ReconciliationSource & TargetInspector) | null {
+    return this.provider;
   }
 
   /** 代理模式下的方法表（§2 一致性断言用；协调者模式为 null）。 */
@@ -242,9 +248,9 @@ export class TeamCoordinatorHost {
     } catch (err) {
       errors.push(err);
     }
-    if (providerHasBoundary(this.provider)) {
+    if (providerHasGeneration(this.provider)) {
       try {
-        this.provider.detach(); // 停 watcher；轮次进程不杀（独立进程组纪律，D9 休眠态）
+        this.provider.detach?.(); // 停 watcher；轮次进程不杀（独立进程组纪律，D9 休眠态）
       } catch (err) {
         errors.push(err);
       }
@@ -258,8 +264,10 @@ export class TeamCoordinatorHost {
    * 与 close() 的区别：不置 closed，仍可再次晋升。
    */
   private async demoteToProxy(reason: string): Promise<void> {
-    if (this.closed || this.mode !== "coordinator") return;
-    this.mode = "proxy"; // 先切模式：后续 dispatch 不再走本地方法表
+    if (this.closed) return;
+    this.mode = "proxy"; // 也覆盖 serve() 装配中失锁：先撤销该代次。
+    // 先同步撤销 provider 代次：watcher/回填/新启动均失效，且不执行 drain/kill。
+    if (providerHasGeneration(this.provider)) this.provider.detach?.();
     this.lock.stopHeartbeat();
     this.stopDeliverySweep();
     this.opts.warn?.(`agent-team coordinator demoted for team "${this.teamId}": ${reason}`);
@@ -277,18 +285,13 @@ export class TeamCoordinatorHost {
     const runtime = this.runtime;
     this.runtime = null;
     if (runtime !== null) {
-      try {
-        await runtime.dispose();
-      } catch {
-        /* best-effort */
-      }
-      runtime.close();
+      runtime.close(); // 失锁只撤销后台入口；dispose 会 drain，不属于无所有权退出。
     }
     const store = this.store;
     this.store = null;
     if (store !== null) {
       try {
-        await store.close();
+        await store.close({ checkpoint: false });
       } catch {
         /* best-effort */
       }
@@ -324,6 +327,9 @@ export class TeamCoordinatorHost {
   private async serve(): Promise<void> {
     if (this.closed) throw new Error("host is closed");
     const paths = this.paths();
+    const generationSignal = providerHasGeneration(this.provider)
+      ? this.provider.activateGeneration!()
+      : undefined;
     this.lock.startHeartbeat();
     let store: JournalTeamStore;
     try {
@@ -382,6 +388,7 @@ export class TeamCoordinatorHost {
           }
         : {}),
       warn: this.opts.warn,
+      ...(generationSignal !== undefined ? { signal: generationSignal } : {}),
     });
     // stage-4：轮次边界接线（teammate 轮次退出/lead 回执 → observeDelivery 折叠 + pending 续投）
     // + 孤儿纳管（T4.4 常态：任何 daemon 冷启动接任 = 全量重放 + 恢复对账 + run/ 纳管）。
@@ -419,6 +426,7 @@ export class TeamCoordinatorHost {
       );
     } else {
       await runtime.recoverAll();
+      if (providerHasBoundary(this.provider)) this.provider.startBackground?.();
     }
     const socket = resolveSocketPath(paths.teamDir);
     // 共享凭证：每次协调者晋升生成新 token（旧代理的下一次调用自动读到新 token）。
@@ -530,6 +538,16 @@ function providerIsPresentation(
     typeof (provider as { statusOf?: unknown }).statusOf === "function" &&
     typeof (provider as { modelOf?: unknown }).modelOf === "function"
   );
+}
+
+/** 代次管理独立于 watcher；MockProvider 同样必须验证失锁撤销。 */
+function providerHasGeneration(
+  provider: TeammateProvider & ReconciliationSource & TargetInspector,
+): provider is TeammateProvider & ReconciliationSource & TargetInspector & {
+  activateGeneration: () => AbortSignal;
+  detach?: () => void;
+} {
+  return typeof provider.activateGeneration === "function";
 }
 
 /** stage-4：轮次边界能力（ResumePerTurnProvider）；装配 bind/adoptOrphans/detach。 */

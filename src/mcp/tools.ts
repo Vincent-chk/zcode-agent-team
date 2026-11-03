@@ -66,7 +66,7 @@ export const TEAM_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     // 02 §9.3（〔issue #9 D28〕去档位措辞；〔issue #5 / D29〕补不可继承失败口径）
     name: "spawn_teammate",
     description:
-      "Create one named, durable teammate. Only the Team Lead may call this tool. Create teammates when the goal clearly benefits from delegation — multiple roles in parallel, disjoint write scopes, or long tasks needing their own context — within the member limit. If the Lead's model cannot be inherited (official plan model), the call fails — handle the work directly instead. The teammate automatically follows the Lead's latest confirmed model and reasoning level on every turn; there is no per-member model option.",
+      "Create one named, durable teammate. Only the Team Lead may call this tool. Create teammates when the goal clearly benefits from delegation — multiple roles in parallel, disjoint write scopes, or long tasks needing their own context — within the member limit. A creation=pending response means the request is registered but its result is not confirmed; the member remains provisioning and is not ready for work. Observe that same member with list_agents/wait_agent instead of spawning another. If the Lead's model cannot be inherited (official plan model), the call fails — handle the work directly instead. The teammate automatically follows the Lead's latest confirmed model and reasoning level on every turn; there is no per-member model option.",
     inputSchema: {
       type: "object",
       properties: {

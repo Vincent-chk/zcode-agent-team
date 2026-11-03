@@ -14,15 +14,12 @@
 //
 // 语义仍是「活跃窗口内持有」：exit handler 尽力释放；SIGKILL 由心跳过期兜底。
 // 默认调参：心跳 1000ms / 过期 4500ms / 轮询 200ms（kill -9 → 接任 ≤5s 硬断言，f29/C2）。
-// 〔D32，2026-11-02〕双信号存活判定：心跳过期只说明「心跳停了」，不等于进程死了——
-// daemon 事件循环被同步 fsync 卡住（journal.ts fsyncSync；外置卷负载下秒级）时活持有者的
-// 心跳文件也会停滞 >4.5s，旧逻辑会把活人判死并抢锁（sess_cabd748c 实测：steal 后 victim
-// 仍存活，in-flight spawn 被 reconcile 误判 failed）。现增 PID 存活信号：
-//   holderAlive=false（真崩溃）→ 立即抢锁，≤5s SLA 不变；
-//   holderAlive=true（stalled）→ 宽限 graceMs 再复核（期间记 steal-deferred），
-//     硬上限 hardExpiryMs 兜底（防 stalled 变无限期 outage）；
-//   holderAlive=null（锁不可解析）→ 维持旧行为（过期即抢）。
-// 宽限路径另做 PID 复用防护（锁文件增 startedAt，与 ps 启动时间比对）。
+// 〔D32 修订，2026-11-03〕心跳过期只说明「心跳停了」，不等于进程死了。
+// 文件锁与 PID 探活无法撤销活进程已经准备好的 origin/journal 写入，因此不再抢占活持有者：
+//   holderAlive=false（确认退出）→ 立即抢锁，≤5s SLA 不变；
+//   holderAlive=true → 保留所有权、记录 steal-deferred，接受暂时不可用；
+//   holderAlive=null（无法可靠判定）→ 同样不自动抢锁。
+// 已放弃宽限后硬抢的设计：它不成立唯一写者保证。startedAt/etime 仅用于识别 PID 复用。
 
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -48,7 +45,7 @@ export interface LockTuning {
   pollMs: number;
   /** 〔D32〕stalled-but-alive 持有者的抢锁宽限（复核窗口）。 */
   graceMs: number;
-  /** 〔D32〕无论存活与否都抢锁的硬上限（防 stalled 变无限期 outage）。 */
+  /** 旧版活持有者强抢阈值（保留配置兼容；0.5.4 起活进程永不自动抢占）。 */
   hardExpiryMs: number;
 }
 
@@ -476,12 +473,8 @@ export class CoordinatorLock {
   }
 
   /**
-   * 过期抢占（〔D32〕双信号）：guard 单飞 → 重读复核 →
-   *   holderAlive=false（真崩溃）→ 立即 quarantine（kill -9 接任 ≤5s SLA 不变）；
-   *   holderAlive=true（stalled-but-alive）→ audit `steal-deferred` + 宽限 graceMs 复核：
-   *     宽限内心跳恢复/换代 → 放弃；仍过期且（已死 或 超过 hardExpiryMs 硬上限）→ quarantine；
-   *   holderAlive=null（锁不可解析）→ 维持旧行为（过期即抢）。
-   * 宽限路径做 PID 复用防护（锁内 startedAt 与 ps etimes 推算的启动时刻比对）。
+   * 过期接任（保守唯一写者）：只有确认持有者退出或 PID 已复用才隔离旧锁。
+   * 活进程/不可解析持有者的写能力无法由文件锁撤销，超龄也绝不抢占；等待其正常释放。
    * 若 rename 到的不是观察到的 inode（竞争者刚换了新锁）→ 尝试归还并回滚。
    */
   private async steal(observed: ObservedLock): Promise<"stolen" | "deferred" | "skipped"> {
@@ -503,20 +496,15 @@ export class CoordinatorLock {
       ) {
         return "skipped"; // 观察后锁已换代 → 不抢
       }
-      // 〔D32〕活持有者宽限：心跳停了但进程还在 = 事件循环卡顿（同步 fsync 等），不是死亡。
-      if (current.holderAlive === true && current.ageMs <= this.tuning.hardExpiryMs && !this.pidReused(current)) {
+      // 文件锁不能撤销活进程已准备好的写入；活持有者超龄只降级可用性，不转移所有权。
+      if (current.holderAlive !== false && !this.pidReused(current)) {
         this.audit("steal-deferred", {
-          reason: "holder-alive",
+          reason: current.holderAlive === true ? "holder-alive" : "holder-liveness-unknown",
           ageMs: Math.round(current.ageMs),
-          graceMs: this.tuning.graceMs,
           hbSource: current.hbSource,
           previous: current.info,
         });
-        await sleep(this.tuning.graceMs);
-        const re = this.observe();
-        if (!re.exists || re.ageMs <= this.tuning.expiryMs) return "deferred"; // 宽限内恢复 → 不抢
-        if (re.ino !== current.ino || re.info?.token !== current.info?.token) return "deferred"; // 换代 → 不抢
-        if (re.holderAlive === true && re.ageMs <= this.tuning.hardExpiryMs) return "deferred"; // 仍活且未超硬上限 → 交给后续轮询
+        return "deferred";
       }
       const quarantine = `${this.lockFile}.stale-${Date.now()}-${crypto.randomBytes(4).toString("hex")}`;
       try {

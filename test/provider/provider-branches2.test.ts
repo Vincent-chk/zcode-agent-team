@@ -93,7 +93,7 @@ describe("provider 分支 II（合成 + 快速真进程）", () => {
     }
   });
 
-  it("first 探针超时：宽限内杀进程 + accepted:false", async () => {
+  it("first 探针超时：保留待恢复，不杀旧进程、不重复启动", async () => {
     const restore = withFakeEnv({ FAKE_ZCODE_PRE_SLEEP_MS: "30000" });
     const kit = buildProviderKit();
     try {
@@ -109,18 +109,22 @@ describe("provider 分支 II（合成 + 快速真进程）", () => {
         watcherIntervalMs: 100,
         log: () => undefined,
       });
-      const result = await slow.startContinuable({
+      slow.prepareContinuable({
+        teamId: kit.teamId, memberId: "m-to", name: "alpha", description: "d",
+        firstPrompt: "p", context: "fresh", requestId: "test-m-to",
+      });
+      await expect(slow.startContinuable({
         teamId: kit.teamId,
         memberId: "m-to",
         name: "alpha",
         description: "d",
         firstPrompt: "p",
         context: "fresh",
-      });
-      expect(result.accepted).toBe(false);
+        requestId: "test-m-to",
+      })).rejects.toThrow(/结果待确认.*不会重复启动/);
       const paths = memberPaths(slow.teamDir, "m-to");
       const turnId = "turn-1";
-      await waitFor(() => readOrigin(paths)?.sessionId === null && !pidAlive(readTurn(paths.runDir, turnId)!.pid), 4000);
+      await waitFor(() => readOrigin(paths)?.sessionId === null && pidAlive(readTurn(paths.runDir, turnId)!.pid), 4000);
       slow.close();
     } finally {
       restore();

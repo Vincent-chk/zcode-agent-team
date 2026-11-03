@@ -9,6 +9,8 @@ import { TeamRuntime } from "../../src/domain/runtime.js";
 import { TeamError } from "../../src/domain/errors.js";
 import type { ProviderKit } from "./kit.js";
 import type { TeamState } from "../../src/domain/projection.js";
+import type { SessionBreederLike } from "../../src/provider/resume-provider.js";
+import { memberPaths, readOrigin, listTurns } from "../../src/provider/member-files.js";
 
 let kit: ProviderKit | null = null;
 const restoreFns: Array<() => void> = [];
@@ -34,6 +36,86 @@ function buildRuntime(store: TestableMemoryStore, drainPolicy?: "keep" | "kill")
     warn: () => undefined,
   });
 }
+
+describe("0.5.4 · 慢创建＋接任＋宿主响应丢失", () => {
+  it("固定 origin 恢复原 anchor/child；不误 failed、不重复建会话或启动首轮", async () => {
+    const { AppServerSessionBreeder } = await import("../../src/provider/session-breeder.js");
+    const { insertSubmissionMessage } = await import("./kit.js");
+    const fakeApp = path.resolve(import.meta.dirname, "fake-app-server.mjs");
+    const state = path.join(kit!.root, "host-state.json");
+    const record = path.join(kit!.root, "host-requests.jsonl");
+    const tasksIndex = path.join(kit!.root, "tasks-index.sqlite");
+    const { createTasksIndexFixture } = await import("./tasks-index.js");
+    createTasksIndexFixture(tasksIndex);
+    const real = new AppServerSessionBreeder({
+      zcode: { command: process.execPath, argvPrefix: [fakeApp], source: "env" },
+      dbPath: kit!.dbPath,
+      tasksIndexPath: tasksIndex,
+      readyTimeoutMs: 3000,
+    });
+    const slow: SessionBreederLike = {
+      createChild: async (input) => {
+        await new Promise((resolve) => setTimeout(resolve, 80));
+        return real.createChild({ ...input, timeoutMs: 80 });
+      },
+      applyModelSelection: async () => ({ applied: true }),
+    };
+    const local = buildProviderKit({
+      sessionIsolation: "child",
+      breeder: slow,
+      modelCatalog: () => ({ providers: [{ providerId: "lead-prov", name: "Lead", kind: "test", enabled: true, models: [{ id: "lead-model", enabled: true }] }] }),
+    });
+    insertSubmissionMessage(local.dbPath, {
+      sessionId: local.teamId, providerId: "lead-prov", modelId: "lead-model", timeCreated: Date.now(),
+    });
+    restoreFns.push(withFakeEnv({
+      FAKE_APP_SERVER_STATE: state,
+      FAKE_APP_SERVER_RECORD: record,
+      FAKE_APP_SERVER_DROP: "side",
+    }));
+    const store = new TestableMemoryStore(local.teamId);
+    const runtime = new TeamRuntime({
+      teamId: local.teamId, store, provider: local.provider, limits: local.limits, presentation: local.provider,
+    });
+    try {
+      const spawned = await runtime.roster.spawnTeammate(local.teamId, {
+        name: "alpha", description: "d", prompt: "p", requestId: "req-combined",
+      });
+      expect(spawned.creation).toBeUndefined();
+      const memberId = store.state().members[0]!.id;
+      const origin = readOrigin(memberPaths(local.provider.teamDir, memberId))!;
+      expect(origin.requestId).toBe("req-combined");
+      expect(origin.initialUserMessageAccepted).toBe(true);
+      expect(listTurns(memberPaths(local.provider.teamDir, memberId).runDir)).toHaveLength(1);
+      const requests = fs.readFileSync(record, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+      expect(requests.filter((request) => request.params?.type === "createSession")).toHaveLength(1);
+      expect(requests.filter((request) => request.params?.type === "createSelectionSideSession")).toHaveLength(1);
+    } finally {
+      runtime.close();
+      await local.cleanup();
+    }
+  });
+
+  it("失锁等待不重复创建；死亡接任后 origin/turn 证据只恢复一次", async () => {
+    const store = new TestableMemoryStore(kit!.teamId);
+    const runtime = buildRuntime(store);
+    const controller = new AbortController();
+    const started = runtime.roster.spawnTeammate(kit!.teamId, {
+      name: "alpha", description: "d", prompt: "p", requestId: "req-revoke",
+      ownershipSignal: controller.signal,
+    });
+    controller.abort();
+    const pending = await started;
+    expect(pending.creation).toBe("pending");
+    expect(store.state().members[0]?.phase).toBe("provisioning");
+    const memberId = store.state().members[0]!.id;
+    expect(readOrigin(memberPaths(kit!.provider.teamDir, memberId))?.requestId).toBe("req-revoke");
+    await runtime.roster.reconcileProvisioning();
+    expect(store.state().members[0]?.phase).not.toBe("failed");
+    expect(listTurns(memberPaths(kit!.provider.teamDir, store.state().members[0]!.id).runDir)).toHaveLength(1);
+    runtime.close();
+  });
+});
 
 describe("F01 · spawn 事件相位（provisioning → active）", () => {
   it("成功链路：两事件落盘、成员行 status=running、prompt 原文透传", async () => {
@@ -135,13 +217,14 @@ describe("F05 · 恢复对账矩阵（provisioning × 四条件缺失）", () =>
     store.testMutate((s) => addProvisioning(s, "m-4", "w4", "spawn"));
 
     const result = await runtime.roster.reconcileProvisioning();
-    expect(new Set(result.settled)).toEqual(new Set(["m-1", "m-3", "m-4"]));
+    expect(new Set(result.settled)).toEqual(new Set(["m-3"]));
+    expect(new Set(result.deferred)).toEqual(new Set(["m-1", "m-4"]));
     const errors = Object.fromEntries(
       store.state().members.map((m) => [m.name, m.error ?? null]),
     );
-    expect(errors["w1"]).toBe("provisioning did not leave a resumable child Session");
+    expect(errors["w1"]).toBeNull(); // 意图缺失：停止自动恢复，不能编造成员失败。
     expect(errors["w3"]).toBe("persisted child Session does not match the provisioned continuation");
-    expect(errors["w4"]).toMatch(/^child Session recovery failed: /);
+    expect(errors["w4"]).toBeNull(); // 不可读是恢复证据未知，不是子会话失败。
     expect(errors["ok"]).toBeNull(); // active 成员不受影响
     runtime.close();
   });
@@ -160,7 +243,7 @@ describe("F05 · 恢复对账矩阵（provisioning × 四条件缺失）", () =>
     // 接任：journal 全量重放 + 恢复对账 + 孤儿轮次纳管（live pid 再收养）
     const hostB = await openHost(kit!);
     const runtimeB = hostB.teamRuntime!;
-    await runtimeB.roster.recoveryDone;
+    await runtimeB.roster.startRecovery();
     const rows = runtimeB.roster.listMembers(kit!.teamId).members;
     expect(rows.find((r) => r.target === "alpha")!.status).toBe("running");
     const memberId = fs.readdirSync(path.join(kit!.provider.teamDir, "members"))[0];

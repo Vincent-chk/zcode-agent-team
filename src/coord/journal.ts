@@ -203,12 +203,12 @@ export class TeamJournal {
     });
   }
 
-  async close(): Promise<void> {
+  async close(opts: { checkpoint?: boolean } = {}): Promise<void> {
     if (this.appendFd !== null) {
       fs.closeSync(this.appendFd);
       this.appendFd = null;
     }
-    await this.writeCheckpointNow();
+    if (opts.checkpoint !== false) await this.writeCheckpointNow();
     TeamJournal.instances.delete(`${this.teamDir}\u0000${this.teamId}`);
   }
 

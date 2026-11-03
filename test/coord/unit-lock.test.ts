@@ -104,7 +104,7 @@ describe("lock · 原子获取与独占", () => {
     await b.release();
   });
 
-  it("〔D32〕活持有者超 hardExpiry → 不再宽限，直接抢（防 stalled 变无限期 outage）", async () => {
+  it("〔D32 修订〕活持有者超旧 hardExpiry 仍不抢：接受暂时不可用，不产生第二写者", async () => {
     const lockFile = path.join(dir, "t31.lock");
     const auditFile = path.join(dir, "t31.audit.jsonl");
     const a = new CoordinatorLock(lockFile, auditFile);
@@ -112,20 +112,34 @@ describe("lock · 原子获取与独占", () => {
     const stale = {
       ...a.info!,
       heartbeatAt: Date.now() - DEFAULT_LOCK_TUNING.hardExpiryMs - 1000,
-      startedAt: Date.now() - Math.round(process.uptime() * 1000), // 真实启动时刻 → 非 PID 复用
+      startedAt: Date.now() - Math.round(process.uptime() * 1000),
     };
     fs.writeFileSync(lockFile, JSON.stringify(stale));
     for (const name of fs.readdirSync(dir)) {
       if (name.startsWith("t31.lock.hb-")) fs.unlinkSync(path.join(dir, name));
     }
     const b = new CoordinatorLock(lockFile, auditFile, { ownerBootId: "boot-standby" });
-    const t0 = Date.now();
-    const info2 = await b.acquire({ waitMs: 2000 });
-    expect(Date.now() - t0).toBeLessThan(DEFAULT_LOCK_TUNING.graceMs); // 硬上限路径不宽限
-    expect(info2.bootId).toBe("boot-standby");
+    await expect(b.acquire({ waitMs: 200 })).rejects.toThrowError(AcquireTimeout);
+    expect(a.isHeld).toBe(true);
     const audit = fs.readFileSync(auditFile, "utf8");
-    expect(audit).toContain('"event":"steal"');
-    expect(audit).toContain('"holderAlive":true'); // 活但超硬上限 → 仍抢
+    expect(audit).toContain('"event":"steal-deferred"');
+    expect(audit).toContain('"reason":"holder-alive"');
+    expect(audit).not.toContain('"event":"steal"');
+    await a.release();
+  });
+
+  it("存活未知也不自动抢锁；确认退出后才接任", async () => {
+    const lockFile = path.join(dir, "t34.lock");
+    const a = new CoordinatorLock(lockFile);
+    const held = await a.acquire();
+    fs.writeFileSync(lockFile, JSON.stringify({ ...held, pid: "unknown" }));
+    const old = new Date(Date.now() - DEFAULT_LOCK_TUNING.hardExpiryMs - 1000);
+    fs.utimesSync(lockFile, old, old);
+    const b = new CoordinatorLock(lockFile, undefined, { ownerBootId: "boot-standby" });
+    await expect(b.acquire({ waitMs: 100 })).rejects.toThrowError(AcquireTimeout);
+    // 模拟未知锁的所有者后来正常退出：新主先观察到锁消失，再原子创建。
+    fs.unlinkSync(lockFile);
+    await expect(b.acquire({ waitMs: 1000 })).resolves.toMatchObject({ bootId: "boot-standby" });
     await b.release();
   });
 
@@ -167,15 +181,15 @@ describe("lock · 原子获取与独占", () => {
     fs.rmdirSync(hbFile);
   });
 
-  it("不可解析锁文件：新鲜（mtime 近）视为存活；超龄可抢占", async () => {
+  it("不可解析锁文件：新鲜与超龄都保守等待；锁消失后才接任", async () => {
     const lockFile = path.join(dir, "t4.lock");
     fs.writeFileSync(lockFile, "<<<garbage>>>");
     const a = new CoordinatorLock(lockFile);
-    // mtime 新鲜 → 不可抢
     await expect(a.acquire({ waitMs: 50 })).rejects.toThrowError(AcquireTimeout);
-    // mtime 拉老（utimes）
     const old = new Date(Date.now() - DEFAULT_LOCK_TUNING.expiryMs - 2000);
     fs.utimesSync(lockFile, old, old);
+    await expect(a.acquire({ waitMs: 50 })).rejects.toThrowError(AcquireTimeout);
+    fs.unlinkSync(lockFile);
     const info = await a.acquire({ waitMs: 1000 });
     expect(info).toBeDefined();
     await a.release();
@@ -303,5 +317,20 @@ describe("lockfile · writer 归属校验（journal 单写者纪律）", () => {
     expect(observeLockFileFor(lockFile, myWriter).ok).toBe(false);
     await owner.releaseSync();
     expect(parseWriterId(myWriter)).toEqual({ bootId: info.bootId, pid: info.pid });
+  });
+
+  it("同进程失锁再获锁：旧 token writer 不得复用新代次", async () => {
+    const lockFile = path.join(dir, "t-generation.lock");
+    const owner = new CoordinatorLock(lockFile);
+    const first = await owner.acquire();
+    const writer = `${first.bootId}:${first.pid}:${first.token}`;
+    expect(observeLockFileFor(lockFile, writer).ok).toBe(true);
+    expect(parseWriterId(writer)).toEqual({ bootId: first.bootId, pid: first.pid, token: first.token });
+    await owner.release();
+    const second = await owner.acquire();
+    expect(second.token).not.toBe(first.token);
+    expect(observeLockFileFor(lockFile, writer).ok).toBe(false);
+    expect(observeLockFileFor(lockFile, `${second.bootId}:${second.pid}:${second.token}`).ok).toBe(true);
+    await owner.release();
   });
 });

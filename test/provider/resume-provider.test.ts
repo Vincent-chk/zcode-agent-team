@@ -13,7 +13,7 @@ import {
   insertSessionEntry,
   type ProviderKit,
 } from "./kit.js";
-import { memberPaths, readOrigin, listTurns, readTurn, readCurrentTurnId, writeOrigin, writeTurn as writeTurnDirect, type OriginRecord } from "../../src/provider/member-files.js";
+import { memberPaths, readOrigin, listTurns, readTurn, readCurrentTurnId, writeOrigin, writeTurn as writeTurnDirect, setCurrentTurn, type OriginRecord } from "../../src/provider/member-files.js";
 import { readSessionRegistry } from "../../src/mcp/identity.js";
 import type { BoundaryEvent } from "../../src/provider/resume-provider.js";
 
@@ -66,6 +66,72 @@ const SPAWN_ARGS = {
   firstPrompt: "写一个 sort 函数",
   context: "fresh" as const,
 };
+
+describe("0.5.4 · 创建恢复窗口", () => {
+  it("启动意图无回执：不认定未启动/退出，不重复启动", async () => {
+    const paths = memberPaths(kit!.provider.teamDir, "m-starting");
+    const turn = {
+      turnId: "turn-1", memberId: "m-starting", kind: "first" as const,
+      sessionId: null, messageIds: [], promptText: "p", argv: [], pid: null, pgid: null,
+      status: "starting" as const, startedAt: new Date().toISOString(), stdoutFile: path.join(paths.runDir, "turn-1.out"),
+    };
+    writeTurnDirect(paths.runDir, turn);
+    setCurrentTurn(paths, turn.turnId);
+    expect(kit!.provider.adoptOrphans()).toEqual({ finalized: [], adopted: [] });
+    expect(readTurn(paths.runDir, turn.turnId)?.status).toBe("starting");
+    expect(kit!.provider.isAlive("m-starting")).toBe(false);
+    kit!.provider.prepareContinuable({
+      teamId: kit!.teamId, memberId: "m-starting", name: "starting", description: "d",
+      firstPrompt: "p", context: "fresh", requestId: "req-starting",
+    });
+    await expect(kit!.provider.resumeContinuable("m-starting")).rejects.toThrow(/已有启动意图.*不重复启动/);
+    expect(listTurns(paths.runDir)).toHaveLength(1);
+  });
+
+  it("失锁代次撤销只取消等待，不执行 drain/kill；旧 origin 回填不得复活", async () => {
+    const paths = memberPaths(kit!.provider.teamDir, "m-revoked");
+    kit!.provider.prepareContinuable({
+      teamId: kit!.teamId, memberId: "m-revoked", name: "revoked", description: "d",
+      firstPrompt: "p", context: "fresh", requestId: "req-revoked",
+    });
+    const original = readOrigin(paths)!;
+    const signal = kit!.provider.activateGeneration();
+    kit!.provider.detach();
+    expect(signal.aborted).toBe(true);
+    await expect(kit!.provider.drain({ teamId: kit!.teamId, timeoutMs: 50 })).rejects.toThrow(/generation revoked/);
+    // drain 保留 turn 的默认行为；无新 turn/无 origin 覆盖。
+    expect(readOrigin(paths)?.requestId).toBe(original.requestId);
+    expect(listTurns(paths.runDir)).toHaveLength(0);
+  });
+
+  it("回执已保存但 PID 未回填：纳管只读回执，不产生新 turn", () => {
+    const paths = memberPaths(kit!.provider.teamDir, "m-receipt");
+    writeTurnDirect(paths.runDir, {
+      turnId: "turn-1", memberId: "m-receipt", kind: "first", sessionId: null, messageIds: [],
+      promptText: "p", argv: [], pid: null, pgid: null, status: "starting",
+      startedAt: new Date().toISOString(), stdoutFile: path.join(paths.runDir, "turn-1.out"),
+    });
+    fs.writeFileSync(path.join(paths.runDir, "turn-1.spawn.json"), JSON.stringify({ pid: process.pid }));
+    const adopted = kit!.provider.adoptOrphans();
+    expect(adopted.adopted).toEqual(["turn-1"]);
+    expect(readTurn(paths.runDir, "turn-1")).toMatchObject({ pid: process.pid, pgid: process.pid, status: "running" });
+    expect(listTurns(paths.runDir)).toHaveLength(1);
+  });
+
+  it("确认次数与截止时间持久化；预算耗尽后重复查询不重置", () => {
+    kit!.provider.prepareContinuable({
+      teamId: kit!.teamId, memberId: "m-budget", name: "budget", description: "d",
+      firstPrompt: "p", context: "fresh", requestId: "req-budget",
+    });
+    expect(kit!.provider.noteProvisioningRecovery("m-budget")).toBe(false);
+    expect(kit!.provider.noteProvisioningRecovery("m-budget")).toBe(false);
+    expect(kit!.provider.noteProvisioningRecovery("m-budget")).toBe(true);
+    const stopped = readOrigin(memberPaths(kit!.provider.teamDir, "m-budget"));
+    expect(stopped).toMatchObject({ confirmationAttempts: 3, confirmationStopped: true, creationPending: true });
+    expect(kit!.provider.noteProvisioningRecovery("m-budget")).toBe(true);
+    expect(readOrigin(memberPaths(kit!.provider.teamDir, "m-budget"))?.confirmationAttempts).toBe(3);
+  });
+});
 
 describe("F01 · fresh spawn 全链路（真子进程）", () => {
   it("startContinuable：首轮=任务原文逐字落库、origin/session-map/轮次记录齐备、accepted", async () => {

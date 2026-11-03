@@ -120,6 +120,13 @@ async function main(): Promise<void> {
     await runCalls(client, readCalls(arg("post-promotion-calls")), "post-promotion");
   }
 
+  const selfStopMs = arg("self-stop-ms");
+  if (selfStopMs !== undefined) {
+    setTimeout(() => {
+      emit({ type: "self-stopping" });
+      process.kill(process.pid, "SIGSTOP");
+    }, Number(selfStopMs));
+  }
   const holdMs = arg("hold-ms");
   if (holdMs !== undefined) {
     setTimeout(() => gracefulExit("hold-elapsed"), Number(holdMs));
