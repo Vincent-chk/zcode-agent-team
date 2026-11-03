@@ -1,5 +1,5 @@
 // Roster 服务测试（02 §5；F08–F14 + C1/C2/C3/C6/B5）。消息逐字断言。
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { TeamError } from "../../src/domain/errors.js";
 import { buildKit, TEAM } from "../services/kit.js";
 import { memberEvent } from "./helpers.js";
@@ -37,6 +37,78 @@ describe("Roster · 0.5.4 持久意图与非终态结果", () => {
     expect(result.member.status).toBe("provisioning");
     expect(store.state().members[0]?.phase).toBe("provisioning");
     expect(provider.interruptCalls).toBe(0);
+  });
+
+  it.each([false, true])("首次返回 pending 后自动复核（进程存活=%s）", async (alive) => {
+    vi.useFakeTimers();
+    const { runtime, provider } = buildKit();
+    try {
+      provider.programWith({ startOutcome: { kind: "pending" } });
+      provider.isAlive = () => alive;
+      const noteRecovery = vi.fn(() => true);
+      provider.noteProvisioningRecovery = noteRecovery;
+      await runtime.roster.spawnTeammate(LEAD, { name: "worker", description: "d", prompt: "p" });
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(noteRecovery).toHaveBeenCalledTimes(1);
+    } finally {
+      runtime.roster.cancelPendingRecovery();
+      vi.useRealTimers();
+    }
+  });
+
+  it("接任时在途成员仍存活，也会安排后续确认", async () => {
+    vi.useFakeTimers();
+    const { runtime, provider } = buildKit();
+    try {
+      provider.programWith({ startOutcome: { kind: "pending" } });
+      provider.isAlive = () => true;
+      const noteRecovery = vi.fn(() => true);
+      provider.noteProvisioningRecovery = noteRecovery;
+      await runtime.roster.spawnTeammate(LEAD, { name: "worker", description: "d", prompt: "p" });
+      runtime.roster.cancelPendingRecovery(); // 模拟新协调者接任
+      await runtime.roster.startRecovery();
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(noteRecovery).toHaveBeenCalledTimes(1);
+    } finally {
+      runtime.roster.cancelPendingRecovery();
+      vi.useRealTimers();
+    }
+  });
+
+  it("待确认成员首轮受理后，自动从 provisioning 转为 active", async () => {
+    vi.useFakeTimers();
+    const { runtime, provider, store } = buildKit();
+    try {
+      provider.programWith({ startOutcome: { kind: "pending" } });
+      provider.isAlive = () => true;
+      provider.noteProvisioningRecovery = () => false;
+      provider.resumeContinuable = vi.fn(async (memberId) => ({ memberId, accepted: true }));
+      await runtime.roster.spawnTeammate(LEAD, { name: "worker", description: "d", prompt: "p" });
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(provider.resumeContinuable).toHaveBeenCalledTimes(1);
+      expect(provider.startCalls).toBe(1);
+      expect(store.state().members[0].phase).toBe("active");
+    } finally {
+      runtime.roster.cancelPendingRecovery();
+      vi.useRealTimers();
+    }
+  });
+
+  it("已登记成员有未确认的运行轮次时，等待不会误报没有可观察的成员", async () => {
+    const { runtime, provider } = buildKit();
+    await runtime.roster.spawnTeammate(LEAD, { name: "worker", description: "d", prompt: "p" });
+    provider.isAlive = () => false;
+    provider.statusOf = () => "running";
+    expect(runtime.roster.hasPendingAutomaticProgress(LEAD)).toBe(true);
+  });
+
+  it("运行状态待确认时，中断交给 provider 判断，不能直接报告 inactive", async () => {
+    const { runtime, provider } = buildKit();
+    await runtime.roster.spawnTeammate(LEAD, { name: "worker", description: "d", prompt: "p" });
+    provider.isAlive = () => false;
+    provider.statusOf = () => "running";
+    expect(await runtime.roster.interrupt(LEAD, "worker")).toEqual({ previousStatus: "running" });
+    expect(provider.interruptCalls).toBe(1);
   });
 
   it("首轮已确认后 active 本地提交失败：不写 failed、不 interrupt", async () => {
@@ -96,6 +168,7 @@ describe("Roster · 名字校验与预留（F08）", () => {
     );
     expect(store.state().members).toHaveLength(1);
     expect(provider.startCalls).toBe(1);
+    expect(provider.prepared).toHaveLength(1);
   });
 });
 
@@ -113,6 +186,7 @@ describe("Roster · spawn 全流程顺序（F09）", () => {
     // 不增加成员数量、不占用成员名、不触发供给（零隐藏子会话的域层等价口径）
     expect(store.state().members).toHaveLength(0);
     expect(provider.startCalls).toBe(0);
+    expect(provider.prepared).toHaveLength(0);
     // 并发重名校验/成员数量上限保持有效：修正 Lead 模型（清除预检错误）后，原名可成功创建
     provider.programWith({});
     const { member } = await runtime.roster.spawnTeammate(LEAD, {
@@ -274,6 +348,7 @@ describe("Roster · 限额与权限（F10/F11）", () => {
     );
     expect(store.state().members).toHaveLength(1);
     expect(provider.startCalls).toBe(1);
+    expect(provider.prepared).toHaveLength(1);
   });
 
   it("非 Lead spawn → TEAM_LEAD_REQUIRED 逐字；非成员 → TEAM_NOT_MEMBER 逐字；处置中 → is disposing", async () => {

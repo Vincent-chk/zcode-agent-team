@@ -3,7 +3,7 @@
 // target 改名、紧凑 JSON（单 text 块无缩进）、错误 {code,message} 透传、fail-loud 警告行。
 // _meta 身份三分支见 identity.test.ts；27 码抽样见 f07-codes.test.ts；保活 progress 见
 // wait-keepalive.test.ts。
-import { describe, expect, it, beforeAll, afterAll, beforeEach, afterEach } from "vitest";
+import { describe, expect, it, beforeAll, afterAll, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -14,6 +14,10 @@ import { upsertSessionEntry } from "../../src/mcp/identity.js";
 import { MockProvider } from "../../src/provider/mock-provider.js";
 import { NO_PROGRESS_MESSAGE } from "../../src/mcp/policy.js";
 import type { TeamLimits } from "../../src/domain/config.js";
+import { pendingForLead, writeReceipts } from "../../src/hooks/inbox.js";
+import { memberPaths, readReceipts } from "../../src/provider/member-files.js";
+import * as memberFiles from "../../src/provider/member-files.js";
+import { teamPaths } from "../../src/coord/paths.js";
 
 const DEFAULT_LIMITS: TeamLimits = {
   maxMembers: 8,
@@ -40,13 +44,14 @@ interface Rig {
 
 const liveRigs: Rig[] = [];
 
-function makeRig(opts: { limits?: Partial<TeamLimits>; team?: string } = {}): Rig {
+function makeRig(opts: { limits?: Partial<TeamLimits>; team?: string; warn?: (message: string) => void } = {}): Rig {
   const dataRoot = fs.mkdtempSync(path.join(root, "team-"));
   const provider = new MockProvider();
   const backend = new TeamToolBackend({
     dataRoot,
     limits: { ...DEFAULT_LIMITS, ...opts.limits },
     provider,
+    warn: opts.warn,
   });
   const rig = { backend, provider, dataRoot };
   liveRigs.push(rig);
@@ -279,6 +284,20 @@ describe("F02 · list_agents 契约（MEMBER_VIEW[] + Lead 伪行）", () => {
 });
 
 describe("F04 · wait_agent 契约（默认值/捷径/非法值）", () => {
+  it("待确认预算耗尽时，noProgress 消息和接管提示一致", async () => {
+    const rig = makeRig();
+    rig.provider.programWith({ startOutcome: { kind: "pending" } });
+    rig.provider.noteProvisioningRecovery = () => true;
+    await call(rig, "spawn_teammate", { name: "w1", description: "d", prompt: "p" });
+    await rig.backend.close();
+    const reopened: Rig = { ...rig, backend: new TeamToolBackend({ dataRoot: rig.dataRoot, limits: DEFAULT_LIMITS, provider: rig.provider }) };
+    liveRigs.push(reopened);
+    const body = okJson(await call(reopened, "wait_agent", {})) as { noProgress: { message: string }; content: Array<{ text: string }> };
+    expect(body.noProgress.message).toContain("Lead 接管");
+    expect(body.noProgress.message).not.toContain("No other Team member is running or provisioning");
+    expect(body.content[0].text).toContain("Lead 接管");
+  });
+
   it("no-active-peer 捷径：除己外无 running|provisioning → 立即返回 noProgress 常量（逐字）", async () => {
     const rig = makeRig();
     const started = Date.now();
@@ -336,6 +355,191 @@ describe("F04 · wait_agent 契约（默认值/捷径/非法值）", () => {
     expect(elapsed).toBeGreaterThanOrEqual(9_500);
     expect(elapsed).toBeLessThan(13_000);
   }, 20_000);
+});
+
+describe("Lead 本轮收件箱交付", () => {
+  const lead = "sess_lead_a";
+  const worker = "sess_inbox_worker";
+
+  async function setup(opts: { limits?: Partial<TeamLimits>; warn?: (message: string) => void } = {}): Promise<Rig> {
+    const rig = makeRig(opts);
+    // 与真 provider 一致：Lead 无 steer 通道，结果必须经工具或 hook 接收。
+    Object.assign(rig.provider, { LEAD_DELIVERY_VIA_HOOKS: true });
+    await call(rig, "spawn_teammate", { name: "writer", description: "d", prompt: "p" });
+    const child = [...rig.provider.teamChildren.values()][0]!;
+    upsertSessionEntry(rig.dataRoot, worker, {
+      teamId: lead, role: "teammate", name: "writer", memberId: child.memberId, hookRegistered: true,
+    });
+    return rig;
+  }
+
+  async function send(rig: Rig, message = "结果正文\n第二行"): Promise<void> {
+    expect(okJson(await call(rig, "send_message", { target: "lead", message }, { sessionId: worker }))).toEqual({ sent: true });
+  }
+
+  const inbox = (rig: Rig) => pendingForLead(teamPaths(rig.dataRoot, lead).teamDir, lead);
+  const receipts = (rig: Rig) => readReceipts(memberPaths(teamPaths(rig.dataRoot, lead).teamDir, lead));
+
+  it("成员已 inactive 时，先到结果优先于 noProgress；回执阻止 hook 与重启后重复交付", async () => {
+    const rig = await setup();
+    await send(rig);
+    rig.provider.killChild([...rig.provider.teamChildren.keys()][0]!);
+    expect(await inbox(rig)).toHaveLength(1);
+
+    expect(okJson(await call(rig, "wait_agent", {}))).toEqual({
+      timedOut: false, messages: ["Team message from writer:\n结果正文\n第二行"],
+    });
+    expect(await inbox(rig)).toEqual([]);
+    expect(receipts(rig)).toMatchObject([{ channel: "wait_agent" }]);
+
+    await rig.backend.close();
+    const reopened = { ...rig, backend: new TeamToolBackend({ dataRoot: rig.dataRoot, limits: DEFAULT_LIMITS, provider: rig.provider }) };
+    liveRigs.push(reopened);
+    expect(okJson(await call(reopened, "wait_agent", {}))).toMatchObject({ noProgress: { reason: "no-active-peer" } });
+    expect(receipts(rig)).toHaveLength(1);
+  });
+
+  it("等待期间到达的结果随本次 wait 返回，原文与发送者都保留", async () => {
+    const rig = await setup();
+    const waiting = call(rig, "wait_agent", { timeout_ms: 10_000 });
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    await send(rig);
+    expect(okJson(await waiting)).toEqual({
+      timedOut: false, messages: ["Team message from writer:\n结果正文\n第二行"],
+    });
+    expect(await inbox(rig)).toEqual([]);
+  });
+
+  it("检查成员与登记等待的交界处到达消息也不会漏掉唤醒", async () => {
+    const rig = await setup();
+    const statusOf = rig.provider.statusOf.bind(rig.provider);
+    let sent: Promise<void> | undefined;
+    rig.provider.statusOf = (id) => {
+      // listMembers 发生在收件箱检查后：把新发送排到下一个微任务，覆盖登记交界。
+      sent ??= send(rig, "登记交界的结果");
+      return statusOf(id);
+    };
+    expect(okJson(await call(rig, "wait_agent", { timeout_ms: 10_000 }))).toEqual({
+      timedOut: false, messages: ["Team message from writer:\n登记交界的结果"],
+    });
+    await sent;
+  });
+
+  it("协调者与代理并发读取只领取一次，代理不会在有先到结果时空等", async () => {
+    const rig = await setup();
+    const proxy = { ...rig, backend: new TeamToolBackend({ dataRoot: rig.dataRoot, limits: DEFAULT_LIMITS, provider: new MockProvider() }) };
+    liveRigs.push(proxy);
+    await call(proxy, "list_agents", {});
+    expect(proxy.backend.modeOf(lead)).toBe("proxy");
+    await send(rig);
+    rig.provider.killChild([...rig.provider.teamChildren.keys()][0]!);
+    const results = await Promise.all([call(proxy, "wait_agent", {}), call(rig, "wait_agent", {})]);
+    const bodies = results.map((r) => okJson(r) as { messages?: string[] });
+    expect(bodies.flatMap((r) => r.messages ?? [])).toEqual(["Team message from writer:\n结果正文\n第二行"]);
+    expect(receipts(rig)).toHaveLength(1);
+  }, 10_000);
+
+  it("非法超时或已取消请求保留待收消息", async () => {
+    const rig = await setup();
+    await send(rig);
+    expect(errJson(await call(rig, "wait_agent", { timeout_ms: 5 }))).toMatchObject({ code: "TEAM_INVALID_TIMEOUT" });
+    const abort = new AbortController();
+    abort.abort(new Error("cancel inbox wait"));
+    const cancelled = await callTeamTool({
+      backend: rig.backend, dataRoot: rig.dataRoot, bootTimeMs: Date.now(),
+      name: "wait_agent", args: {}, meta: { session_id: lead }, signal: abort.signal,
+    });
+    expect(errJson(cancelled).message).toContain("cancel inbox wait");
+    expect(await inbox(rig)).toHaveLength(1);
+    expect(receipts(rig)).toEqual([]);
+  });
+
+  it("代理分批领取大量合法消息，响应不超限，剩余结果保持待收", async () => {
+    const rig = await setup();
+    const proxy = { ...rig, backend: new TeamToolBackend({ dataRoot: rig.dataRoot, limits: DEFAULT_LIMITS, provider: new MockProvider() }) };
+    liveRigs.push(proxy);
+    await call(proxy, "list_agents", {});
+    const expected = Array.from({ length: 18 }, (_, i) => `第${i}封:${"x".repeat(60_000)}`);
+    for (const message of expected) await send(rig, message);
+    rig.provider.killChild([...rig.provider.teamChildren.keys()][0]!);
+
+    const first = okJson(await call(proxy, "wait_agent", {})) as { messages: string[] };
+    expect(first.messages.length).toBeGreaterThan(0);
+    expect(first.messages.length).toBeLessThan(expected.length);
+    expect(await inbox(rig)).toHaveLength(expected.length - first.messages.length);
+    const second = okJson(await call(proxy, "wait_agent", {})) as { messages: string[] };
+    expect([...first.messages, ...second.messages]).toEqual(expected.map((m) => `Team message from writer:\n${m}`));
+    expect(await inbox(rig)).toEqual([]);
+    expect(receipts(rig)).toHaveLength(expected.length);
+  });
+
+  it("单封消息超过响应预算时明确报错，保持待收而不写假回执", async () => {
+    const rig = await setup({ limits: { maxMessageBytes: 2_000_000 } });
+    await send(rig, "x".repeat(1_100_000));
+    const result = await call(rig, "wait_agent", {});
+    expect(errJson(result).message).toContain("收件箱响应上限");
+    expect(await inbox(rig)).toHaveLength(1);
+    expect(receipts(rig)).toEqual([]);
+  });
+
+  it("回执部分追加后报错，诊断写入也失败时仍返回全部正文，未回执消息可以补送", async () => {
+    const rig = await setup({ warn: () => { throw new Error("injected diagnostic write failure"); } });
+    for (const message of ["第一封", "第二封", "第三封"]) await send(rig, message);
+    const append = memberFiles.appendReceipt;
+    let calls = 0;
+    const spy = vi.spyOn(memberFiles, "appendReceipt").mockImplementation((paths, receipt) => {
+      append(paths, receipt);
+      if (++calls === 2) throw new Error("injected receipt fsync EIO");
+    });
+    try {
+      const result = await call(rig, "wait_agent", {});
+      expect(spy).toHaveBeenCalledTimes(2);
+      expect(okJson(result)).toMatchObject({
+        timedOut: false,
+        messages: ["第一封", "第二封", "第三封"].map((m) => `Team message from writer:\n${m}`),
+        receiptWarning: expect.stringContaining("回执持久化失败"),
+      });
+    } finally {
+      spy.mockRestore();
+    }
+    expect(receipts(rig)).toHaveLength(2);
+    expect(okJson(await call(rig, "wait_agent", {}))).toMatchObject({ messages: ["Team message from writer:\n第三封"] });
+    expect(await inbox(rig)).toEqual([]);
+  });
+
+  it("等待中取消后到达的消息留给下次调用", async () => {
+    const rig = await setup();
+    const abort = new AbortController();
+    const waiting = callTeamTool({
+      backend: rig.backend, dataRoot: rig.dataRoot, bootTimeMs: Date.now(),
+      name: "wait_agent", args: {}, meta: { session_id: lead }, signal: abort.signal,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    abort.abort(new Error("cancel running wait"));
+    expect(errJson(await waiting).message).toContain("cancel running wait");
+    await send(rig);
+    expect(await inbox(rig)).toHaveLength(1);
+    expect(receipts(rig)).toEqual([]);
+  });
+
+  it("teammate 调用 wait 不读取 Lead 私有收件箱", async () => {
+    const rig = await setup();
+    await send(rig);
+    const body = okJson(await call(rig, "wait_agent", {}, { sessionId: worker })) as { messages?: string[] };
+    expect(body.messages).toBeUndefined();
+    expect(await inbox(rig)).toHaveLength(1);
+    expect(receipts(rig)).toEqual([]);
+  });
+
+  it("hook 已交付的消息不会再次出现在 wait 结果", async () => {
+    const rig = await setup();
+    await send(rig);
+    const pending = await inbox(rig);
+    writeReceipts(rig.dataRoot, lead, pending.map((m) => m.messageId), "stop");
+    rig.provider.killChild([...rig.provider.teamChildren.keys()][0]!);
+    expect(okJson(await call(rig, "wait_agent", {}))).toMatchObject({ noProgress: { reason: "no-active-peer" } });
+    expect(receipts(rig)).toMatchObject([{ channel: "stop" }]);
+  });
 });
 
 describe("F05 · team_task_list 过滤/分页契约", () => {

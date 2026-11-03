@@ -87,7 +87,7 @@ export interface TurnRecord {
 
 export interface Receipt {
   messageId: string;
-  channel: "stop" | "userpromptsubmit" | "sessionstart";
+  channel: "stop" | "userpromptsubmit" | "sessionstart" | "wait_agent";
   ts: string;
 }
 

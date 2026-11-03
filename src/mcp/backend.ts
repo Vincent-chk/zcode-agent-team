@@ -27,7 +27,9 @@ import type { TeamTaskView } from "../domain/task-view.js";
 import type { TeamLimits } from "../domain/config.js";
 import type { ContentBlock } from "../domain/events.js";
 import type { ResolvedIdentity } from "./identity.js";
-import { noProgressResult, NO_PROGRESS_REASON } from "./policy.js";
+import type { NO_PROGRESS_REASON } from "./policy.js";
+import { isValidTimeout } from "../domain/activity.js";
+export { isValidTimeout } from "../domain/activity.js";
 import type { TeammateProvider } from "../provider/teammate-provider.js";
 import type { ReconciliationSource, TargetInspector } from "../domain/ports.js";
 
@@ -348,32 +350,18 @@ export class TeamToolBackend {
         );
       }
       const runtime = host.teamRuntime;
-      let wait: Promise<{ timedOut: boolean }>;
+      let wait: Promise<WaitAgentResult>;
       if (runtime !== null) {
-        // 捷径：除己外无 running|provisioning 成员 → 立即返回 noProgress 常量文本（逐字）
-        const rows = runtime.roster.listMembers(identity.agentId).members;
-        if (!runtime.roster.hasPendingAutomaticProgress(identity.agentId)) {
-          const stopped = rows.find((row) => row.status === "provisioning");
-          return stopped !== undefined
-            ? { ...noProgressResult(), content: [{ type: "text" as const, text: `成员 ${stopped.target} 已停止自动确认，需要 Lead 接管；旧 turn 仍可能执行，不得重复启动。` }] }
-            : noProgressResult();
-        }
-        const selfTarget = identity.role === "lead" ? "lead" : identity.name;
-        const hasActivePeer = rows.some(
-          (row) =>
-            row.target !== selfTarget &&
-            (row.status === "running" || row.status === "provisioning"),
-        );
-        if (!hasActivePeer) return noProgressResult();
+        // 收件箱与 noProgress 均在同一协调者方法内处理，避免检查与登记等待之间漏消息。
         wait = host.dispatch(
           "wait.agent",
           { session_id: identity.agentId, timeoutMs },
           signal !== undefined ? { signal } : {},
-        ) as Promise<{ timedOut: boolean }>;
+        ) as Promise<WaitAgentResult>;
       } else {
-        // 代理模式：跳过捷径（保守），经 socket 注册等待；客户端超时按调用豁免（草案 §2）
+        // 代理同样由权威协调者领取消息、判断捷径；客户端超时按调用豁免。
         const { teamDir } = teamPaths(this.opts.dataRoot, identity.teamId);
-        wait = callCoordinator<{ timedOut: boolean }>(
+        wait = callCoordinator<WaitAgentResult>(
           teamDir,
           identity.teamId,
           "wait.agent",
@@ -474,21 +462,14 @@ export class TeamToolBackend {
 
 export type WaitAgentResult = {
   timedOut: boolean;
+  /** 本次领取的 Lead 待收消息（含发送者框架头）；空收件箱时不增加字段。 */
+  messages?: string[];
+  receiptWarning?: string;
   noProgress?: { reason: typeof NO_PROGRESS_REASON; message: string };
 };
 
 // ---------------------------------------------------------------- 模型参数（0.4.0 注销 invalidModel /
 // wireModelSelection / validateThoughtLevel：成员模型唯一路线 = 每轮跟随 Lead，工具面无规格解析）
-
-/** 02 §8 合法域：[10000, 3600000] 的 safe integer。 */
-export function isValidTimeout(value: unknown): value is number {
-  return (
-    typeof value === "number" &&
-    Number.isSafeInteger(value) &&
-    value >= WAIT_MIN_TIMEOUT_MS &&
-    value <= WAIT_MAX_TIMEOUT_MS
-  );
-}
 
 /** 代理模式 MEMBER_VIEW 派生（02 §5.5 保守等价：无存活注册表 → active 呈 inactive）。 */
 const MEMBER_STATUS_BY_PHASE = {

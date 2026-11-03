@@ -13,6 +13,19 @@ export interface WaitResult {
   timedOut: boolean;
 }
 
+/** 等待适配层共用的超时范围与无活动结果。 */
+export function isValidTimeout(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 10_000 && value <= 3_600_000;
+}
+
+export const NO_PROGRESS_REASON = "no-active-peer";
+export const NO_PROGRESS_MESSAGE =
+  "No other Team member is running or provisioning. wait_agent cannot make progress or wake inactive teammates. Re-list with list_agents and team_task_list, then use send_message to wake each required inactive teammate before waiting again.";
+
+export function noProgressResult(): { timedOut: false; noProgress: { reason: typeof NO_PROGRESS_REASON; message: string } } {
+  return { timedOut: false, noProgress: { reason: NO_PROGRESS_REASON, message: NO_PROGRESS_MESSAGE } };
+}
+
 interface Waiter {
   wake: () => void;
 }
@@ -57,7 +70,7 @@ export class TeamActivity {
     signal?: AbortSignal,
   ): Promise<WaitResult> {
     // ① timeout 范围校验（逐字）
-    if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 10_000 || timeoutMs > 3_600_000) {
+    if (!isValidTimeout(timeoutMs)) {
       throw new TeamError(
         "TEAM_INVALID_TIMEOUT",
         "timeoutMs must be an integer from 10000 through 3600000",

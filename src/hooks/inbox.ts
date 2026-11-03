@@ -1,4 +1,4 @@
-// Hook 收件箱逻辑（T4.3；纯逻辑层，runtime/team-hooks.mjs 入口编排）。
+// Lead 收件箱共享逻辑（hook 注入 + wait_agent 本轮交付）。
 // Lead 侧三通道（D2/D12 内部适配层）：
 //   Stop              → pending 非空 → decision:block + reason（框架化消息逐字拼接；≤3 次/run）→ 回执；
 //   UserPromptSubmit  → pending 非空 → additionalContext 注入（无上限）→ 回执；
@@ -12,8 +12,9 @@ import fs from "node:fs";
 import path from "node:path";
 import { load as replayLoad } from "../coord/replay.js";
 import { teamPaths } from "../coord/paths.js";
-import { appendReceipt, memberPaths, receiptMessageIds } from "../provider/member-files.js";
+import { appendReceipt, memberPaths, receiptMessageIds, type Receipt } from "../provider/member-files.js";
 import { renderFramed } from "../provider/framing.js";
+import type { TeamState } from "../domain/projection.js";
 
 export interface SpawnIdentityHint {
   teamId: string;
@@ -83,11 +84,17 @@ export interface PendingMessage {
 export async function pendingForLead(teamDir: string, teamId: string): Promise<PendingMessage[]> {
   if (!fs.existsSync(path.join(teamDir, "events.jsonl"))) return [];
   const loaded = await replayLoad(teamDir, teamId);
-  if (loaded.state.failure !== undefined) return []; // failure 终态：不注入（排障视角 team-ctl）
-  const delivered = new Set(loaded.state.delivered);
+  return pendingLeadMessages(teamDir, loaded.state);
+}
+
+/** 协调者复用内存投影；同步读回执，使检查与等待登记之间不漏提交边。 */
+export function pendingLeadMessages(teamDir: string, state: TeamState): PendingMessage[] {
+  if (state.failure !== undefined) return []; // failure 终态：不注入（排障视角 team-ctl）
+  const teamId = state.id;
+  const delivered = new Set(state.delivered);
   const receipted = receiptMessageIds(memberPaths(teamDir, teamId));
   const pending: PendingMessage[] = [];
-  for (const message of loaded.state.messages) {
+  for (const message of state.messages) {
     if (message.targetId !== teamId || delivered.has(message.id) || receipted.has(message.id)) continue;
     const framed = [
       { type: "text", text: `Team message from ${message.senderName}:` },
@@ -117,7 +124,7 @@ export function writeReceipts(
   dataRoot: string,
   teamId: string,
   messageIds: ReadonlyArray<string>,
-  channel: "stop" | "userpromptsubmit" | "sessionstart",
+  channel: Receipt["channel"],
 ): void {
   const paths = memberPaths(teamPaths(dataRoot, teamId).teamDir, teamId);
   for (const messageId of messageIds) {

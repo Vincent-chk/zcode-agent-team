@@ -114,7 +114,14 @@ export class TeamCoordinatorHost {
       }
       throw err;
     }
-    await host.serve();
+    // 启动恢复期间若失锁，接任观察者必须等本次装配退出后才能再次晋升。
+    const startup = host.serve().then(() => host.currentMode === "coordinator");
+    host.promoting = startup;
+    try {
+      await startup;
+    } finally {
+      if (host.promoting === startup) host.promoting = null;
+    }
     return host;
   }
 
@@ -330,6 +337,8 @@ export class TeamCoordinatorHost {
     const generationSignal = providerHasGeneration(this.provider)
       ? this.provider.activateGeneration!()
       : undefined;
+    const ownerToken = this.lock.info?.token;
+    const ownsGeneration = () => !this.closed && ownerToken !== undefined && this.lock.info?.token === ownerToken && !generationSignal?.aborted;
     this.lock.startHeartbeat();
     let store: JournalTeamStore;
     try {
@@ -347,9 +356,14 @@ export class TeamCoordinatorHost {
         journal,
       });
     } catch (err) {
+      if (!ownsGeneration()) return;
       this.lock.stopHeartbeat();
       await this.lock.release();
       throw err;
+    }
+    if (!ownsGeneration()) {
+      await store.close({ checkpoint: false });
+      return;
     }
     const runtime = new TeamRuntime({
       teamId: this.teamId,
@@ -425,8 +439,25 @@ export class TeamCoordinatorHost {
         `Agent Teams coordinator for team "${this.teamId}" started in degraded mode (projection failure): ${initialState.failure}`,
       );
     } else {
-      await runtime.recoverAll();
+      try {
+        await runtime.recoverAll();
+      } catch (err) {
+        if (ownsGeneration()) throw err;
+        runtime.close();
+        await store.close({ checkpoint: false });
+        return;
+      }
+      if (!ownsGeneration()) {
+        runtime.close();
+        await store.close({ checkpoint: false });
+        return;
+      }
       if (providerHasBoundary(this.provider)) this.provider.startBackground?.();
+    }
+    if (!ownsGeneration()) {
+      runtime.close();
+      await store.close({ checkpoint: false });
+      return;
     }
     const socket = resolveSocketPath(paths.teamDir);
     // 共享凭证：每次协调者晋升生成新 token（旧代理的下一次调用自动读到新 token）。
@@ -437,13 +468,28 @@ export class TeamCoordinatorHost {
       maxFrameBytes: frameBudgetFor(this.limits.maxMessageBytes),
     });
     const table = buildTeamMethodTable({
+      dataRoot: this.opts.dataRoot,
+      warn: this.opts.warn,
       teamId: this.teamId,
       runtime,
       store,
       coordinatorBootId: this.lock.info?.bootId ?? bootId(),
     });
     registerTeamMethods(server, table);
-    await server.listen({ callTimeoutMs: this.opts.callTimeoutMs });
+    try {
+      await server.listen({ callTimeoutMs: this.opts.callTimeoutMs });
+    } catch (err) {
+      if (ownsGeneration()) throw err;
+      runtime.close();
+      await store.close({ checkpoint: false });
+      return;
+    }
+    if (!ownsGeneration()) {
+      await server.close();
+      runtime.close();
+      await store.close({ checkpoint: false });
+      return;
+    }
     writeRpcToken(paths.teamDir, token);
     writeSocketRegistry(paths.teamDir, socket.socketPath);
     this.store = store;
@@ -474,7 +520,7 @@ export class TeamCoordinatorHost {
       return false; // 竞态：他者先抢（AcquireTimeout 单发语义）
     }
     await this.serve();
-    return true;
+    return this.currentMode === "coordinator";
   }
 
   private startTakeoverWatcher(): void {

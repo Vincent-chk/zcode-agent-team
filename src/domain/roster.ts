@@ -92,7 +92,15 @@ export class TeamRoster {
   /** 仅由宿主在完整意图/轮次恢复后启动；构造对象不得提前判 provisioning 失败。 */
   startRecovery(): Promise<void> {
     this.recoveryDone ??= this.reconcileProvisioning().then(
-      () => undefined,
+      () => {
+        if (this.deps.lifecycle.runtimeSignal().aborted) return;
+        // 接任时仍存活的首轮也可能尚未确认；不要阻塞协调者启动，排队复核即可。
+        for (const member of this.loadState().members) {
+          if (member.phase === "provisioning" && !this.recoveryStopped.has(member.id)) {
+            this.scheduleProvisioningRecheck(member.id);
+          }
+        }
+      },
       () => undefined,
     );
     return this.recoveryDone;
@@ -163,17 +171,6 @@ export class TeamRoster {
     const providerName = requiredText("provider", context === "fork" ? providers.fork : providers.fresh, 200);
     const childId = (this.deps.newId ?? defaultNewId)();
     const requestId = args.requestId ?? defaultNewId();
-    // 完整意图是唯一恢复来源，必须先于 provisioning 登记与宿主副作用。
-    this.deps.provider.prepareContinuable?.({
-      teamId: this.deps.teamId,
-      memberId: childId,
-      name,
-      description,
-      firstPrompt: args.prompt,
-      context,
-      requestId,
-    });
-
     // 步骤 2：事务内重读 + 限额 + 模型预检 + provisioning 落盘（store.append = flush 完成）
     await this.deps.store.transact(async () => {
       const fresh = this.loadState();
@@ -190,6 +187,16 @@ export class TeamRoster {
       if (providerHasModelPreflight(this.deps.provider)) {
         this.deps.provider.preflightMemberModel();
       }
+      // 拒绝重名、超额和模型预检之后、登记及宿主副作用之前持久化完整意图。
+      this.deps.provider.prepareContinuable?.({
+        teamId: this.deps.teamId,
+        memberId: childId,
+        name,
+        description,
+        firstPrompt: args.prompt,
+        context,
+        requestId,
+      });
       await this.deps.store.append({
         type: "team/member",
         version: 2,
@@ -225,6 +232,9 @@ export class TeamRoster {
       started = await run;
     } catch (originalError) {
       if (originalError instanceof ProvisioningPending) {
+        if (!this.deps.lifecycle.runtimeSignal().aborted && !args.ownershipSignal?.aborted) {
+          this.scheduleProvisioningRecheck(childId);
+        }
         return { member: this.rowOf(childId), creation: "pending", message: originalError.message };
       }
       // 步骤 6：失败路径 —— failed 落盘（error=单行 errorMessage）→ 清理 → 原错误上抛
@@ -270,6 +280,9 @@ export class TeamRoster {
       throw new Error(`provider returned memberId ${started.memberId} != provisioned ${childId}`);
     }
     if (started.creation === "pending") {
+      if (!this.deps.lifecycle.runtimeSignal().aborted && !args.ownershipSignal?.aborted) {
+        this.scheduleProvisioningRecheck(childId);
+      }
       return { member: this.rowOf(childId), creation: "pending", message: "结果待确认" };
     }
     if (!started.accepted) {
@@ -336,10 +349,10 @@ export class TeamRoster {
    *  team/member(provisioning) 事件的 ts 计龄：尚未确认首轮受理（记录缺失或 accepted 未置位）
    *  且年龄 < graceMs → 跳过本轮并排一次性 recheck（10s）；年龄 ≥ graceMs 或恢复抛错 → 照旧
    *  定案（真故障不被掩盖）。store 未实现 readEventLines（内存桩）→ 无宽限（旧语义）。 */
-  async reconcileProvisioning(): Promise<{ orphans: string[]; settled: string[]; deferred: string[] }> {
+  async reconcileProvisioning(recheckMemberId?: string): Promise<{ orphans: string[]; settled: string[]; deferred: string[] }> {
     const state = this.loadState();
     const pending = state.members.filter(
-      (m) => m.phase === "provisioning" && !this.deps.inspector.isAlive(m.id),
+      (m) => m.phase === "provisioning" && (m.id === recheckMemberId || !this.deps.inspector.isAlive(m.id)),
     );
     const orphans = pending.map((m) => m.id);
     const settled: string[] = [];
@@ -468,7 +481,7 @@ export class TeamRoster {
     if (this.recheckTimers.has(memberId)) return;
     const timer = setTimeout(() => {
       this.recheckTimers.delete(memberId);
-      void this.reconcileProvisioning().then(
+      void this.reconcileProvisioning(memberId).then(
         () => undefined,
         () => undefined, // C3：对账自身抛错仅警告语义由调用方承担
       );
@@ -480,7 +493,7 @@ export class TeamRoster {
   hasPendingAutomaticProgress(callerId: string): boolean {
     const { state } = this.requireMember(callerId);
     return state.members.some((member) =>
-      (member.phase === "active" && this.deps.inspector.isAlive(member.id)) ||
+      (member.phase === "active" && (this.deps.inspector.isAlive(member.id) || this.deps.presentation?.statusOf(member.id) === "running")) ||
       (member.phase === "provisioning" && !this.recoveryStopped.has(member.id))
     );
   }
@@ -550,7 +563,7 @@ export class TeamRoster {
     if (target === undefined) {
       throw new TeamError("TEAM_MEMBER_NOT_FOUND", `active teammate "${name}" not found`);
     }
-    if (!this.deps.inspector.isAlive(target.id)) {
+    if (!this.deps.inspector.isAlive(target.id) && this.deps.presentation?.statusOf(target.id) !== "running") {
       return { previousStatus: "inactive" }; // 不在注册表 → 不报错
     }
     const result = await this.deps.provider.interrupt({ memberId: target.id });

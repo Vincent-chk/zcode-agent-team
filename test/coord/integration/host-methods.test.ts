@@ -1,6 +1,6 @@
 // 第四轮 A2/A1 进程内测试：真实装配（host + 方法表 + client）的参数口径、错误路径、
 // 优雅接任（干净释放 → tryPromote 立即成功）、close 聚合错误。数据根 os.tmpdir()。
-import { describe, expect, it, beforeAll, afterAll } from "vitest";
+import { describe, expect, it, beforeAll, afterAll, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -11,6 +11,8 @@ import { load } from "../../../src/coord/replay.js";
 import { TeamError } from "../../../src/domain/errors.js";
 import { CoordinatorLock } from "../../../src/coord/lock.js";
 import { MockProvider } from "../../../src/provider/mock-provider.js";
+import { TeamRuntime } from "../../../src/domain/runtime.js";
+import { RpcServer } from "../../../src/coord/rpc.js";
 
 const TEAM = "sess_real_host_lead";
 
@@ -376,6 +378,81 @@ describe("降级服务 · failure 日志冷启动（G1/G2 回归：C5 在 wire �
 });
 
 describe("真实装配 · 代理路径与接任（进程内干净释放）", () => {
+  it("启动恢复期间失锁后，旧代次不能继续发布协调者 socket", async () => {
+    const teamId = "sess_loss_during_startup";
+    const provider = new MockProvider();
+    let entered!: () => void;
+    let release!: () => void;
+    const waiting = new Promise<void>((resolve) => { entered = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const recover = vi.spyOn(TeamRuntime.prototype, "recoverAll").mockImplementationOnce(async () => { entered(); await gate; });
+    const opening = TeamCoordinatorHost.open({ dataRoot: root, teamId, provider, autoTakeover: false });
+    const teamDir = under(under(root, "teams"), teamId);
+    const lockPath = path.join(teamDir, "coordinator.lock");
+    let replacement: CoordinatorLock | undefined;
+    let host: TeamCoordinatorHost | undefined;
+    try {
+      await waiting;
+      const signal = provider.generationSignal;
+      fs.renameSync(lockPath, `${lockPath}.test-old`);
+      replacement = new CoordinatorLock(lockPath);
+      await replacement.acquire();
+      for (let i = 0; i < 150 && !signal.aborted; i++) await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(signal.aborted).toBe(true);
+      release();
+      host = await opening;
+      expect(host.currentMode).toBe("proxy");
+      expect(fs.existsSync(path.join(teamDir, "socket.path"))).toBe(false);
+      expect(provider.drainCalls).toBe(0);
+    } finally {
+      release();
+      host ??= await opening.catch(() => undefined);
+      await host?.close().catch(() => undefined);
+      await replacement?.release();
+      recover.mockRestore();
+    }
+  });
+
+  it("socket 监听期间失锁后，不发布地址并关闭旧监听", async () => {
+    const teamId = "sess_loss_during_listen";
+    const provider = new MockProvider();
+    let entered!: () => void;
+    let release!: () => void;
+    const waiting = new Promise<void>((resolve) => { entered = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const original = RpcServer.prototype.listen;
+    const listen = vi.spyOn(RpcServer.prototype, "listen").mockImplementationOnce(async function (this: RpcServer, options) {
+      await original.call(this, options);
+      entered();
+      await gate;
+    });
+    const opening = TeamCoordinatorHost.open({ dataRoot: root, teamId, provider, autoTakeover: false });
+    const teamDir = under(under(root, "teams"), teamId);
+    const lockPath = path.join(teamDir, "coordinator.lock");
+    let replacement: CoordinatorLock | undefined;
+    let host: TeamCoordinatorHost | undefined;
+    try {
+      await waiting;
+      const signal = provider.generationSignal;
+      fs.renameSync(lockPath, `${lockPath}.test-old`);
+      replacement = new CoordinatorLock(lockPath);
+      await replacement.acquire();
+      for (let i = 0; i < 150 && !signal.aborted; i++) await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(signal.aborted).toBe(true);
+      release();
+      host = await opening;
+      expect(host.currentMode).toBe("proxy");
+      expect(fs.existsSync(path.join(teamDir, "socket.path"))).toBe(false);
+      expect(provider.drainCalls).toBe(0);
+    } finally {
+      release();
+      host ??= await opening.catch(() => undefined);
+      await host?.close().catch(() => undefined);
+      await replacement?.release();
+      listen.mockRestore();
+    }
+  });
+
   it("实际失锁：撤销旧代次、不执行 drain、不发布 checkpoint", async () => {
     const teamId = "sess_actual_loss";
     const provider = new MockProvider();

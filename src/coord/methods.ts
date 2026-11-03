@@ -14,11 +14,14 @@ import { projectionFailureError, requireMembership, teamProjectionView } from ".
 import type { TeamState } from "../domain/projection.js";
 import type { TeamRuntime } from "../domain/runtime.js";
 import type { JournalTeamStore } from "./store-adapter.js";
-import type { RpcServer } from "./rpc.js";
+import { MAX_RPC_BUFFER_BYTES, type RpcServer } from "./rpc.js";
 import type { ContentBlock, TeamTaskStatus } from "../domain/events.js";
 import type { TaskAction } from "../domain/taskboard.js";
 import type { TeammateProvider } from "../provider/teammate-provider.js";
 import { parseModelSelection, type MemberModelSelection } from "../provider/model-selection.js";
+import { isValidTimeout, noProgressResult } from "../domain/activity.js";
+import { pendingLeadMessages, writeReceipts } from "../hooks/inbox.js";
+import { teamPaths } from "./paths.js";
 
 const TASK_ACTIONS: readonly TaskAction[] = [
   "claim",
@@ -51,6 +54,8 @@ export interface TeamMethodHandler {
 }
 
 export interface MethodTableDeps {
+  dataRoot: string;
+  warn?: (message: string) => void;
   teamId: string;
   runtime: TeamRuntime;
   store: JournalTeamStore;
@@ -60,6 +65,7 @@ export interface MethodTableDeps {
 /** 真方法表（host 装配 + 进程内直执行共用一份）。键序即接口草案 §2 终版方法表。 */
 export function buildTeamMethodTable(deps: MethodTableDeps): Map<string, TeamMethodHandler> {
   const { runtime, store } = deps;
+  const { teamDir } = teamPaths(deps.dataRoot, deps.teamId);
 
   const table = new Map<string, TeamMethodHandler>();
 
@@ -235,7 +241,69 @@ export function buildTeamMethodTable(deps: MethodTableDeps): Map<string, TeamMet
     assertTeamTarget(p, "wait.agent", deps);
     const sessionId = requireSessionId(p, "wait.agent");
     const timeoutMs = typeof p.timeoutMs === "number" ? p.timeoutMs : 30_000;
-    return runtime.activity.waitForChange(sessionId, timeoutMs, ctx?.signal);
+    // 保持域层的参数/取消/关闭顺序；这些路径不得消费收件箱。
+    if (!isValidTimeout(timeoutMs) || runtime.lifecycle.status !== "open") {
+      return runtime.activity.waitForChange(sessionId, timeoutMs, ctx?.signal);
+    }
+    ctx?.signal?.throwIfAborted();
+    runtime.lifecycle.runtimeSignal().throwIfAborted();
+    const membership = requireMembership(membershipStateLoader(store), sessionId);
+    const receiveMessages = (): { messages: string[]; receiptWarning?: string } => {
+      ctx?.signal?.throwIfAborted();
+      runtime.lifecycle.runtimeSignal().throwIfAborted();
+      if (sessionId !== deps.teamId) return { messages: [] };
+      const pending = pendingLeadMessages(teamDir, store.state());
+      const messages: string[] = [];
+      const messageIds: string[] = [];
+      const receiptWarning = "收件回执持久化失败；本批正文已返回，未确认消息可能重复。";
+      // 按 JSON 转义后的实际字节数分批；预留 RPC 外壳及回执异常提示，代理响应不得超限。
+      let bytes = Buffer.byteLength(JSON.stringify({
+        id: Number.MAX_SAFE_INTEGER, ok: true, result: { timedOut: false, messages: [], receiptWarning },
+      })) + 1;
+      for (const message of pending) {
+        const size = Buffer.byteLength(JSON.stringify(message.text)) + (messages.length > 0 ? 1 : 0);
+        if (bytes + size > MAX_RPC_BUFFER_BYTES) {
+          if (messages.length === 0) throw new Error("单条成员消息超过收件箱响应上限，消息保持待收；请查看成员会话获取完整结果。");
+          break;
+        }
+        bytes += size;
+        messages.push(message.text);
+        messageIds.push(message.messageId);
+      }
+      // 与 hook 共用持久回执；同步领取，协调者/代理的并发 wait 不会重复返回同一封。
+      try {
+        writeReceipts(deps.dataRoot, deps.teamId, messageIds, "wait_agent");
+      } catch (err) {
+        // 部分 append 已成功时不能丢弃正文改报纯 error，也不能截断多写者共享回执。
+        try {
+          deps.warn?.(`agent-team inbox receipt failed: ${err instanceof Error ? err.message : String(err)}`);
+        } catch { /* 诊断文件也不可写时仍保留正文 */ }
+        return { messages, receiptWarning };
+      }
+      return { messages };
+    };
+    const inbox = receiveMessages();
+    if (inbox.messages.length > 0) return { timedOut: false, ...inbox };
+
+    // 捷径在权威协调者评估，先交付消息，再判断成员是否还能产生进展。
+    const rows = runtime.roster.listMembers(sessionId).members;
+    if (!runtime.roster.hasPendingAutomaticProgress(sessionId)) {
+      const stopped = rows.find((row) => row.status === "provisioning");
+      if (stopped !== undefined) {
+        const message = `成员 ${stopped.target} 已停止自动确认，需要 Lead 接管；旧 turn 仍可能执行，不得重复启动。`;
+        return { ...noProgressResult(), noProgress: { reason: "no-active-peer", message }, content: [{ type: "text", text: message }] };
+      }
+      return noProgressResult();
+    }
+    const self = membership.role === "lead" ? "lead" : membership.name;
+    if (!rows.some((row) => row.target !== self && (row.status === "running" || row.status === "provisioning"))) {
+      return noProgressResult();
+    }
+    // 上面的读取、判断与此处登记等待全程同步，消息不会落在检查/登记的空隙。
+    const result = await runtime.activity.waitForChange(sessionId, timeoutMs, ctx?.signal);
+    if (runtime.lifecycle.status !== "open") return result;
+    const received = receiveMessages();
+    return received.messages.length > 0 ? { timedOut: false, ...received } : result;
   };
   waitAgent.timeoutMs = 3_600_000 + WAIT_AGENT_GRACE_MS; // 豁免上限：域层允许的最大等待 + 裕量
   table.set("wait.agent", waitAgent);

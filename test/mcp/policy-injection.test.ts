@@ -37,25 +37,25 @@ import { teamPaths } from "../../src/coord/paths.js";
 const PROJ = path.resolve(import.meta.dirname, "../..");
 const HOOKS = path.join(PROJ, "runtime", "team-hooks.mjs");
 
-/** 上游 0.2.1-alpha.5 策略全文独立转写（冻结包 06 §3.1，含 D7 原句 FS_STALE_VERSION；用于保真断言）。 */
-const SPEC_POLICY_VERBATIM =
+/** ZCode 修订策略的独立期望（任务闭环/本轮收件；第 3 段保留 D7 原句以验证替换）。 */
+const EXPECTED_POLICY =
   `Agent Teams is available in this session\n` +
   `\n` +
   `The Team Lead and all teammates share the same working directory and filesystem. Edits are immediately visible to every member. Split write work into disjoint scopes, record expected write scopes on shared tasks, and use task dependencies when work must be ordered. Write-scope overlap is advisory, not a lock.\n` +
   `\n` +
   `Prefer read/edit/write for file changes. If a file operation returns FS_STALE_VERSION, read the current file, rebase your intended change onto the new content, and retry. Bash, formatters, code generators, and scripts are not fully protected by the filesystem version guard; coordinate them explicitly and have the Lead review the final diff and run tests.\n` +
   `\n` +
-  `Use the target returned by spawn_teammate or list_agents for send_message and interrupt_agent, or as owner when assigning or filtering shared tasks. send_message steers a running target at its nearest step boundary and starts or resumes an inactive target. inactive means no turn is executing; it does not describe task completion, success, failure, or waiting for other agents. provisioning means member creation is in progress; failed means member creation failed. A peer message starts with its sender name. A successful send does not mean the recipient has processed it. Shared-task workflow is list, get, claim with the current revision, perform the work, then complete. Task readiness never starts an owner. Before wait_agent, use list_agents and make sure another required member is running or provisioning; use send_message first when the required member is inactive. wait_agent observes only changes after that call starts, never wakes a member, and returns noProgress immediately when no other member can produce a change. Re-list after wakeup or timeout. The Lead must wait for required teammates before giving the final answer.`;
+  `Use the target returned by spawn_teammate or list_agents for send_message and interrupt_agent, or as owner when assigning or filtering shared tasks. send_message queues delivery to a running teammate's next turn boundary and starts or resumes an inactive teammate. The Lead receives queued messages through wait_agent during its current turn, with session hooks as a fallback. inactive means no turn is executing; it does not describe task completion, success, failure, or waiting for other agents. provisioning means member creation is in progress; failed means member creation failed. A peer message starts with its sender name. A successful send does not mean the recipient has processed it. Each delegated unit needs a shared task with acceptance criteria. Create it before dispatching the work; the teammate must list/get it, claim with the current revision, perform the work, then complete and report to the Lead. An initial prompt or an output file is not a task-board record. Task readiness never starts an owner. Use wait_agent to receive pending Lead inbox messages before sending follow-ups, even when teammates are inactive. With no pending messages, it waits for new changes and returns noProgress immediately when no other member can produce a change; it never wakes a member. Consume returned messages, then recheck shared tasks before deciding whether more work or another message is needed. Re-list after wakeup or timeout. The Lead must wait for required teammates before giving the final answer.`;
 
 describe("定版文本保真（三层同源）", () => {
-  it("POLICY_TEXT = 冻结包 06 §3.1 逐字，唯一差异 = D7 冻结替换句", () => {
-    // 把 D7 替换句换回原句 → 与上游原文逐字节相等（证明「其余段落逐字保留」）
+  it("策略三通道使用 ZCode 消息交付与任务闭环修订文本；D7 文件冲突口径保留", () => {
+    // 把 D7 替换句换回原句 → 与修订期望逐字节相等（同时验证 D7 文件冲突替换）
     const restored = POLICY_TEXT.replace(D7_REPLACEMENT_SENTENCE, D7_ORIGINAL_SENTENCE);
-    expect(restored).toBe(SPEC_POLICY_VERBATIM);
+    expect(restored).toBe(EXPECTED_POLICY);
     // 替换句只出现一次；原句（FS_STALE_VERSION）不残留
     expect(POLICY_TEXT.split(D7_REPLACEMENT_SENTENCE)).toHaveLength(2);
     expect(POLICY_TEXT).not.toContain("FS_STALE_VERSION");
-    expect(SPEC_POLICY_VERBATIM).toContain("FS_STALE_VERSION");
+    expect(EXPECTED_POLICY).toContain("FS_STALE_VERSION");
   });
 
   it("D5 门控句已删除、D4 两句替换生效（0.2.1 换版断言）", () => {
@@ -145,11 +145,13 @@ describe("定版文本保真（三层同源）", () => {
     expect(byName.get("spawn_teammate")).toContain("Only the Team Lead may call this tool.");
     // 〔对齐轮〕0.2.1 send_message 描述（"durable" 已删）
     expect(byName.get("send_message")).toContain("Send one message to another Team member.");
-    expect(byName.get("send_message")).toContain("nearest step boundary");
+    expect(byName.get("send_message")).toContain("turn boundary");
+    expect(byName.get("send_message")).toContain("wait_agent");
     expect(byName.get("list_agents")).toContain("inactive means no turn is executing");
     expect(byName.get("wait_agent")).toContain("never wakes inactive members");
     expect(byName.get("wait_agent")).toContain("noProgress immediately");
     expect(byName.get("wait_agent")).toContain("Re-list after wakeup or timeout");
+    expect(byName.get("wait_agent")).toContain("even if teammates are inactive");
     expect(byName.get("interrupt_agent")).toContain("preserving its pending inbox");
     expect(byName.get("interrupt_agent")).toContain("Team Lead only");
     expect(byName.get("team_task_update")).toContain("latest revision");

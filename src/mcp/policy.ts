@@ -5,16 +5,14 @@
 // 主通道 = SessionStart hook additionalContext（src/hooks.ts 经 buildSessionStartContext 组装）；
 // 辅通道 = skills/team-coordination/SKILL.md（同文）；兜底 = 工具 description（tools.ts）。
 //
-// 文本 = 冻结包 06 §3.1 逐字全文，两处 ZCode 适配（均已登记）：
+// 文本以冻结包 06 §3.1 为基准，ZCode 适配：
 //  - D7 冻结替换句（第 3 段 FS_STALE_VERSION 一句改写为 ZCode 文件冲突语义等价句）；
 //  - D5（0.2.1）：首段门控从句删除 → 首段仅 "Agent Teams is available in this session"。
-// 第 4 段含 interrupt 插值（D3）：false 时去掉 " and interrupt_agent"。其余段落逐字保留，不得改写。
-// 〔stage-6.5 D26，2026-10-24〕teamPolicy 四段仍逐字冻结；ORCHESTRATOR_SECTION_TEXT 是
-// buildSessionStartContext 的 **Lead-only 附加段**（第三参 leadMode === "orchestrator" 时注入；
-// teammate 恒不注入；collaborator 恒不注入 = 与扩展前逐字节一致）。编排段禁含 interrupt_agent 子串。
+// 第 4 段含 interrupt 插值（D3）；2026-11-04 按 ZCode 实测修订消息交付与任务闭环，三通道同文。
+// 模式段仅对 Lead 注入；auto 首次建队结果亦附完整 ON_DEMAND_SECTION_TEXT。
 
 /**
- * team:policy 全文（冻结包 06 §3.1 逐字；D7 句已替换；interrupt 插值按 D3）。
+ * team:policy 全文（ZCode 消息/任务语义；D7 文件冲突句；D3 interrupt 插值）。
  * 四段，空行分隔。注入形态 = hook additionalContext（`hook_context` 用户侧消息，D10）。
  */
 export function teamPolicy(interrupt: boolean): string {
@@ -25,7 +23,7 @@ export function teamPolicy(interrupt: boolean): string {
     `\n` +
     `Prefer read/edit/write for file changes. If a file operation reports that the file changed since you last read it, read the current file again, rebase your intended change onto the new content, and retry. Bash, formatters, code generators, and scripts are not fully protected by the filesystem version guard; coordinate them explicitly and have the Lead review the final diff and run tests.\n` +
     `\n` +
-    `Use the target returned by spawn_teammate or list_agents for send_message${interrupt ? " and interrupt_agent" : ""}, or as owner when assigning or filtering shared tasks. send_message steers a running target at its nearest step boundary and starts or resumes an inactive target. inactive means no turn is executing; it does not describe task completion, success, failure, or waiting for other agents. provisioning means member creation is in progress; failed means member creation failed. A peer message starts with its sender name. A successful send does not mean the recipient has processed it. Shared-task workflow is list, get, claim with the current revision, perform the work, then complete. Task readiness never starts an owner. Before wait_agent, use list_agents and make sure another required member is running or provisioning; use send_message first when the required member is inactive. wait_agent observes only changes after that call starts, never wakes a member, and returns noProgress immediately when no other member can produce a change. Re-list after wakeup or timeout. The Lead must wait for required teammates before giving the final answer.`
+    `Use the target returned by spawn_teammate or list_agents for send_message${interrupt ? " and interrupt_agent" : ""}, or as owner when assigning or filtering shared tasks. send_message queues delivery to a running teammate's next turn boundary and starts or resumes an inactive teammate. The Lead receives queued messages through wait_agent during its current turn, with session hooks as a fallback. inactive means no turn is executing; it does not describe task completion, success, failure, or waiting for other agents. provisioning means member creation is in progress; failed means member creation failed. A peer message starts with its sender name. A successful send does not mean the recipient has processed it. Each delegated unit needs a shared task with acceptance criteria. Create it before dispatching the work; the teammate must list/get it, claim with the current revision, perform the work, then complete and report to the Lead. An initial prompt or an output file is not a task-board record. Task readiness never starts an owner. Use wait_agent to receive pending Lead inbox messages before sending follow-ups, even when teammates are inactive. With no pending messages, it waits for new changes and returns noProgress immediately when no other member can produce a change; it never wakes a member. Consume returned messages, then recheck shared tasks before deciding whether more work or another message is needed. Re-list after wakeup or timeout. The Lead must wait for required teammates before giving the final answer.`
   );
 }
 
@@ -101,7 +99,7 @@ export const ON_DEMAND_SECTION_TEXT =
  * 同款追加方式，不改结果 JSON 本体）。语义 = 团队模式已激活 + 此后按委派价值判断。
  */
 export const FIRST_SPAWN_NOTE =
-  "[agent-team] Team mode is now active: this is the first teammate of this session. From now on, judge each request by delegation value — handle simple work directly with a one-line reason, and use the team for work that benefits from multiple roles, parallel execution, or disjoint write scopes.";
+  `[agent-team] Team mode is now active: this is the first teammate of this session.\n${ON_DEMAND_SECTION_TEXT}`;
 
 /**
  * 订阅套餐降级提示（〔issue #5 / D29〕2026-11-02；〔D30 修订〕2026-11-02 改为事实描述）。
@@ -162,14 +160,7 @@ export const FAIL_LOUD_WARNING =
  * wait_agent no-active-peer 捷径常量（02 §8 逐字）。
  * reason 为 const "no-active-peer"；message 逐字。
  */
-export const NO_PROGRESS_REASON = "no-active-peer";
-export const NO_PROGRESS_MESSAGE =
-  "No other Team member is running or provisioning. wait_agent cannot make progress or wake inactive teammates. Re-list with list_agents and team_task_list, then use send_message to wake each required inactive teammate before waiting again.";
-
-/** 捷径返回体（02 §8 逐字 JSON 形状）。 */
-export function noProgressResult(): { timedOut: false; noProgress: { reason: typeof NO_PROGRESS_REASON; message: string } } {
-  return { timedOut: false, noProgress: { reason: NO_PROGRESS_REASON, message: NO_PROGRESS_MESSAGE } };
-}
+export { NO_PROGRESS_REASON, NO_PROGRESS_MESSAGE, noProgressResult } from "../domain/activity.js";
 
 // 注（〔对齐轮〕0.2.1 换版）：旧风险表「queued 结果附 do-not-resend 提示」随 0.2.1 一并失效——
 // send 不再返回 queued/accepted 状态（工具层 {sent:true}），策略旧句 "do not resend" 已删除并替换为

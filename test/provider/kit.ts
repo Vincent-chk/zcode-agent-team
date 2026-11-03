@@ -36,6 +36,8 @@ export interface ProviderKit {
 
 export function createTestDb(dbPath: string): void {
   const db = new DatabaseSync(dbPath);
+  // 与宿主一致，建库时即开启 WAL；避免 fake-zcode 首轮改日志模式与只读探针争锁。
+  db.exec("PRAGMA journal_mode=WAL");
   db.exec(`
     CREATE TABLE session (
       id TEXT PRIMARY KEY, project_id TEXT, workspace_id TEXT, parent_id TEXT, slug TEXT,

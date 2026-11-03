@@ -248,8 +248,8 @@ describe("F05 · 恢复对账矩阵（provisioning × 四条件缺失）", () =>
     expect(rows.find((r) => r.target === "alpha")!.status).toBe("running");
     const memberId = fs.readdirSync(path.join(kit!.provider.teamDir, "members"))[0];
     expect(kit!.provider.isAlive(memberId)).toBe(true); // daemon 更替不连带杀轮次
+    await kit!.provider.interrupt({ memberId }); // 仍持锁时清场
     await hostB.close();
-    await kit!.provider.interrupt({ memberId }); // 清场
   });
 });
 

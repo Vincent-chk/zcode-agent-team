@@ -115,13 +115,13 @@ daemon 启动并不立即恢复所有团队。恢复发生在团队 host 被打�
 | `send_message` | 团队成员给其他成员发消息；成功返回不等于对方已处理 |
 | `list_agents` | 团队成员读取 Lead、成员和当前可用状态 |
 | `interrupt_agent` | Lead 中断一个成员当前轮次；保留待收消息；可通过配置移除注册 |
-| `wait_agent` | 团队成员等待调用开始后的成员、消息或任务变化；不会唤醒空闲成员 |
+| `wait_agent` | Lead 优先收取已到消息；空收件箱时等待成员、消息或任务变化；不会唤醒空闲成员 |
 | `team_task_create` | 成员创建未分配任务，支持依赖和预期写域 |
 | `team_task_list` | 成员分页、过滤读取任务 |
 | `team_task_get` | 成员读取单任务最新 revision；可读已删除墓碑 |
 | `team_task_update` | 成员按 revision 执行动作；具体 owner / Lead 权限由任务板逐项检查 |
 
-`wait_agent` 默认 30 秒，合法范围为 10 秒至 1 小时；带宿主 progress token 时约每 9 秒通知保活。没有可产出变化的其他运行或创建中成员时，可立即返回 `noProgress`，调用方需重新列状态并在必要时先发消息。
+`wait_agent` 默认 30 秒，合法范围为 10 秒至 1 小时；带宿主 progress token 时约每 9 秒通知保活。Lead 待收消息优先返回在 `messages` 中，领取后共用 hook 回执去重；空收件箱且没有可产出变化的同伴时才立即返回 `noProgress`。先读取结果、核对任务，再决定是否需发后续消息。协调者与代理都由同一个权威方法处理。
 
 ### 4.2 面板通道和资源
 

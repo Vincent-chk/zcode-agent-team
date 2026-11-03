@@ -13,7 +13,7 @@ import { teamEverCreated } from "../../src/provider/member-files.js";
 import { teamPaths } from "../../src/coord/paths.js";
 import { handleTeamToolCall, type HandleToolOptions } from "../../src/mcp/handlers.js";
 import type { TeamToolBackend } from "../../src/mcp/backend.js";
-import { FIRST_SPAWN_NOTE } from "../../src/mcp/policy.js";
+import { FIRST_SPAWN_NOTE, ON_DEMAND_SECTION_TEXT } from "../../src/mcp/policy.js";
 import { TEAM_TOOL_NAMES } from "../../src/mcp/tools.js";
 
 const PROJ = path.resolve(import.meta.dirname, "../..");
@@ -100,6 +100,7 @@ describe("〔D28〕handleTeamToolCall 三档行为（stub backend，进程内）
     expect(result.isError).toBeUndefined();
     const last = result.content[result.content.length - 1] as { type: string; text: string };
     expect(last.text).toBe(FIRST_SPAWN_NOTE);
+    expect(last.text).toContain(ON_DEMAND_SECTION_TEXT);
     // 首块仍为紧凑 JSON 结果本体（{member:…}），提示不改 schema
     const first = JSON.parse((result.content[0] as { text: string }).text) as { member: { target: string } };
     expect(first.member.target).toBe("worker");

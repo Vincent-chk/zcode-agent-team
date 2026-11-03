@@ -213,6 +213,26 @@ describe("procgroup 直接单测", () => {
     await expect(killProcessGroup(spawned.pgid, 100)).resolves.toBe(true);
     expect(pidAlive(spawned.pid)).toBe(false);
   });
+
+  it("失锁中止时不再向测试进程组升级发送 SIGKILL", async () => {
+    const ready = path.join(dir, "term-handler-ready");
+    const spawned = await spawnDetached({
+      command: process.execPath,
+      argv: ["-e", "process.on('SIGTERM',()=>{});require('fs').writeFileSync(process.argv[1],'ready');setInterval(()=>{},1000)", ready],
+      env: process.env,
+      cwd: dir,
+      stdoutFile: path.join(dir, "ignore-term.out"),
+    });
+    try {
+      await waitFor(() => fs.existsSync(ready), 3000);
+      const abort = new AbortController();
+      setTimeout(() => abort.abort(new Error("generation revoked")), 75);
+      await expect(killProcessGroup(spawned.pgid, 500, abort.signal)).rejects.toThrow("generation revoked");
+      expect(pidAlive(spawned.pid)).toBe(true);
+    } finally {
+      await killProcessGroup(spawned.pgid, 50);
+    }
+  });
 });
 
 describe("member-files 错误分支", () => {

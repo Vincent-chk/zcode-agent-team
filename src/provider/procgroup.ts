@@ -102,17 +102,21 @@ export function pgidAlive(pgid: number | null): boolean {
 }
 
 /** 终止进程组：SIGTERM → 宽限 graceMs → SIGKILL；返回是否全部退出。 */
-export async function killProcessGroup(pgid: number | null, graceMs: number): Promise<boolean> {
+export async function killProcessGroup(pgid: number | null, graceMs: number, signal?: AbortSignal): Promise<boolean> {
+  signal?.throwIfAborted();
   if (pgid === null || pgid <= 0) return true;
   signalGroup(pgid, "SIGTERM");
   for (let waited = 0; waited < graceMs; waited += 50) {
     await sleep(50);
+    signal?.throwIfAborted();
     if (!pgidAlive(pgid) && !pidAlive(pgid)) return true;
   }
+  signal?.throwIfAborted();
   if (pgidAlive(pgid) || pidAlive(pgid)) {
     signalGroup(pgid, "SIGKILL");
     for (let waited = 0; waited < 2_000; waited += 50) {
       await sleep(50);
+      signal?.throwIfAborted();
       if (!pgidAlive(pgid) && !pidAlive(pgid)) return true;
     }
   }

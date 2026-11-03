@@ -72,7 +72,7 @@ export const TEAM_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
       properties: {
         name: { type: "string", description: "Unique lower-kebab-case teammate name." },
         description: { type: "string", description: "Short description of the delegated responsibility." },
-        prompt: { type: "string", description: "Complete initial task for the teammate." },
+        prompt: { type: "string", description: "Bootstrap instructions with a shared task id; get and claim that task before working. Report blockers when not ready." },
         context: {
           type: "string",
           enum: ["fresh", "fork"],
@@ -90,7 +90,7 @@ export const TEAM_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     // 02 §9.5（〔对齐轮〕0.2.1 描述：删 "durable"、"durable message"→"message"）
     name: "send_message",
     description:
-      "Send one message to another Team member. A running target receives it at the nearest step boundary; an inactive target starts or resumes a turn.",
+      "Send one message to another Team member. Running teammates receive it at a turn boundary; inactive teammates resume. The Lead reads messages through wait_agent.",
     inputSchema: {
       type: "object",
       properties: {
@@ -137,7 +137,7 @@ export const TEAM_TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     // 02 §9.7（〔对齐轮〕0.2.1 描述："mailbox"→"message"）
     name: "wait_agent",
     description:
-      "Wait for the next teammate status, message, or shared-task change after this call starts. This never wakes inactive members and returns noProgress immediately when no other member is running or provisioning. Re-list after wakeup or timeout instead of polling.",
+      "Receive pending Lead inbox messages immediately, even if teammates are inactive; otherwise wait for the next Team change. This never wakes inactive members and returns noProgress immediately when no peer can progress and no messages await. Read returned messages before follow-ups. Re-list after wakeup or timeout.",
     inputSchema: {
       type: "object",
       properties: {

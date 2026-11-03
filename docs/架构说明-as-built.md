@@ -111,3 +111,12 @@ teams/<sessionId>/
 - 数据目录 0700、文件 0600、socket 0600（SF12 审计通过）。
 - 插件只写宿主任务索引的两个白名单点；`db.sqlite` 一律只读（D25）。
 - 单包承载（实验/工具/客户端 UI/配置四包合并），偏差 D1；分发形态 = 本地市场 + zip。
+
+
+### 2026-11-04 工作区候选修订：Lead 本轮交付
+
+0.5.5-rc.1 在现有 wait.agent 协调者方法中优先领取 Lead 收件箱；空收件箱时才等待或返回 noProgress，等待被唤醒后再领取一次。协调者直接复用内存投影，读取与等待登记之间没有异步空隙；代理也调用同一方法。结果仅在有消息时增加 messages，发送者框架头与正文保留。
+
+领取按 1 MiB RPC 帧的序列化字节预算分批，剩余消息保留。回执沿用 members/<leadId>/receipts.jsonl（channel=wait_agent），hook 过滤这些回执，后台投递 sweep 再折叠 delivered。回执部分写入异常仍返回已取得的正文和 receiptWarning，以可诊断的重投替代丢失正文；取消与失锁代次在领取前检查。没有新增 MCP 工具、RPC 方法或角色实体。
+
+首次建队结果包含完整 ON_DEMAND_SECTION_TEXT；策略四段按 ZCode 的消息与任务行为修订，hook、skill、工具与命令口径同步。初始 prompt 提供角色职责与共享任务 ID，成员 get/claim 后执行；Lead 独立验收并记录。本地开发市场为 agent-team-dev，用户手动更新后执行 E2E。

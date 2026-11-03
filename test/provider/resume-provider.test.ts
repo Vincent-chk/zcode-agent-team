@@ -2,7 +2,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   buildProviderKit,
   withFakeEnv,
@@ -16,6 +16,7 @@ import {
 import { memberPaths, readOrigin, listTurns, readTurn, readCurrentTurnId, writeOrigin, writeTurn as writeTurnDirect, setCurrentTurn, type OriginRecord } from "../../src/provider/member-files.js";
 import { readSessionRegistry } from "../../src/mcp/identity.js";
 import type { BoundaryEvent } from "../../src/provider/resume-provider.js";
+import * as procgroup from "../../src/provider/procgroup.js";
 
 let kit: ProviderKit | null = null;
 const restoreFns: Array<() => void> = [];
@@ -34,6 +35,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   // LIFO：嵌套 withFakeEnv 的保存值按逆序恢复（内层先恢复其保存值，外层最终恢复原值）
   for (const restore of restoreFns.splice(0).reverse()) restore();
   await kit?.cleanup();
@@ -68,6 +70,152 @@ const SPAWN_ARGS = {
 };
 
 describe("0.5.4 · 创建恢复窗口", () => {
+  it("投递轮次没有启动回执时保留消息，不重复拉起", async () => {
+    const memberId = "m-delivery-unknown";
+    const paths = memberPaths(kit!.provider.teamDir, memberId);
+    kit!.provider.prepareContinuable({ teamId: kit!.teamId, memberId, name: "unknown", description: "d", firstPrompt: "p", context: "fresh", requestId: "req-unknown" });
+    writeOrigin(paths, { ...readOrigin(paths)!, sessionId: "sess_unknown" });
+    const message = framedText("lead", "keep once");
+    writeTurnDirect(paths.runDir, {
+      turnId: "turn-1", memberId, kind: "deliver", sessionId: "sess_unknown", messageIds: [message.messageId],
+      promptText: "existing", argv: [], pid: null, pgid: null, status: "starting",
+      startedAt: new Date().toISOString(), stdoutFile: path.join(paths.runDir, "turn-1.out"),
+    });
+    setCurrentTurn(paths, "turn-1");
+    expect(await kit!.provider.deliver({ memberId, framedMessage: message.framedJson, messageId: message.messageId })).toBe("queued");
+    expect(listTurns(paths.runDir)).toHaveLength(1);
+    expect(kit!.provider.statusOf(memberId)).toBe("running");
+    expect(kit!.provider.diagnosticsOf(memberId).join(" ")).toContain("启动结果待确认");
+    await expect(kit!.provider.interrupt({ memberId })).rejects.toThrow(/启动结果待确认.*中断/);
+    expect(readTurn(paths.runDir, "turn-1")).toMatchObject({ status: "starting", pid: null });
+  }, 10_000);
+
+  it("新投递的 helper 结果未知时返回 queued，而不是误报发送失败", async () => {
+    const memberId = "m-helper-unknown";
+    const paths = memberPaths(kit!.provider.teamDir, memberId);
+    kit!.provider.prepareContinuable({ teamId: kit!.teamId, memberId, name: "unknown", description: "d", firstPrompt: "p", context: "fresh", requestId: "req-helper-unknown" });
+    writeOrigin(paths, { ...readOrigin(paths)!, sessionId: "sess_unknown" });
+    vi.spyOn(procgroup, "spawnDetached").mockRejectedValueOnce(new Error("helper response missing"));
+    const message = framedText("lead", "keep once");
+    await expect(kit!.provider.deliver({ memberId, framedMessage: message.framedJson, messageId: message.messageId })).resolves.toBe("queued");
+    expect(listTurns(paths.runDir)).toHaveLength(1);
+    expect(listTurns(paths.runDir)[0].status).toBe("starting");
+  });
+
+  it("旧代次 helper 返回后不能覆盖新代次中断标记", async () => {
+    const memberId = "m-revoked-helper";
+    const paths = memberPaths(kit!.provider.teamDir, memberId);
+    kit!.provider.prepareContinuable({ teamId: kit!.teamId, memberId, name: "revoked", description: "d", firstPrompt: "p", context: "fresh", requestId: "req-revoked-helper" });
+    writeOrigin(paths, { ...readOrigin(paths)!, sessionId: "sess_revoked" });
+    let release!: () => void;
+    let entered!: () => void;
+    const enteredHelper = new Promise<void>((resolve) => { entered = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    vi.spyOn(procgroup, "spawnDetached").mockImplementationOnce(async (spec) => {
+      entered();
+      await gate;
+      return { pid: process.pid, pgid: process.pid, stdoutFile: spec.stdoutFile, specFile: "", resultFile: "" };
+    });
+    kit!.provider.activateGeneration();
+    const message = framedText("lead", "keep once");
+    const delivery = kit!.provider.deliver({ memberId, framedMessage: message.framedJson, messageId: message.messageId }).catch(() => "queued");
+    await enteredHelper;
+    kit!.provider.detach();
+    kit!.provider.activateGeneration();
+    const old = readTurn(paths.runDir, "turn-1")!;
+    writeTurnDirect(paths.runDir, { ...old, status: "running", pid: process.pid, pgid: process.pid, interruptRequestedAt: "new-owner-intent" });
+    release();
+    await delivery;
+    expect(readTurn(paths.runDir, "turn-1")?.interruptRequestedAt).toBe("new-owner-intent");
+  });
+
+  it("旧代次中断等待完成后不能覆盖新协调者状态", async () => {
+    const memberId = "m-revoked-interrupt";
+    const paths = memberPaths(kit!.provider.teamDir, memberId);
+    writeTurnDirect(paths.runDir, {
+      turnId: "turn-1", memberId, kind: "deliver", sessionId: null, messageIds: [],
+      promptText: "p", argv: [], pid: process.pid, pgid: process.pid, status: "running",
+      startedAt: new Date().toISOString(), stdoutFile: path.join(paths.runDir, "turn-1.out"),
+    });
+    setCurrentTurn(paths, "turn-1");
+    let release!: () => void;
+    let entered!: () => void;
+    const enteredKill = new Promise<void>((resolve) => { entered = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    vi.spyOn(procgroup, "killProcessGroup").mockImplementationOnce(async () => { entered(); await gate; return true; });
+    kit!.provider.activateGeneration();
+    const interruption = kit!.provider.interrupt({ memberId }).catch(() => undefined);
+    await enteredKill;
+    kit!.provider.detach();
+    kit!.provider.activateGeneration();
+    const old = readTurn(paths.runDir, "turn-1")!;
+    writeTurnDirect(paths.runDir, { ...old, status: "running", interruptRequestedAt: "new-owner-intent" });
+    release();
+    await interruption;
+    expect(readTurn(paths.runDir, "turn-1")).toMatchObject({ status: "running", interruptRequestedAt: "new-owner-intent" });
+  });
+
+  it("旧代次培育完成后不能回填新代次 origin 或启动首轮", async () => {
+    await kit!.cleanup();
+    let release!: () => void;
+    let entered!: () => void;
+    const enteredBreeder = new Promise<void>((resolve) => { entered = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    kit = buildProviderKit({ sessionIsolation: "child", breeder: {
+      async createChild(input) {
+        entered();
+        await gate;
+        input.onProgress?.({ childSessionId: "sess_old", stage: "old progress" });
+        return { anchorSessionId: "sess_anchor", childSessionId: "sess_old", elapsedMs: 1, workspacePath: input.workspacePath };
+      },
+    } });
+    const provider = kit.provider as unknown as { resolveLeadInheritance: () => unknown; syncMemberModel: () => Promise<void> };
+    vi.spyOn(provider, "resolveLeadInheritance").mockReturnValue({ providerId: "test", modelId: "test" });
+    vi.spyOn(provider, "syncMemberModel").mockResolvedValue();
+    const spawn = vi.spyOn(procgroup, "spawnDetached").mockRejectedValue(new Error("unexpected spawn"));
+    kit.provider.activateGeneration();
+    const pending = kit.provider.startContinuable({ ...SPAWN_ARGS, requestId: "req-old-breeder" }).catch(() => undefined);
+    await enteredBreeder;
+    kit.provider.detach();
+    kit.provider.activateGeneration();
+    const paths = memberPaths(kit.provider.teamDir, SPAWN_ARGS.memberId);
+    writeOrigin(paths, { ...readOrigin(paths)!, sessionId: "sess_new", creationDiagnostic: "new owner" });
+    release();
+    await pending;
+    expect(readOrigin(paths)).toMatchObject({ sessionId: "sess_new", creationDiagnostic: "new owner" });
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it("旧代次模型同步完成后不能覆盖新代次 turn，即使同一 provider 再次获锁", async () => {
+    const memberId = "m-revoked-sync";
+    const paths = memberPaths(kit!.provider.teamDir, memberId);
+    kit!.provider.prepareContinuable({ teamId: kit!.teamId, memberId, name: "revoked", description: "d", firstPrompt: "p", context: "fresh", requestId: "req-revoked-sync" });
+    writeOrigin(paths, { ...readOrigin(paths)!, sessionId: "sess_revoked" });
+    let release!: () => void;
+    let entered!: () => void;
+    const enteredSync = new Promise<void>((resolve) => { entered = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const provider = kit!.provider as unknown as { syncMemberModel: () => Promise<void> };
+    const sync = vi.spyOn(provider, "syncMemberModel").mockImplementation(async () => { entered(); await gate; });
+    kit!.provider.activateGeneration();
+    const message = framedText("lead", "keep once");
+    const delivery = kit!.provider.deliver({ memberId, framedMessage: message.framedJson, messageId: message.messageId }).catch(() => "queued");
+    await enteredSync;
+    kit!.provider.detach();
+    kit!.provider.activateGeneration();
+    const current = {
+      turnId: "turn-1", memberId, kind: "deliver" as const, sessionId: "sess_revoked", messageIds: [message.messageId],
+      promptText: "new-owner", argv: [], pid: process.pid, pgid: process.pid, status: "running" as const,
+      startedAt: new Date().toISOString(), stdoutFile: path.join(paths.runDir, "turn-1.out"),
+    };
+    writeTurnDirect(paths.runDir, current);
+    setCurrentTurn(paths, "turn-1");
+    release();
+    await delivery;
+    expect(readTurn(paths.runDir, "turn-1")).toMatchObject({ status: "running", pid: process.pid, promptText: "new-owner" });
+    sync.mockRestore();
+  }, 10_000);
+
   it("启动意图无回执：不认定未启动/退出，不重复启动", async () => {
     const paths = memberPaths(kit!.provider.teamDir, "m-starting");
     const turn = {
@@ -183,6 +331,22 @@ describe("F01 · fresh spawn 全链路（真子进程）", () => {
 });
 
 describe("模型呈现（stage-8 Round B）", () => {
+  it("展示模型时宿主数据库暂时被锁，不应让成员列表或创建结果报错", () => {
+    const memberId = "m-locked-display";
+    const paths = memberPaths(kit!.provider.teamDir, memberId);
+    kit!.provider.prepareContinuable({ teamId: kit!.teamId, memberId, name: "locked", description: "d", firstPrompt: "p", context: "fresh", requestId: "req-locked-display" });
+    writeOrigin(paths, { ...readOrigin(paths)!, sessionId: "sess_locked", modelSelection: { providerId: "test", modelId: "known-model" } });
+    const lock = db();
+    lock.exec("BEGIN EXCLUSIVE");
+    try {
+      expect(kit!.provider.leadModelOf()).toBeUndefined();
+      expect(kit!.provider.modelOf(memberId)).toBe("known-model");
+    } finally {
+      lock.exec("ROLLBACK");
+      lock.close();
+    }
+  });
+
   it("modelOf：transcript 实查优先；无消息回退 origin 三元组/旧 model；无 origin → undefined", async () => {
     const started = await kit!.provider.startContinuable(SPAWN_ARGS);
     expect(started.accepted).toBe(true);
